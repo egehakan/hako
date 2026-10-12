@@ -6,6 +6,7 @@ use warpui::elements::{
     MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, SavePosition, Shrinkable,
     Text,
 };
+use warpui::fonts::Properties;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::UiComponent;
 
@@ -112,12 +113,23 @@ pub fn render_pane_header_title_text(
     appearance: &Appearance,
     clip_config: ClipConfig,
 ) -> Box<dyn Element> {
+    render_pane_header_title_text_with_style(title, appearance, clip_config, Properties::default())
+}
+
+/// Like [`render_pane_header_title_text`], with the title set in `style`.
+pub fn render_pane_header_title_text_with_style(
+    title: impl Into<std::borrow::Cow<'static, str>>,
+    appearance: &Appearance,
+    clip_config: ClipConfig,
+    style: Properties,
+) -> Box<dyn Element> {
     let font_size = appearance.ui_font_size();
     let font_color = appearance
         .theme()
         .sub_text_color(appearance.theme().background());
     Text::new_inline(title, appearance.ui_font_family(), font_size)
         .with_color(font_color.into())
+        .with_style(style)
         .with_clip(clip_config)
         .finish()
 }

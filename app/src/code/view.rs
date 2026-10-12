@@ -34,7 +34,7 @@ use warpui::{
 use super::buffer_location::LocalOrRemotePath;
 use super::diff_viewer::DiffViewer;
 use super::editor::view::{CodeEditorEvent, CodeEditorView};
-use super::editor_management::{CodeManager, CodeSource};
+use super::editor_management::{CodeManager, CodeSource, TabOpenMode};
 use super::local_code_editor::{LocalCodeEditorEvent, LocalCodeEditorView};
 use crate::code::editor::scroll::ScrollPosition;
 use crate::code::editor::view::CodeEditorRenderOptions;
@@ -54,7 +54,7 @@ use crate::notebooks::file::{
 use crate::notebooks::link::NotebookLinks;
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::pane::view::header::components::{
-    CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text,
+    CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text_with_style,
     render_three_column_header,
 };
 use crate::pane_group::pane::view::header::render_pane_header_draggable;
@@ -128,6 +128,12 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(id!("CodeEditorView"))
         .with_key_binding("cmdorctrl-r u"),
+        EditableBinding::new(
+            "code_view:keep_preview_tab",
+            "Keep preview tab open",
+            CodeViewAction::KeepActiveTab,
+        )
+        .with_context_predicate(id!("CodeEditorView")),
     ]);
     #[cfg(feature = "local_fs")]
     app.register_editable_bindings([EditableBinding::new(
@@ -169,6 +175,11 @@ pub enum CodeViewAction {
     RemoveTabAtIndex {
         index: usize,
     },
+    /// Turns the preview tab at `index` into a tab that stays until it is closed.
+    KeepTab {
+        index: usize,
+    },
+    KeepActiveTab,
     CloseAll,
     CloseSaved,
     ToggleMaximized,
@@ -243,6 +254,7 @@ pub struct TabData {
     location: Option<LocalOrRemotePath>,
     editor_view: ViewHandle<LocalCodeEditorView>,
     mouse_state_handles: TabDataMouseStateHandles,
+    /// Whether the next file opened as a preview takes this tab's place.
     preview: bool,
     /// Rendered form of the tab's file, shown in place of its editor while present. The editor
     /// keeps the buffer, so nothing typed in it depends on this view.
@@ -268,6 +280,41 @@ impl TabData {
         self.location
             .as_ref()
             .and_then(|loc| loc.to_local_path().map(Path::to_path_buf))
+    }
+
+    pub fn is_preview(&self) -> bool {
+        self.preview
+    }
+}
+
+/// Where a file opened as a preview lands in a tab group.
+#[derive(Debug, PartialEq, Eq)]
+enum PreviewPlacement {
+    /// The file already has the tab at this index.
+    ExistingTab(usize),
+    /// The file takes the place of the preview tab at this index.
+    ReplacePreview(usize),
+    NewTab,
+}
+
+/// Decides where `location` lands when opened as a preview among `tabs`, given as the location
+/// of each tab and whether it is a preview.
+fn preview_placement<'a>(
+    tabs: impl IntoIterator<Item = (Option<&'a LocalOrRemotePath>, bool)>,
+    location: &LocalOrRemotePath,
+) -> PreviewPlacement {
+    let mut preview_index = None;
+    for (index, (tab_location, is_preview)) in tabs.into_iter().enumerate() {
+        if tab_location == Some(location) {
+            return PreviewPlacement::ExistingTab(index);
+        }
+        if is_preview && preview_index.is_none() {
+            preview_index = Some(index);
+        }
+    }
+    match preview_index {
+        Some(index) => PreviewPlacement::ReplacePreview(index),
+        None => PreviewPlacement::NewTab,
     }
 }
 
@@ -502,14 +549,17 @@ impl CodeView {
         view
     }
 
-    /// Create a new "preview" code view for when a user is exploring the file tree.
-    /// There is only one preview active at a time
-    pub fn new_preview(source: CodeSource, ctx: &mut ViewContext<Self>) -> Self {
-        let path = source.path();
+    /// Creates a code view whose first tab is a preview of the file `source` points at.
+    pub fn new_preview(
+        source: CodeSource,
+        line_col: Option<LineAndColumnArg>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
+        let location = source.location();
         let mut view = Self::new_internal(source, ctx);
 
-        if let Some(path) = path {
-            view.open_in_preview_or_promote(path, ctx);
+        if let Some(location) = location {
+            view.open_file(location, line_col, TabOpenMode::Preview, ctx);
             #[cfg(feature = "local_fs")]
             {
                 view.update_markdown_mode_segmented_control(ctx);
@@ -520,17 +570,34 @@ impl CodeView {
         view
     }
 
-    /// If a tab is a preview, promote it and emit "FileOpened"
-    fn promote_if_preview(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(tab) = self.tab_group.get_mut(self.active_tab_index)
-            && tab.preview
+    /// Turns the tab at `index` into one that stays until it is closed, if it is a preview.
+    fn keep_tab(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        let Some(tab) = self.tab_group.get_mut(index) else {
+            return;
+        };
+        if !tab.preview {
+            return;
+        }
+        tab.preview = false;
+        self.update_tab_bar_state(ctx);
+        self.pane_configuration.update(ctx, |pane_config, ctx| {
+            pane_config.refresh_pane_header_overflow_menu_items(ctx);
+        });
+        send_telemetry_from_ctx!(TelemetryEvent::PreviewPanePromoted, ctx);
+    }
+
+    /// Keeps the tab that `editor` belongs to.
+    fn keep_tab_of_editor(
+        &mut self,
+        editor: &ViewHandle<LocalCodeEditorView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(index) = self
+            .tab_group
+            .iter()
+            .position(|tab| tab.editor_view.id() == editor.id())
         {
-            tab.preview = false;
-            self.set_title_after_content_update(ctx);
-            self.update_tab_bar_state(ctx);
-            self.focus_contents(ctx);
-            send_telemetry_from_ctx!(TelemetryEvent::PreviewPanePromoted, ctx);
-            ctx.notify();
+            self.keep_tab(index, ctx);
         }
     }
 
@@ -642,7 +709,6 @@ impl CodeView {
 
         ctx.subscribe_to_view(&editor, |me, editor, event, ctx| match event {
             CodeEditorEvent::Focused => {
-                me.promote_if_preview(ctx);
                 ctx.emit(CodeViewEvent::Pane(PaneEvent::FocusSelf));
             }
             CodeEditorEvent::ContentChanged { .. } => {
@@ -668,7 +734,7 @@ impl CodeView {
                 editor.set_interaction_state(InteractionState::Selectable, ctx);
             });
         }
-        ctx.subscribe_to_view(&code_editor, |me, _, event, ctx| match event {
+        ctx.subscribe_to_view(&code_editor, |me, code_editor, event, ctx| match event {
             LocalCodeEditorEvent::FileLoaded => {
                 me.pane_configuration.update(ctx, |pane_config, ctx| {
                     pane_config.refresh_pane_header_overflow_menu_items(ctx);
@@ -707,6 +773,7 @@ impl CodeView {
                 // Only surface the success toast for manual (cmd-s) saves;
                 // auto-saves persist silently.
                 if !*auto_saved {
+                    me.keep_tab_of_editor(&code_editor, ctx);
                     CodeView::display_save_success(ctx.window_id(), ctx);
                 }
                 ctx.notify();
@@ -726,7 +793,7 @@ impl CodeView {
                 });
             }
             LocalCodeEditorEvent::DiffStatusUpdated => (),
-            LocalCodeEditorEvent::UserEdited => (),
+            LocalCodeEditorEvent::UserEdited => me.keep_tab_of_editor(&code_editor, ctx),
             LocalCodeEditorEvent::VimMinimizeRequested => (),
             LocalCodeEditorEvent::ViewportUpdated => (),
             LocalCodeEditorEvent::LayoutInvalidated => (),
@@ -840,64 +907,86 @@ impl CodeView {
         }
     }
 
-    fn preview_tab(&mut self) -> Option<(usize, &mut TabData)> {
-        self.tab_group
-            .iter_mut()
-            .enumerate()
-            .find(|(_, tab)| tab.preview)
-    }
-
-    /// Open a local file as a "preview" or if it's already being previewed, promote it to "open", making it
-    /// active and editable.
-    pub fn open_in_preview_or_promote(&mut self, path: PathBuf, ctx: &mut ViewContext<Self>) {
-        // If the file already is open, set the active tab to the existing tab and return.
-        if let Some(existing_index) = self
-            .tab_group
-            .iter()
-            .position(|tab| tab.location.as_ref() == Some(&LocalOrRemotePath::Local(path.clone())))
-        {
-            self.set_active_tab_index(existing_index, ctx);
-            self.promote_if_preview(ctx);
-            return;
-        }
-
-        // Find the existing preview tab (if any) and replace it with a new GlobalBuffer-backed editor
-        if let Some((preview_index, _)) = self.preview_tab() {
-            let new_tab =
-                self.build_tab_data(Some(LocalOrRemotePath::Local(path.clone())), true, ctx);
-            self.tab_group[preview_index] = new_tab;
-
-            GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
-                model.remove_deallocated_buffers(ctx);
-            });
-
-            self.set_active_tab_index(preview_index, ctx);
-            return;
-        }
-
-        // Create a new preview tab
-        let new_tab = self.build_tab_data(Some(LocalOrRemotePath::Local(path.clone())), true, ctx);
-
-        self.tab_group.push(new_tab);
-        let active_tab_index = self.tab_group.len() - 1;
-        self.set_active_tab_index(active_tab_index, ctx);
-
-        ctx.emit(CodeViewEvent::FileOpened {
-            location: LocalOrRemotePath::Local(path),
-            tab_index: self.active_tab_index,
-        });
-    }
-
-    pub fn open_in_preview_or_promote_and_jump(
+    /// Opens the file at `location` in the way `mode` asks for and makes its tab the active one.
+    pub fn open_file(
         &mut self,
-        path: PathBuf,
+        location: LocalOrRemotePath,
         line_col: Option<LineAndColumnArg>,
+        mode: TabOpenMode,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.open_in_preview_or_promote(path, ctx);
-        if let Some(line_col) = line_col {
-            self.jump_to_line_col_in_active_tab(line_col, ctx);
+        match mode {
+            TabOpenMode::Keep => {
+                self.open_or_focus_existing(Some(location), line_col, ctx);
+                self.keep_tab(self.active_tab_index, ctx);
+            }
+            TabOpenMode::Preview | TabOpenMode::PreviewThenKeep => {
+                self.open_as_preview(location, mode == TabOpenMode::PreviewThenKeep, ctx);
+                if let Some(line_col) = line_col {
+                    self.jump_to_line_col_in_active_tab(line_col, ctx);
+                }
+            }
         }
+    }
+
+    /// Shows the file at `location` in the preview tab, replacing the file previewed before. A
+    /// file that already has a tab is shown in that tab instead, which is kept when
+    /// `keep_if_previewed` is set and the tab is the preview.
+    fn open_as_preview(
+        &mut self,
+        location: LocalOrRemotePath,
+        keep_if_previewed: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Editing keeps a tab, so this only catches a buffer changed without going through its
+        // editor; it must not be thrown away with the preview either.
+        let modified_previews: Vec<usize> = self
+            .tab_group
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.preview && Self::has_unsaved_changes(tab, ctx))
+            .map(|(index, _)| index)
+            .collect();
+        for index in modified_previews {
+            self.keep_tab(index, ctx);
+        }
+
+        let placement = preview_placement(
+            self.tab_group
+                .iter()
+                .map(|tab| (tab.location.as_ref(), tab.preview)),
+            &location,
+        );
+        let tab_index = match placement {
+            PreviewPlacement::ExistingTab(index) => {
+                self.set_active_tab_index(index, ctx);
+                if keep_if_previewed {
+                    self.keep_tab(index, ctx);
+                }
+                return;
+            }
+            PreviewPlacement::ReplacePreview(index) => {
+                let new_tab = self.build_tab_data(Some(location.clone()), true, ctx);
+                self.tab_group[index] = new_tab;
+                GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.remove_deallocated_buffers(ctx);
+                });
+                index
+            }
+            PreviewPlacement::NewTab => {
+                let new_tab = self.build_tab_data(Some(location.clone()), true, ctx);
+                self.tab_group.push(new_tab);
+                self.tab_group.len() - 1
+            }
+        };
+        self.set_active_tab_index(tab_index, ctx);
+        self.pane_configuration.update(ctx, |pane_config, ctx| {
+            pane_config.refresh_pane_header_overflow_menu_items(ctx);
+        });
+        ctx.emit(CodeViewEvent::FileOpened {
+            location,
+            tab_index,
+        });
     }
 
     pub fn open_or_focus_existing(
@@ -2081,6 +2170,13 @@ impl CodeView {
                     );
                 }
             })
+            .on_double_click(move |ctx, _app, _pos| {
+                ctx.dispatch_typed_action(
+                    PaneHeaderAction::<CodeViewAction, CodeViewAction>::CustomAction(
+                        CodeViewAction::KeepTab { index },
+                    ),
+                );
+            })
             .on_middle_click(move |ctx, _app, _pos| {
                 ctx.dispatch_typed_action(
                     PaneHeaderAction::<CodeViewAction, CodeViewAction>::CustomAction(
@@ -2218,12 +2314,21 @@ impl CodeView {
 
         // Check unsaved changes for the active tab.
         let has_unsaved = tab.is_some_and(|tab| Self::show_unsaved_indicator(tab, app));
+        let title_style = if tab.is_some_and(TabData::is_preview) {
+            Properties::default().style(Style::Italic)
+        } else {
+            Properties::default()
+        };
 
         // Build the center title element, with a hover tooltip showing the full path.
         let title_element: Box<dyn Element> = match tab_handle {
             Some(handle) => Hoverable::new(handle, |hover_state| {
-                let title_text =
-                    render_pane_header_title_text(title.clone(), appearance, ClipConfig::start());
+                let title_text = render_pane_header_title_text_with_style(
+                    title.clone(),
+                    appearance,
+                    ClipConfig::start(),
+                    title_style,
+                );
 
                 let mut title_row = Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2265,10 +2370,21 @@ impl CodeView {
                 }
                 stack.finish()
             })
+            .on_double_click(|ctx, _app, _pos| {
+                ctx.dispatch_typed_action(
+                    PaneHeaderAction::<CodeViewAction, CodeViewAction>::CustomAction(
+                        CodeViewAction::KeepTab { index: 0 },
+                    ),
+                );
+            })
             .finish(),
             None => {
-                let title_text =
-                    render_pane_header_title_text(title, appearance, ClipConfig::start());
+                let title_text = render_pane_header_title_text_with_style(
+                    title,
+                    appearance,
+                    ClipConfig::start(),
+                    title_style,
+                );
                 if has_unsaved {
                     let dot_color = appearance
                         .theme()
@@ -2321,6 +2437,17 @@ impl CodeView {
                 .with_on_select_action(CodeViewAction::ToggleMaximized)
                 .into_item(),
         ];
+        if self
+            .tab_at(self.active_tab_index)
+            .is_some_and(TabData::is_preview)
+        {
+            items.insert(
+                0,
+                MenuItemFields::new("Keep open")
+                    .with_on_select_action(CodeViewAction::KeepActiveTab)
+                    .into_item(),
+            );
+        }
 
         #[cfg(feature = "local_fs")]
         {
@@ -2466,6 +2593,7 @@ impl TypedActionView for CodeView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             CodeViewAction::SaveFile => {
+                self.keep_tab(self.active_tab_index, ctx);
                 self.save_local(self.active_tab_index, None, ctx);
             }
             CodeViewAction::SaveFileAs => {
@@ -2515,6 +2643,9 @@ impl TypedActionView for CodeView {
             CodeViewAction::RemoveTabAtIndex { index } => {
                 self.remove_tab_with_confirmation(*index, false, ctx);
             }
+
+            CodeViewAction::KeepTab { index } => self.keep_tab(*index, ctx),
+            CodeViewAction::KeepActiveTab => self.keep_tab(self.active_tab_index, ctx),
 
             CodeViewAction::CloseAll => {
                 let unsaved_indices = self.unsaved_indices(ctx);
@@ -2691,3 +2822,7 @@ fn render_unsaved_changes_icon(color: ColorU) -> Box<dyn Element> {
     .with_height(8.)
     .finish()
 }
+
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod tests;

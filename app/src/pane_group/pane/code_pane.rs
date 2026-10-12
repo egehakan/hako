@@ -40,8 +40,13 @@ impl CodePane {
     }
 
     #[cfg(feature = "local_fs")]
-    pub fn new_preview<V: View>(source: CodeSource, ctx: &mut ViewContext<V>) -> Self {
-        let view = ctx.add_typed_action_view(move |ctx| CodeView::new_preview(source, ctx));
+    pub fn new_preview<V: View>(
+        source: CodeSource,
+        line_col: Option<LineAndColumnArg>,
+        ctx: &mut ViewContext<V>,
+    ) -> Self {
+        let view =
+            ctx.add_typed_action_view(move |ctx| CodeView::new_preview(source, line_col, ctx));
         Self::from_view(view, ctx)
     }
 

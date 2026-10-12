@@ -262,6 +262,8 @@ use crate::code::editor::{add_color, remove_color};
 use crate::code::editor_management::CodeManager;
 use crate::code::editor_management::CodeSource;
 #[cfg(feature = "local_fs")]
+use crate::code::editor_management::TabOpenMode;
+#[cfg(feature = "local_fs")]
 use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::GlobalCodeReviewModel;
 use crate::code_review::diff_state::DiffStateModel;
@@ -6592,7 +6594,7 @@ impl Workspace {
                                 },
                                 EditorLayout::SplitPane,
                                 None,
-                                false,
+                                TabOpenMode::Keep,
                                 &[],
                                 ctx,
                             );
@@ -6686,19 +6688,30 @@ impl Workspace {
         code_source: CodeSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.open_file_with_target_beside(path, target, line_col, code_source, None, ctx);
+        self.open_file_with_target_beside(
+            path,
+            target,
+            line_col,
+            code_source,
+            TabOpenMode::Keep,
+            None,
+            ctx,
+        );
     }
 
     /// Like [`Self::open_file_with_target`], for a file that belongs next to a particular side
     /// panel whatever its source: `origin_panel` is the side that panel sits on, and a split pane
-    /// created for the file goes next to it.
+    /// created for the file goes next to it. `tab_mode` applies when the file lands in the code
+    /// editor.
     #[cfg(feature = "local_fs")]
+    #[allow(clippy::too_many_arguments)]
     fn open_file_with_target_beside(
         &mut self,
         path: PathBuf,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
         code_source: CodeSource,
+        tab_mode: TabOpenMode,
         origin_panel: Option<PanelPosition>,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -6786,12 +6799,11 @@ impl Workspace {
                 crate::util::file::open_file_path_in_external_editor(line_col, path.clone(), ctx);
             }
             FileTarget::CodeEditor(layout) => {
-                let open_as_preview = false;
                 self.open_code_beside(
                     code_source,
                     layout,
                     line_col,
-                    open_as_preview,
+                    tab_mode,
                     &[],
                     origin_panel,
                     ctx,
@@ -6860,7 +6872,7 @@ impl Workspace {
                                     code_source,
                                     crate::util::openable_file_type::EditorLayout::SplitPane,
                                     *line_col,
-                                    false,
+                                    TabOpenMode::Keep,
                                     &[],
                                     ctx,
                                 );
@@ -6925,6 +6937,7 @@ impl Workspace {
                         range_start: line_col,
                         range_end: None,
                     },
+                    TabOpenMode::Keep,
                     Some(code_review_panel_position),
                     ctx,
                 );
@@ -6941,7 +6954,7 @@ impl Workspace {
                         CodeSource::FileTree { location: path },
                         EditorLayout::NewTab,
                         line_and_column,
-                        false,
+                        TabOpenMode::Keep,
                         &[],
                         ctx,
                     );
@@ -9089,7 +9102,7 @@ impl Workspace {
         source: CodeSource,
         layout: EditorLayout,
         line_col: Option<LineAndColumnArg>,
-        preview: bool,
+        tab_mode: TabOpenMode,
         additional_paths: &[PathBuf],
         ctx: &mut ViewContext<Self>,
     ) {
@@ -9097,7 +9110,7 @@ impl Workspace {
             source,
             layout,
             line_col,
-            preview,
+            tab_mode,
             additional_paths,
             None,
             ctx,
@@ -9113,11 +9126,24 @@ impl Workspace {
         source: CodeSource,
         layout: EditorLayout,
         line_col: Option<LineAndColumnArg>,
-        preview: bool,
+        tab_mode: TabOpenMode,
         additional_paths: &[PathBuf],
         origin_panel: Option<PanelPosition>,
         ctx: &mut ViewContext<Self>,
     ) {
+        let grouping_on = FeatureFlag::TabbedEditorView.is_enabled()
+            && *EditorSettings::as_ref(ctx)
+                .prefer_tabbed_editor_view
+                .value();
+        // A preview is a tab that the next file replaces, which needs the tabbed editor: with a
+        // pane per file there is nothing to replace.
+        let tab_mode = if grouping_on {
+            tab_mode
+        } else {
+            TabOpenMode::Keep
+        };
+        let preview = tab_mode.is_preview();
+
         send_telemetry_from_ctx!(
             TelemetryEvent::CodePaneOpened {
                 source: source.clone(),
@@ -9126,11 +9152,6 @@ impl Workspace {
             },
             ctx
         );
-
-        let grouping_on = FeatureFlag::TabbedEditorView.is_enabled()
-            && *EditorSettings::as_ref(ctx)
-                .prefer_tabbed_editor_view
-                .value();
 
         if grouping_on {
             let code_view = self
@@ -9146,23 +9167,7 @@ impl Workspace {
             // If the tabbed editor view is enabled and there is an existing CodeView, we should group the newly opened file into this view.
             if let (Some(location), Some((pane_id, code_view))) = (source.location(), code_view) {
                 code_view.update(ctx, |code_view, ctx| {
-                    // Preview (single-click = light open, double-click = promote to
-                    // full tab) is only supported for local files because it relies
-                    // on `open_in_preview_or_promote` which takes a local `PathBuf`.
-                    // Remote files skip preview and open normally.
-                    if preview {
-                        if let Some(path) = location.to_local_path() {
-                            code_view.open_in_preview_or_promote_and_jump(
-                                path.to_path_buf(),
-                                line_col,
-                                ctx,
-                            );
-                        } else {
-                            code_view.open_or_focus_existing(Some(location.clone()), line_col, ctx);
-                        }
-                    } else {
-                        code_view.open_or_focus_existing(Some(location.clone()), line_col, ctx);
-                    }
+                    code_view.open_file(location.clone(), line_col, tab_mode, ctx);
                     for extra in additional_paths {
                         code_view.open_or_focus_existing(
                             Some(LocalOrRemotePath::Local(extra.clone())),
@@ -9171,7 +9176,7 @@ impl Workspace {
                         );
                     }
                 });
-                // Only focus the pane for non-preview opens
+                // A preview leaves the focus in the panel the file was picked in.
                 if !preview {
                     self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
                         pane_group.focus_pane(pane_id, true, ctx);
@@ -9196,28 +9201,7 @@ impl Workspace {
                             pane_group.code_view_from_pane_id(locator.pane_id, ctx)
                         {
                             code_view.update(ctx, |code_view, ctx| {
-                                // Preview is local-only (see comment above).
-                                if preview {
-                                    if let Some(path) = location.to_local_path() {
-                                        code_view.open_in_preview_or_promote_and_jump(
-                                            path.to_path_buf(),
-                                            line_col,
-                                            ctx,
-                                        );
-                                    } else {
-                                        code_view.open_or_focus_existing(
-                                            Some(location.clone()),
-                                            line_col,
-                                            ctx,
-                                        );
-                                    }
-                                } else {
-                                    code_view.open_or_focus_existing(
-                                        Some(location.clone()),
-                                        line_col,
-                                        ctx,
-                                    );
-                                }
+                                code_view.open_file(location.clone(), line_col, tab_mode, ctx);
 
                                 for extra in additional_paths {
                                     code_view.open_or_focus_existing(
@@ -9241,7 +9225,7 @@ impl Workspace {
             origin_panel,
         );
         let pane = if preview {
-            CodePane::new_preview(source, ctx)
+            CodePane::new_preview(source, line_col, ctx)
         } else {
             CodePane::new(source, line_col, ctx)
         };
@@ -15355,7 +15339,7 @@ impl Workspace {
                         code_source,
                         *EditorSettings::as_ref(ctx).open_file_layout.value(),
                         *line_and_column_arg,
-                        false, // preview
+                        TabOpenMode::Keep,
                         &[],
                         ctx,
                     );
@@ -15674,7 +15658,7 @@ impl Workspace {
                         },
                         EditorLayout::SplitPane,
                         None,
-                        false,
+                        TabOpenMode::Keep,
                         rest,
                         ctx,
                     );
@@ -16767,7 +16751,14 @@ impl Workspace {
                 layout,
                 line_col,
             } => {
-                self.open_code(source.clone(), *layout, *line_col, false, &[], ctx);
+                self.open_code(
+                    source.clone(),
+                    *layout,
+                    *line_col,
+                    TabOpenMode::Keep,
+                    &[],
+                    ctx,
+                );
             }
             #[cfg(feature = "local_fs")]
             pane_group::Event::PreviewCodeInWarp { source } => {
@@ -16775,7 +16766,7 @@ impl Workspace {
                     source.clone(),
                     EditorLayout::SplitPane, // preview always uses split pane
                     None,                    // no line/column for preview
-                    true,                    // preview
+                    TabOpenMode::PreviewThenKeep,
                     &[],
                     ctx,
                 );
@@ -17615,6 +17606,7 @@ impl Workspace {
                         range_start: *line_col,
                         range_end: None,
                     },
+                    TabOpenMode::Keep,
                     Some(tools_panel_position),
                     ctx,
                 );

@@ -98,6 +98,27 @@ impl CodeEditorStatus {
     }
 }
 
+/// How a file opened in the tabbed editor relates to the tab it lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabOpenMode {
+    /// The file gets a tab that stays until it is closed.
+    Keep,
+    /// The file takes the place of the editor's preview tab, and is replaced in turn by the next
+    /// file previewed. A file that already has a tab is shown in it as it is.
+    Preview,
+    /// Like [`Self::Preview`], except that a file already being previewed is kept.
+    PreviewThenKeep,
+}
+
+impl TabOpenMode {
+    pub fn is_preview(self) -> bool {
+        match self {
+            TabOpenMode::Keep => false,
+            TabOpenMode::Preview | TabOpenMode::PreviewThenKeep => true,
+        }
+    }
+}
+
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub enum CodeSource {
     /// A new code pane not attached to an existing file.
