@@ -11,8 +11,7 @@ use project_replace::preview::{Previewer, RowPreview, preview_row};
 use project_replace::replacement::ReplaceSpec;
 use project_replace::report::{
     DELETION_WARNING, ReplaceCounts, confirmation_title, describe_change, replace_all_label,
-    replace_summary,
-    undo_summary,
+    replace_summary, undo_summary,
 };
 use project_replace::selection::{Dismissals, Selection, TargetsBuilder, count_targets};
 use warp_core::ui::Icon;
@@ -355,15 +354,13 @@ impl GlobalSearchView {
         let replacement = self.replacement_text(ctx);
         self.replace.previewer = match &self.searched_spec {
             // An empty replacement is a replacement too: it deletes the matches.
-            Some(search) if self.replace.is_open => {
-                Some(Previewer::new(
-                    search,
-                    &ReplaceSpec {
-                        replacement,
-                        preserve_case: self.replace.preserve_case_enabled,
-                    },
-                ))
-            }
+            Some(search) if self.replace.is_open => Some(Previewer::new(
+                search,
+                &ReplaceSpec {
+                    replacement,
+                    preserve_case: self.replace.preserve_case_enabled,
+                },
+            )),
             Some(_) | None => None,
         };
         self.refresh_replace_controls(ctx);

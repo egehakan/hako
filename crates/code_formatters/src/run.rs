@@ -1,14 +1,12 @@
 //! Running a formatter over buffer text.
 
 use std::ffi::OsString;
-use std::fmt;
-use std::fs;
 use std::io::{self, Read, Write as _};
 use std::path::Path;
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::thread;
 use std::time::Duration;
+use std::{fmt, fs, thread};
 
 use command::blocking::Command;
 use instant::Instant;

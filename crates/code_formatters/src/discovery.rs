@@ -1,6 +1,5 @@
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 /// The directories searched for project-local executables and config files: the formatted file's
 /// directory and its ancestors up to the project boundary, nearest first.

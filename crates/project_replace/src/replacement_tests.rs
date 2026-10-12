@@ -59,7 +59,10 @@ fn a_numbered_group_can_be_followed_by_text() {
     assert_eq!(delimit_numbered_groups("$1_total"), "${1}_total");
     assert_eq!(delimit_numbered_groups("$12x $2"), "${12}x ${2}");
     // Escaped dollars, braced and named references are left as they are.
-    assert_eq!(delimit_numbered_groups("$$1 ${1}a $name $"), "$$1 ${1}a $name $");
+    assert_eq!(
+        delimit_numbered_groups("$$1 ${1}a $name $"),
+        "$$1 ${1}a $name $"
+    );
 
     let expander = CaptureExpander::new(r"(\w+)_count", true, false).unwrap();
     assert_eq!(

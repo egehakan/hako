@@ -1,10 +1,9 @@
 //! Taking back the last replace, file by file, without ever discarding work done since.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fs, io};
 
 use crate::apply::{OpenBuffer, Progress};
 use crate::disk::{read_rewritable, write_atomically};

@@ -139,11 +139,7 @@ pub fn replace_all_label(counts: ReplaceCounts) -> String {
 /// removes the matches, which the question says outright.
 pub fn confirmation_title(counts: ReplaceCounts, pattern: &str, replacement: &str) -> String {
     if replacement.is_empty() {
-        return format!(
-            "Delete {} of “{}”?",
-            counts.describe(),
-            shortened(pattern)
-        );
+        return format!("Delete {} of “{}”?", counts.describe(), shortened(pattern));
     }
     format!(
         "Replace {} of “{}” with “{}”?",

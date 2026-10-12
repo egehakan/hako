@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs;
-use std::io;
 use std::path::Path;
+use std::{fs, io};
 
 use serde_json::Value;
 

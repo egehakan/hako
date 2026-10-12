@@ -87,7 +87,10 @@ fn test_viewport_charoffset_range_ends_with_the_viewport() {
 
     // The viewport shows the first paragraph and part of the second, and the third starts below
     // it, so the range stops there instead of running on to the end of the content.
-    let ranges: Vec<_> = render_state.viewport_charoffset_range().into_iter().collect();
+    let ranges: Vec<_> = render_state
+        .viewport_charoffset_range()
+        .into_iter()
+        .collect();
     assert_eq!(ranges, [CharOffset::from(0)..CharOffset::from(6)]);
 }
 

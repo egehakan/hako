@@ -6,11 +6,10 @@
 //! tool's own editor integration would expect.
 
 use std::collections::HashSet;
-use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::thread;
+use std::{fmt, thread};
 
 pub mod config;
 pub mod discovery;
