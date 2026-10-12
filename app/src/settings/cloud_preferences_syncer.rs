@@ -7,7 +7,7 @@ use cloud_object_models::JsonSerializer;
 use lazy_static::lazy_static;
 use settings::{Setting as _, SyncToCloud};
 use warp_core::r#async::debounce;
-use warp_core::channel::{Channel, ChannelState};
+use warp_core::channel::Channel;
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::settings::ChangeEventReason;
 use warp_core::user_preferences::GetUserPreferences;
@@ -63,9 +63,13 @@ pub(super) const SETTINGS_FILE_LAST_SYNCED_HASH_KEY: &str = "SettingsFileLastSyn
 /// This is the only entry point used to construct the syncer at app
 /// startup; production code in `lib.rs` and end-to-end tests both call
 /// it so they exercise the same code path.
+///
+/// `channel` is the channel the app runs as, which decides whether its settings are shared with
+/// the user's account at all.
 pub fn initialize_cloud_preferences_syncer(
     toml_file_path: PathBuf,
     startup_toml_parse_error: Option<&str>,
+    channel: Channel,
     ctx: &mut ModelContext<CloudPreferencesSyncer>,
 ) -> CloudPreferencesSyncer {
     let current_hash = TomlBackedUserPreferences::file_content_hash(&toml_file_path);
@@ -101,7 +105,7 @@ pub fn initialize_cloud_preferences_syncer(
     // The settings surface decides whether this process participates in cloud
     // sync at all (e.g. the TUI keeps its config local).
     let sync_enabled =
-        settings::settings_mode().should_sync_to_cloud() && channel_syncs_settings_to_cloud();
+        settings::settings_mode().should_sync_to_cloud() && channel_syncs_settings_to_cloud(channel);
     CloudPreferencesSyncer::new(
         force_local_wins_on_startup,
         toml_file_path,
@@ -110,11 +114,11 @@ pub fn initialize_cloud_preferences_syncer(
     )
 }
 
-/// Whether the current channel shares its settings with the user's account. The OSS build runs
-/// alongside an official install signed in to the same account, and the sync toggle is itself a
-/// synced setting, so syncing from OSS would rewrite the official app's settings.
-fn channel_syncs_settings_to_cloud() -> bool {
-    match ChannelState::channel() {
+/// Whether `channel` shares its settings with the user's account. The OSS build runs alongside
+/// an official install signed in to the same account, and the sync toggle is itself a synced
+/// setting, so syncing from OSS would rewrite the official app's settings.
+fn channel_syncs_settings_to_cloud(channel: Channel) -> bool {
+    match channel {
         Channel::Oss => false,
         Channel::Stable
         | Channel::Preview

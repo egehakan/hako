@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use cloud_object_client::MockObjectClient;
+use warp_core::channel::Channel;
 use warp_core::settings::macros::define_settings_group;
 use warp_core::settings::{RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud};
 use warp_core::user_preferences::GetUserPreferences;
@@ -1300,6 +1301,9 @@ fn write_settings_file_with_content(path: &std::path::Path, content: &str) -> St
         .expect("hash should be Some for non-empty file")
 }
 
+/// A channel whose settings are shared with the user's account.
+const SYNCING_CHANNEL: Channel = Channel::Local;
+
 fn read_stored_hash(app: &App) -> Option<String> {
     app.read(|ctx| {
         ctx.private_user_preferences()
@@ -1367,6 +1371,7 @@ fn test_force_local_wins_on_startup_uploads_local_to_cloud() {
             let syncer = initialize_cloud_preferences_syncer(
                 toml_path_for_closure,
                 None, // no parse error
+                SYNCING_CHANNEL,
                 ctx,
             );
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
@@ -1432,7 +1437,12 @@ fn test_no_force_local_when_hashes_match() {
 
         let toml_path_for_closure = toml_path.clone();
         app.add_singleton_model(move |ctx| {
-            let syncer = initialize_cloud_preferences_syncer(toml_path_for_closure, None, ctx);
+            let syncer = initialize_cloud_preferences_syncer(
+                toml_path_for_closure,
+                None,
+                SYNCING_CHANNEL,
+                ctx,
+            );
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
             syncer
         });
@@ -1503,6 +1513,7 @@ fn test_force_local_suppressed_when_file_is_broken() {
             let syncer = initialize_cloud_preferences_syncer(
                 toml_path_for_closure,
                 Some("simulated TOML parse error"),
+                SYNCING_CHANNEL,
                 ctx,
             );
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
@@ -1559,7 +1570,7 @@ fn test_file_missing_with_stored_hash_lets_cloud_win() {
         enable_settings_sync(&mut app);
 
         app.add_singleton_model(move |ctx| {
-            let syncer = initialize_cloud_preferences_syncer(missing_path, None, ctx);
+            let syncer = initialize_cloud_preferences_syncer(missing_path, None, SYNCING_CHANNEL, ctx);
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
             syncer
         });
@@ -1612,7 +1623,12 @@ fn test_first_launch_with_no_stored_hash_lets_cloud_win() {
 
         let toml_path_for_closure = toml_path.clone();
         app.add_singleton_model(move |ctx| {
-            let syncer = initialize_cloud_preferences_syncer(toml_path_for_closure, None, ctx);
+            let syncer = initialize_cloud_preferences_syncer(
+                toml_path_for_closure,
+                None,
+                SYNCING_CHANNEL,
+                ctx,
+            );
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
             syncer
         });
@@ -1667,7 +1683,12 @@ fn test_offline_ui_change_does_not_update_hash_until_sync_succeeds() {
 
         let toml_path_for_closure = toml_path.clone();
         app.add_singleton_model(move |ctx| {
-            let syncer = initialize_cloud_preferences_syncer(toml_path_for_closure, None, ctx);
+            let syncer = initialize_cloud_preferences_syncer(
+                toml_path_for_closure,
+                None,
+                SYNCING_CHANNEL,
+                ctx,
+            );
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
             syncer
         });
@@ -1755,4 +1776,10 @@ fn test_offline_ui_change_does_not_update_hash_until_sync_succeeds() {
             "stored hash should match new file after successful upload",
         );
     })
+}
+
+#[test]
+fn test_oss_channel_keeps_settings_local() {
+    assert!(!super::channel_syncs_settings_to_cloud(Channel::Oss));
+    assert!(super::channel_syncs_settings_to_cloud(SYNCING_CHANNEL));
 }

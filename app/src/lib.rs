@@ -2344,6 +2344,7 @@ pub(crate) fn initialize_app(
         initialize_cloud_preferences_syncer(
             toml_file_path,
             startup_toml_parse_error_for_syncer.as_deref(),
+            ChannelState::channel(),
             ctx,
         )
     });
