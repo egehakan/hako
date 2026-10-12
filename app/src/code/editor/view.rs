@@ -473,6 +473,13 @@ impl CodeEditorView {
         self
     }
 
+    /// Leaves diff hunks without a "revert" button, for a diff whose base is not something the
+    /// working copy should be brought back to.
+    pub fn without_revert_diff_hunk_button(mut self) -> Self {
+        self.display_options.revert_diff_hunk = None;
+        self
+    }
+
     /// Enables the "comment" button on diff hunks. Only enable this for code review views.
     pub fn with_comment_button(mut self) -> Self {
         self.display_options.comment_button = Some(CommentButton::default());

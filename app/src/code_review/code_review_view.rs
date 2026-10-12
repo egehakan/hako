@@ -94,10 +94,14 @@ use crate::code_review::context::convert_file_diffs_to_diffset_hunks;
 use crate::code_review::context::{
     create_attachment_reference_and_key, register_diffset_attachment,
 };
-use crate::code_review::diff_selector::{DiffSelector, DiffSelectorEvent, DiffTarget};
+use crate::code_review::diff_selector::{
+    DiffSelector, DiffSelectorContent, DiffSelectorEvent, DiffTarget, DiffTargetSources,
+    build_diff_targets,
+};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLineType, DiffMode, DiffState, DiffStateModel, DiffStateModelEvent, DiffStats,
     FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffWithBaseContent, GitFileStatus,
+    RevisionComparison,
 };
 use crate::code_review::editor_state::CodeReviewEditorState;
 use crate::code_review::find_model::CodeReviewFindModel;
@@ -138,6 +142,9 @@ use crate::util::bindings::{
 };
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
+use crate::code_review::revisions::{
+    RevisionCandidates, list_revision_candidates, resolve_commit,
+};
 use crate::util::git::{BranchEntry, PrInfo};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
@@ -276,6 +283,18 @@ pub fn get_discard_button_disabled_tooltip(git_operation_blocked: bool) -> Strin
     } else {
         "No changes to discard".to_string()
     }
+}
+
+/// Shown on the actions that change the working tree while it is compared with a point in
+/// history, where they would restore that old state.
+pub const HISTORICAL_COMPARISON_TOOLTIP: &str =
+    "Not available while comparing with a past revision. Go back to uncommitted changes to discard or revert.";
+
+/// What discarding changes restores files to.
+enum DiscardBase {
+    Head,
+    /// A branch by name, or the main branch.
+    Branch(Option<String>),
 }
 
 /// Builds the tooltip text for the file navigation toggle button, including the
@@ -531,6 +550,9 @@ struct RepositoryState {
     repo_path: LocalOrRemotePath,
     state: CodeReviewViewState,
     available_branches: Vec<BranchEntry>,
+    /// Remote branches, tags and recent commits, listed when the diff selector is first opened.
+    revisions: Option<RevisionCandidates>,
+    is_loading_revisions: bool,
 
     /// Whether a repo-relative file path has been explicitly expanded (true) or collapsed (false).
     file_expanded: HashMap<String, bool>,
@@ -542,6 +564,8 @@ impl RepositoryState {
             repo_path,
             state: CodeReviewViewState::None,
             available_branches: Vec::new(),
+            revisions: None,
+            is_loading_revisions: false,
             file_expanded: HashMap::new(),
         }
     }
@@ -1478,6 +1502,12 @@ impl CodeReviewView {
         });
     }
 
+    /// Whether the repository can be compared with revisions other than its local branches.
+    /// A remote host is only ever asked for comparisons from a merge base with a branch.
+    fn offers_revision_comparisons(&self) -> bool {
+        self.repo_is_local() == Some(true)
+    }
+
     pub(crate) fn build_diff_targets(&self, ctx: &ViewContext<Self>) -> Vec<DiffTarget> {
         let Some(repo) = self.active_repo.as_ref() else {
             return Vec::new();
@@ -1487,73 +1517,120 @@ impl CodeReviewView {
             (model.diff_mode(ctx), model.get_current_branch_name(ctx))
         });
 
-        let mut targets = Vec::new();
-
-        // 1. Always add "Uncommitted changes" first.
-        targets.push(DiffTarget::new(
-            "Uncommitted changes",
-            DiffMode::Head,
-            matches!(current_mode, DiffMode::Head),
-        ));
-
-        // 2. If the current mode targets a branch not in the local branch
-        // list, add it after "Uncommitted changes".
-        if let DiffMode::OtherBranch(ref branch_name) = current_mode {
-            let already_present = repo
-                .available_branches
-                .iter()
-                .any(|entry| entry.name == *branch_name);
-            if !already_present {
-                targets.push(DiffTarget::new(
-                    branch_name.clone(),
-                    DiffMode::OtherBranch(branch_name.clone()),
-                    true,
-                ));
-            }
-        }
-
-        // 3. Main branch, if known.
-        let main_branch = repo.available_branches.iter().find(|entry| entry.is_main);
-        if let Some(main_entry) = main_branch {
-            targets.push(DiffTarget::new(
-                main_entry.name.clone(),
-                DiffMode::MainBranch,
-                matches!(current_mode, DiffMode::MainBranch),
-            ));
-        }
-
-        // 4. Other branches, filtered to exclude main and the currently
-        // checked-out branch (the latter is functionally the same as
-        // "Uncommitted changes").
-        for entry in repo.available_branches.iter() {
-            if entry.is_main {
-                continue;
-            }
-            if let Some(current_name) = &current_branch_name
-                && entry.name == *current_name
-            {
-                continue;
-            }
-            let is_selected = match &current_mode {
-                DiffMode::OtherBranch(name) => name == &entry.name,
-                DiffMode::Head | DiffMode::MainBranch => false,
-            };
-            targets.push(DiffTarget::new(
-                entry.name.clone(),
-                DiffMode::OtherBranch(entry.name.clone()),
-                is_selected,
-            ));
-        }
-
-        targets
+        build_diff_targets(DiffTargetSources {
+            current_mode: &current_mode,
+            current_branch: current_branch_name.as_deref(),
+            branches: &repo.available_branches,
+            revisions: repo
+                .revisions
+                .as_ref()
+                .filter(|_| self.offers_revision_comparisons()),
+        })
     }
 
     fn update_diff_selector_selection(&mut self, ctx: &mut ViewContext<Self>) {
         let targets = self.build_diff_targets(ctx);
+        let (current_mode, main_branch_name) = self.diff_state_model.read(ctx, |model, ctx| {
+            (model.diff_mode(ctx), model.get_main_branch_name(ctx))
+        });
+        let comparison = match &current_mode {
+            DiffMode::Head | DiffMode::MainBranch | DiffMode::OtherBranch(_) => {
+                RevisionComparison::MergeBase
+            }
+            DiffMode::Revision { comparison, .. } => *comparison,
+        };
+        let content = DiffSelectorContent {
+            targets,
+            base_label: current_mode.base_label(main_branch_name.as_deref()),
+            has_custom_base: current_mode != DiffMode::Head,
+            comparison,
+            offers_revisions: self.offers_revision_comparisons(),
+            is_loading_revisions: self
+                .active_repo
+                .as_ref()
+                .is_some_and(|repo| repo.is_loading_revisions),
+        };
         let selector = self.diff_selector.clone();
         selector.update(ctx, |selector, ctx| {
-            selector.set_targets(targets, ctx);
+            selector.set_content(content, ctx);
         });
+    }
+
+    /// Lists the remote branches, tags and recent commits the active repository can be compared
+    /// with. Listed again on every call, so that the selector reflects fetches and new commits.
+    fn list_revision_candidates(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.offers_revision_comparisons() {
+            return;
+        }
+        let Some(repo) = self.active_repo.as_mut() else {
+            return;
+        };
+        let Some(repo_path) = repo.repo_path.to_local_path().map(Path::to_path_buf) else {
+            return;
+        };
+        if repo.is_loading_revisions {
+            return;
+        }
+        repo.is_loading_revisions = true;
+        let is_first_listing = repo.revisions.is_none();
+
+        let listed_repo = repo.repo_path.clone();
+        ctx.spawn(
+            async move { list_revision_candidates(&repo_path).await },
+            move |me, revisions, ctx| {
+                let Some(repo) = me
+                    .active_repo
+                    .as_mut()
+                    .filter(|repo| repo.repo_path == listed_repo)
+                else {
+                    return;
+                };
+                repo.is_loading_revisions = false;
+                repo.revisions = Some(revisions);
+                me.update_diff_selector_selection(ctx);
+            },
+        );
+        if is_first_listing {
+            self.update_diff_selector_selection(ctx);
+        }
+    }
+
+    /// Checks typed text with git and, when it names a commit, compares with it.
+    fn compare_with_typed_revision(
+        &mut self,
+        rev: String,
+        comparison: RevisionComparison,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(repo_path) = self
+            .repo_path()
+            .and_then(LocalOrRemotePath::to_local_path)
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let checked_repo = self.repo_path().cloned();
+        let checked_rev = rev.clone();
+        ctx.spawn(
+            async move { resolve_commit(&repo_path, &checked_rev).await },
+            move |me, result, ctx| {
+                if me.repo_path() != checked_repo.as_ref() {
+                    return;
+                }
+                match result {
+                    Ok(_) => {
+                        me.diff_selector
+                            .update(ctx, |selector, ctx| selector.close(ctx));
+                        me.apply_diff_mode(DiffMode::Revision { rev, comparison }, ctx);
+                    }
+                    Err(err) => {
+                        me.diff_selector.update(ctx, |selector, ctx| {
+                            selector.show_revision_error(&rev, err.to_string(), ctx);
+                        });
+                    }
+                }
+            },
+        );
     }
 
     fn handle_diff_selector_event(
@@ -1567,6 +1644,10 @@ impl CodeReviewView {
                 // would bubble past `CodeReviewView` instead of re-entering
                 // `handle_action`, so call the shared helper directly.
                 self.apply_diff_mode(mode.clone(), ctx);
+            }
+            DiffSelectorEvent::Opened => self.list_revision_candidates(ctx),
+            DiffSelectorEvent::ResolveRevision { rev, comparison } => {
+                self.compare_with_typed_revision(rev.clone(), *comparison, ctx);
             }
         }
     }
@@ -2336,7 +2417,7 @@ impl CodeReviewView {
                             .against_base_branch
                             .as_ref()
                             .map(|base| base.aggregate_stats),
-                        DiffMode::OtherBranch(_) => None,
+                        DiffMode::OtherBranch(_) | DiffMode::Revision { .. } => None,
                     };
                     if let Some(stats) = stats {
                         loaded_state.total_additions = stats.total_additions;
@@ -2589,7 +2670,15 @@ impl CodeReviewView {
             .diff_state_model
             .as_ref(ctx)
             .is_git_operation_blocked(ctx);
-        let discard_tooltip_text = if git_operation_blocked {
+        let is_historical = self
+            .diff_state_model
+            .as_ref(ctx)
+            .diff_mode(ctx)
+            .is_historical();
+        let is_discard_disabled = git_operation_blocked || is_historical;
+        let discard_tooltip_text = if is_historical {
+            HISTORICAL_COMPARISON_TOOLTIP.to_string()
+        } else if git_operation_blocked {
             get_discard_button_disabled_tooltip(git_operation_blocked)
         } else {
             "Discard changes".to_string()
@@ -2663,7 +2752,7 @@ impl CodeReviewView {
                     .with_size(ButtonSize::InlineActionHeader)
                     .with_tooltip(discard_tooltip);
 
-                if git_operation_blocked {
+                if is_discard_disabled {
                     button.set_disabled(true, ctx);
                 } else {
                     button = button.on_click(move |ctx| {
@@ -3000,6 +3089,11 @@ impl CodeReviewView {
         ctx: &mut ViewContext<Self>,
     ) -> Option<CodeReviewEditorState> {
         let repo_path = self.repo_path()?.clone();
+        let is_historical = self
+            .diff_state_model
+            .as_ref(ctx)
+            .diff_mode(ctx)
+            .is_historical();
         // Skip editor creation for binary files or files without content (e.g., pure renames)
         if file.file_diff.is_binary || file.content_at_head.is_none() {
             None
@@ -3049,6 +3143,9 @@ impl CodeReviewView {
                             .disable_diff_indicator_expansion_on_hover()
                             .with_gutter_hover_target(GutterHoverTarget::Line) // Show gutter element when hovering the line.
                             .disable_find_and_replace(); // Disable find and replace since parts of the file are hidden from view
+                            if is_historical {
+                                editor_view = editor_view.without_revert_diff_hunk_button();
+                            }
 
                             editor_view.set_show_nav_bar(false);
 
@@ -3102,6 +3199,11 @@ impl CodeReviewView {
         ctx: &mut ViewContext<Self>,
     ) -> Option<CodeReviewEditorState> {
         let repo_path = self.repo_path()?.clone();
+        let is_historical = self
+            .diff_state_model
+            .as_ref(ctx)
+            .diff_mode(ctx)
+            .is_historical();
 
         if file.file_diff.is_binary {
             None
@@ -3129,6 +3231,9 @@ impl CodeReviewView {
                 .disable_diff_indicator_expansion_on_hover()
                 .with_gutter_hover_target(GutterHoverTarget::Line) // Show gutter element when hovering the line.
                 .disable_find_and_replace(); // Disable find and replace since parts of the file are hidden from view
+                if is_historical {
+                    editor_view = editor_view.without_revert_diff_hunk_button();
+                }
 
                 editor_view.set_show_nav_bar(false);
                 editor_view
@@ -5995,6 +6100,7 @@ impl CodeReviewView {
                 }
             }
             DiffMode::OtherBranch(branch_name) => Ok(DiffBase::BranchName(branch_name)),
+            DiffMode::Revision { rev, .. } => Ok(DiffBase::BranchName(rev)),
         }
     }
 
@@ -6138,6 +6244,7 @@ impl CodeReviewView {
                         }
                     }
                     DiffMode::OtherBranch(branch_name) => DiffBase::BranchName(branch_name),
+                    DiffMode::Revision { rev, .. } => DiffBase::BranchName(rev),
                 };
 
                 send_telemetry_from_ctx!(
@@ -6865,12 +6972,22 @@ impl CodeReviewView {
         }
 
         if FeatureFlag::DiscardPerFileAndAllChanges.is_enabled() && has_changes {
-            items.push(
-                MenuItemFields::new("Discard all")
-                    .with_icon(Icon::ReverseLeft)
+            let discard_all = MenuItemFields::new("Discard all").with_icon(Icon::ReverseLeft);
+            let is_historical = self
+                .diff_state_model
+                .as_ref(ctx)
+                .diff_mode(ctx)
+                .is_historical();
+            items.push(if is_historical {
+                discard_all
+                    .with_disabled(true)
+                    .with_tooltip(HISTORICAL_COMPARISON_TOOLTIP)
+                    .into_item()
+            } else {
+                discard_all
                     .with_on_select_action(CodeReviewAction::ShowDiscardConfirmDialog(None))
-                    .into_item(),
-            );
+                    .into_item()
+            });
         }
 
         items
@@ -7065,7 +7182,23 @@ impl View for CodeReviewView {
                     self.render_loaded_state(loaded_state, appearance, is_in_split_pane, ctx)
                 }
             }
-            CodeReviewViewState::Error(err) => self.render_error_state(err, appearance),
+            CodeReviewViewState::Error(err) => {
+                let error = self.render_error_state(err, appearance);
+                if self.diff_state_model.as_ref(ctx).diff_mode(ctx) == DiffMode::Head {
+                    error
+                } else {
+                    // A comparison base that fails to load must not hide the way back from it.
+                    Flex::column()
+                        .with_child(
+                            Container::new(ChildView::new(&self.diff_selector).finish())
+                                .with_margin_left(CONTENT_LEFT_MARGIN)
+                                .with_margin_top(CONTENT_TOP_MARGIN)
+                                .finish(),
+                        )
+                        .with_child(Shrinkable::new(1., error).finish())
+                        .finish()
+                }
+            }
             CodeReviewViewState::NoRepoFound => self.render_no_repo_for_env(ctx, appearance),
         };
 
@@ -7375,29 +7508,33 @@ impl TypedActionView for CodeReviewView {
                 ctx.emit(CodeReviewViewEvent::Pane(event.clone()));
             }
             CodeReviewAction::ShowDiscardConfirmDialog(file_path) => {
-                self.discard_dialog_state.show_discard_confirm_dialog = true;
-
                 let current_diff_mode = self.diff_state_model.as_ref(ctx).diff_mode(ctx);
+                // Discarding restores the comparison base, which for a point in history would
+                // bring that old state back over committed work.
+                let branch = match current_diff_mode {
+                    DiffMode::Head => DiscardBase::Head,
+                    DiffMode::MainBranch => DiscardBase::Branch(None),
+                    DiffMode::OtherBranch(branch) => DiscardBase::Branch(Some(branch)),
+                    DiffMode::Revision { .. } => return,
+                };
+
+                self.discard_dialog_state.show_discard_confirm_dialog = true;
 
                 if let Some(path) = file_path {
                     // Single file remove
                     self.discard_dialog_state.discard_file_paths = vec![path.clone()];
-                    self.discard_dialog_state.operation_type = match current_diff_mode {
-                        DiffMode::Head => DiscardOperationType::FileUncommittedChanges,
-                        DiffMode::MainBranch => {
-                            DiscardOperationType::FileChangesAgainstBranch(None)
-                        }
-                        DiffMode::OtherBranch(branch) => {
-                            DiscardOperationType::FileChangesAgainstBranch(Some(branch))
+                    self.discard_dialog_state.operation_type = match branch {
+                        DiscardBase::Head => DiscardOperationType::FileUncommittedChanges,
+                        DiscardBase::Branch(branch) => {
+                            DiscardOperationType::FileChangesAgainstBranch(branch)
                         }
                     };
                 } else {
                     // All files remove
-                    self.discard_dialog_state.operation_type = match current_diff_mode {
-                        DiffMode::Head => DiscardOperationType::AllUncommittedChanges,
-                        DiffMode::MainBranch => DiscardOperationType::AllChangesAgainstBranch(None),
-                        DiffMode::OtherBranch(branch) => {
-                            DiscardOperationType::AllChangesAgainstBranch(Some(branch))
+                    self.discard_dialog_state.operation_type = match branch {
+                        DiscardBase::Head => DiscardOperationType::AllUncommittedChanges,
+                        DiscardBase::Branch(branch) => {
+                            DiscardOperationType::AllChangesAgainstBranch(branch)
                         }
                     };
 

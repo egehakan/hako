@@ -284,6 +284,10 @@ pub struct WorkingDirectoriesModel {
     /// Since git state is inherently tied to a repository (not a pane group),
     /// this is stored globally and shared across all pane groups viewing the same repo.
     diff_state_models: DiffStateModelMap,
+    /// What each repository was last compared with, when that is not its uncommitted changes.
+    /// Outlives the repository's `DiffStateModel`, so that the comparison is still in effect when
+    /// the repository is visited again in this session.
+    remembered_diff_modes: HashMap<LocalOrRemotePath, DiffMode>,
     /// Global mapping from repository locations to their CommentBatch.
     /// Like the DiffStateModel mapping, comments are inherently tied to git diffs
     /// and are shared across all pane groups viewing the same repo.
@@ -407,6 +411,10 @@ impl WorkingDirectoriesModel {
             }
         };
 
+        if let Some(mode) = self.remembered_diff_modes.get(&key).cloned() {
+            diff_state_model.update(ctx, |model, ctx| model.restore_diff_mode(mode, ctx));
+        }
+
         match key {
             LocalOrRemotePath::Local(path) => {
                 self.diff_state_models
@@ -431,6 +439,16 @@ impl WorkingDirectoriesModel {
     ) {
         for repo_key in orphaned_repos {
             if let Some(model) = self.diff_state_models.remove(&repo_key) {
+                match model.as_ref(ctx).diff_mode(ctx) {
+                    DiffMode::Head => {
+                        self.remembered_diff_modes.remove(&repo_key);
+                    }
+                    mode @ (DiffMode::MainBranch
+                    | DiffMode::OtherBranch(_)
+                    | DiffMode::Revision { .. }) => {
+                        self.remembered_diff_modes.insert(repo_key.clone(), mode);
+                    }
+                }
                 model.update(ctx, |model, ctx| {
                     model.stop_active_watcher(ctx);
                 });
