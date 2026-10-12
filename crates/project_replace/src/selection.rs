@@ -40,6 +40,19 @@ impl Dismissals {
         }
     }
 
+    /// Adjusts to a replace or an undo having changed `files`. The matches left in a changed
+    /// file may have moved, so a file that had matches set aside is set aside as a whole rather
+    /// than risk replacing one of them where it is now.
+    pub fn files_changed(&mut self, files: &[PathBuf]) {
+        for file in files {
+            let matches_before = self.matches.len();
+            self.matches.retain(|(path, _, _)| path != file);
+            if self.matches.len() != matches_before {
+                self.files.insert(file.clone());
+            }
+        }
+    }
+
     pub fn is_file_dismissed(&self, path: &Path) -> bool {
         self.files.contains(path)
     }

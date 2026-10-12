@@ -27080,6 +27080,17 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
+            UndoLastProjectReplace => {
+                if let Some(global_search_view) = self
+                    .left_panel_view
+                    .as_ref(ctx)
+                    .active_global_search_view(ctx)
+                {
+                    global_search_view.update(ctx, |view, ctx| {
+                        view.undo_last_replace(ctx);
+                    });
+                }
+            }
             ToggleConversationListView => {
                 if FeatureFlag::AgentViewConversationListView.is_enabled() {
                     let is_showing = self.left_panel_view.as_ref(ctx).active_view()

@@ -723,6 +723,8 @@ pub enum WorkspaceAction {
     OpenGlobalSearch,
     /// Opens global search with its replacement field showing.
     OpenGlobalSearchReplace,
+    /// Takes back the last replace made from global search.
+    UndoLastProjectReplace,
     ToggleConversationListView,
     OpenConversationListView,
     OpenAgentManagementView,
@@ -1200,6 +1202,7 @@ impl WorkspaceAction {
             | ToggleHiddenFiles
             | OpenGlobalSearch
             | OpenGlobalSearchReplace
+            | UndoLastProjectReplace
             | ToggleConversationListView
             | OpenConversationListView
             | ToggleNotificationMailbox { .. }

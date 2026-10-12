@@ -160,8 +160,10 @@ pub enum GlobalSearchAction {
         line_number: u32,
         column: usize,
     },
-    /// Stops the replace that is running before its next file.
+    /// Stops the replace or the undo that is running before its next file.
     CancelReplace,
+    UndoLastReplace,
+    DismissReplaceSummary,
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -617,6 +619,8 @@ impl TypedActionView for GlobalSearchView {
                 column,
             } => self.replace_match(location, *line_number, *column, ctx),
             GlobalSearchAction::CancelReplace => self.cancel_replace(ctx),
+            GlobalSearchAction::UndoLastReplace => self.undo_last_replace(ctx),
+            GlobalSearchAction::DismissReplaceSummary => self.dismiss_run_summary(ctx),
         }
     }
 }
@@ -1084,6 +1088,7 @@ impl GlobalSearchView {
             | EditorEvent::BufferReplaced
             | EditorEvent::BufferReinitialized => {
                 self.replace.scroll_top_to_restore = None;
+                self.replace.keep_dismissals_once = false;
                 let query_text = self.query_editor.as_ref(ctx).buffer_text(ctx);
                 if query_text.is_empty() {
                     self.cancel_search(ctx);
@@ -1189,7 +1194,10 @@ impl GlobalSearchView {
         self.selected_row = None;
         self.last_error = None;
         self.uniform_list_state = UniformListState::new();
-        self.replace.dismissals.clear();
+        let keep_dismissals = std::mem::take(&mut self.replace.keep_dismissals_once);
+        if clear_last_pattern || !keep_dismissals {
+            self.replace.dismissals.clear();
+        }
 
         if clear_last_pattern {
             self.last_searched_pattern = None;
@@ -3046,11 +3054,16 @@ impl View for GlobalSearchView {
 
         if self.replace.is_open {
             header_column.add_child(self.render_replace_row(app));
-            header_column.add_child(self.render_replace_actions(app));
         }
         if self.is_scope_open {
             header_column.add_child(self.render_field_row(&self.include_editor, None, app));
             header_column.add_child(self.render_field_row(&self.exclude_editor, None, app));
+        }
+        if self.replace.is_open || self.is_replace_running(app) {
+            header_column.add_child(self.render_replace_actions(app));
+        }
+        if let Some(run_summary) = self.render_run_summary(app) {
+            header_column.add_child(run_summary);
         }
 
         let files = self.unique_match_count();

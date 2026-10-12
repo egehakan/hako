@@ -6,8 +6,10 @@ use std::path::PathBuf;
 
 use project_replace::apply::{FileTarget, Progress, ReplaceReport};
 use project_replace::engine::SearchSpec;
+use project_replace::journal::TransactionDescription;
 use project_replace::replacement::ReplaceSpec;
 use project_replace::scope::ScopeGlobs;
+use project_replace::undo::UndoReport;
 use warpui::{Entity, ModelContext};
 
 pub struct ReplaceJob {
@@ -21,6 +23,11 @@ pub struct ReplaceJob {
 pub enum ProjectReplaceEvent {
     Progress,
     Finished(ReplaceReport),
+    UndoFinished {
+        description: TransactionDescription,
+        report: UndoReport,
+    },
+    NothingToUndo,
     Failed(String),
 }
 
@@ -39,6 +46,10 @@ impl ProjectReplace {
         false
     }
 
+    pub fn is_undoing(&self) -> bool {
+        false
+    }
+
     pub fn progress(&self) -> Option<Progress> {
         None
     }
@@ -49,6 +60,10 @@ impl ProjectReplace {
         ctx.emit(ProjectReplaceEvent::Failed(
             "Replacing needs access to local files.".to_string(),
         ));
+    }
+
+    pub fn undo(&mut self, ctx: &mut ModelContext<Self>) {
+        ctx.emit(ProjectReplaceEvent::NothingToUndo);
     }
 }
 

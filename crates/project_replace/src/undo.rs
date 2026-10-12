@@ -49,6 +49,12 @@ pub struct UndoReport {
     pub not_attempted: usize,
 }
 
+impl UndoReport {
+    pub fn was_cancelled(&self) -> bool {
+        self.not_attempted > 0
+    }
+}
+
 impl UndoOutcome {
     /// Records what the editors did with [`UndoOutcome::buffer_restores`] and drops what was
     /// undone from the journal. Files that were refused stay in it, so that undoing can be tried

@@ -1,4 +1,4 @@
-//! Runs a replace across the files of a project for global search.
+//! Runs a replace across the files of a project for global search, and takes the last one back.
 //!
 //! Files that are not open are rewritten in the background. Files open in an editor are edited
 //! through their buffer on the main thread, so that the editor shows the change and whatever it
@@ -6,7 +6,9 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,10 +20,12 @@ use project_replace::apply::{
     ReplaceOutcome, ReplaceReport, ReplaceRequest, replace_in_files,
 };
 use project_replace::engine::SearchSpec;
-use project_replace::journal::{Journal, JournalLimits};
+use project_replace::journal::{Journal, JournalLimits, TransactionDescription};
 use project_replace::replacement::ReplaceSpec;
-use project_replace::report::{SkipReason, SkippedFile};
+use project_replace::report::{RefusalReason, RefusedFile, SkipReason, SkippedFile};
 use project_replace::scope::ScopeGlobs;
+use project_replace::undo::{UndoOutcome, UndoReport, undo_latest};
+use warp_editor::content::diff::text_diff;
 use warp_util::file::FileId;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
@@ -51,6 +55,13 @@ pub enum ProjectReplaceEvent {
     /// A run started, got further, or was asked to stop.
     Progress,
     Finished(ReplaceReport),
+    UndoFinished {
+        /// What the replace that was taken back had replaced.
+        description: TransactionDescription,
+        report: UndoReport,
+    },
+    /// No replace is left to take back.
+    NothingToUndo,
     /// The run could not start or stopped before changing anything.
     Failed(String),
 }
@@ -61,7 +72,14 @@ enum RunState {
         progress: Option<Progress>,
         cancel: Arc<AtomicBool>,
     },
+    Undoing {
+        progress: Option<Progress>,
+        cancel: Arc<AtomicBool>,
+    },
 }
+
+/// The edits that turn the text of an editor back into what it was before a replace.
+type RestoringEdits = Vec<(Range<usize>, String)>;
 
 /// A file that was open in an editor when a run started.
 struct OpenFile {
@@ -87,7 +105,15 @@ impl ProjectReplace {
     pub fn is_running(&self) -> bool {
         match self.state {
             RunState::Idle => false,
-            RunState::Replacing { .. } => true,
+            RunState::Replacing { .. } | RunState::Undoing { .. } => true,
+        }
+    }
+
+    /// Whether the current run takes a replace back rather than making one.
+    pub fn is_undoing(&self) -> bool {
+        match self.state {
+            RunState::Idle | RunState::Replacing { .. } => false,
+            RunState::Undoing { .. } => true,
         }
     }
 
@@ -95,16 +121,16 @@ impl ProjectReplace {
     pub fn progress(&self) -> Option<Progress> {
         match &self.state {
             RunState::Idle => None,
-            RunState::Replacing { progress, .. } => *progress,
+            RunState::Replacing { progress, .. } | RunState::Undoing { progress, .. } => *progress,
         }
     }
 
-    /// Stops the current run before its next file. The files it already changed stay changed and
-    /// can be undone.
+    /// Stops the current run before its next file. The files a replace already changed stay
+    /// changed and can be undone, and the files an undo did not get to can be undone later.
     pub fn cancel(&mut self, ctx: &mut ModelContext<Self>) {
         match &self.state {
             RunState::Idle => {}
-            RunState::Replacing { cancel, .. } => {
+            RunState::Replacing { cancel, .. } | RunState::Undoing { cancel, .. } => {
                 cancel.store(true, Ordering::Relaxed);
                 ctx.emit(ProjectReplaceEvent::Progress);
             }
@@ -148,16 +174,7 @@ impl ProjectReplace {
             {
                 let cancel = cancel.clone();
                 async move {
-                    let last_report = Cell::new(None::<Instant>);
-                    let report_progress = |progress: Progress| {
-                        let is_due = last_report
-                            .get()
-                            .is_none_or(|last| last.elapsed() >= PROGRESS_INTERVAL);
-                        if is_due || progress.done == progress.total {
-                            last_report.set(Some(Instant::now()));
-                            let _ = progress_tx.try_send(progress);
-                        }
-                    };
+                    let report_progress = throttled(progress_tx);
                     let result = replace_in_files(&request, &journal, &report_progress, &cancel);
                     (request, result)
                 }
@@ -177,7 +194,7 @@ impl ProjectReplace {
     fn handle_progress(&mut self, latest: Progress, ctx: &mut ModelContext<Self>) {
         match &mut self.state {
             RunState::Idle => {}
-            RunState::Replacing { progress, .. } => {
+            RunState::Replacing { progress, .. } | RunState::Undoing { progress, .. } => {
                 *progress = Some(latest);
                 ctx.emit(ProjectReplaceEvent::Progress);
             }
@@ -251,6 +268,161 @@ impl ProjectReplace {
         );
     }
 
+    /// Takes back the most recent replace that still has something to take back.
+    pub fn undo(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(journal) = journal() else {
+            ctx.emit(ProjectReplaceEvent::NothingToUndo);
+            return;
+        };
+        if RUN_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+            ctx.emit(ProjectReplaceEvent::Failed(
+                "Another replace is still running.".to_string(),
+            ));
+            return;
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.state = RunState::Undoing {
+            progress: None,
+            cancel: cancel.clone(),
+        };
+        ctx.emit(ProjectReplaceEvent::Progress);
+
+        // The journal says which files the replace touched, and with that, which editors have
+        // to be looked at before anything is restored.
+        ctx.spawn(
+            {
+                let journal = journal.clone();
+                async move {
+                    journal.latest().map(|transaction| {
+                        transaction.map(|transaction| {
+                            transaction
+                                .entries
+                                .iter()
+                                .filter_map(|entry| entry.path.file_name().map(OsStr::to_os_string))
+                                .collect::<HashSet<OsString>>()
+                        })
+                    })
+                }
+            },
+            move |me, file_names: io::Result<Option<HashSet<OsString>>>, ctx| {
+                me.handle_undo_planned(journal, file_names, cancel, ctx);
+            },
+        );
+    }
+
+    fn handle_undo_planned(
+        &mut self,
+        journal: Journal,
+        file_names: io::Result<Option<HashSet<OsString>>>,
+        cancel: Arc<AtomicBool>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let file_names = match file_names {
+            Ok(Some(file_names)) => file_names,
+            Ok(None) => {
+                self.finish_run();
+                ctx.emit(ProjectReplaceEvent::NothingToUndo);
+                return;
+            }
+            Err(err) => {
+                self.finish_run();
+                ctx.emit(ProjectReplaceEvent::Failed(err.to_string()));
+                return;
+            }
+        };
+        let file_names: HashSet<&OsStr> = file_names.iter().map(OsString::as_os_str).collect();
+        let (open_buffers, open_files) = open_buffers_named(&file_names, ctx);
+
+        let (progress_tx, progress_rx) = async_channel::unbounded();
+        ctx.spawn_stream_local(progress_rx, Self::handle_progress, |_, _| {});
+        ctx.spawn(
+            async move {
+                let outcome = {
+                    let report_progress = throttled(progress_tx);
+                    undo_latest(&journal, &open_buffers, &report_progress, &cancel)
+                };
+
+                let texts: Vec<(String, String)> = match &outcome {
+                    Ok(Some(outcome)) => outcome
+                        .buffer_restores
+                        .iter()
+                        .map(|restore| {
+                            (restore.current_text.clone(), restore.restored_text.clone())
+                        })
+                        .collect(),
+                    Ok(None) | Err(_) => Vec::new(),
+                };
+                let mut restoring_edits: Vec<RestoringEdits> = Vec::new();
+                for (current_text, restored_text) in texts {
+                    restoring_edits.push(text_diff(&current_text, &restored_text).await.edits);
+                }
+                (outcome, restoring_edits)
+            },
+            move |me, (outcome, restoring_edits), ctx| {
+                me.handle_files_restored(outcome, restoring_edits, open_files, ctx);
+            },
+        );
+    }
+
+    /// Puts back the text of the files that are open in an editor, now that the files that are
+    /// not have been restored, then drops what was undone from the journal.
+    fn handle_files_restored(
+        &mut self,
+        outcome: io::Result<Option<UndoOutcome>>,
+        restoring_edits: Vec<RestoringEdits>,
+        open_files: HashMap<PathBuf, OpenFile>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let outcome = match outcome {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => {
+                self.finish_run();
+                ctx.emit(ProjectReplaceEvent::NothingToUndo);
+                return;
+            }
+            Err(err) => {
+                self.finish_run();
+                ctx.emit(ProjectReplaceEvent::Failed(err.to_string()));
+                return;
+            }
+        };
+
+        let mut restored = Vec::new();
+        let mut refused = Vec::new();
+        for (restore, edits) in outcome.buffer_restores.iter().zip(restoring_edits) {
+            let Some(open_file) = open_files.get(&restore.buffer_path) else {
+                continue;
+            };
+            // As when replacing: an editor in step with its file stays in step with it.
+            let save = !open_file.has_unsaved_changes;
+            let edited = GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+                model.apply_text_edits(open_file.file_id, &restore.current_text, edits, save, ctx)
+            });
+            match edited {
+                Ok(_) => restored.push(restore.buffer_path.clone()),
+                Err(BufferTextEditError::NotLoaded | BufferTextEditError::TextChanged) => {
+                    refused.push(RefusedFile {
+                        path: restore.buffer_path.clone(),
+                        reason: RefusalReason::EditedSinceReplace,
+                    });
+                }
+            }
+        }
+
+        let description = outcome.description.clone();
+        ctx.spawn(
+            async move { outcome.finish(&restored, refused) },
+            move |me, report, ctx| {
+                me.finish_run();
+                ctx.emit(ProjectReplaceEvent::UndoFinished {
+                    description,
+                    report,
+                });
+            },
+        );
+    }
+
     fn finish_run(&mut self) {
         self.state = RunState::Idle;
         RUN_IN_PROGRESS.store(false, Ordering::SeqCst);
@@ -269,10 +441,24 @@ impl Drop for ProjectReplace {
     fn drop(&mut self) {
         match &self.state {
             RunState::Idle => {}
-            RunState::Replacing { cancel, .. } => {
+            RunState::Replacing { cancel, .. } | RunState::Undoing { cancel, .. } => {
                 cancel.store(true, Ordering::Relaxed);
                 RUN_IN_PROGRESS.store(false, Ordering::SeqCst);
             }
+        }
+    }
+}
+
+/// Passes on the progress of a run often enough to follow it, without a report per file.
+fn throttled(progress_tx: async_channel::Sender<Progress>) -> impl Fn(Progress) {
+    let last_report = Cell::new(None::<Instant>);
+    move |progress| {
+        let is_due = last_report
+            .get()
+            .is_none_or(|last| last.elapsed() >= PROGRESS_INTERVAL);
+        if is_due || progress.done == progress.total {
+            last_report.set(Some(Instant::now()));
+            let _ = progress_tx.try_send(progress);
         }
     }
 }

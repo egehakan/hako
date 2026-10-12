@@ -865,6 +865,12 @@ pub fn init(app: &mut AppContext) {
         .with_mac_key_binding("cmd-shift-H")
         .with_linux_or_windows_key_binding("alt-shift-H"),
         EditableBinding::new(
+            "workspace:undo_last_project_replace",
+            BindingDescription::new("Undo last replace in files"),
+            WorkspaceAction::UndoLastProjectReplace,
+        )
+        .with_context_predicate(id!("Workspace") & id!(flags::SHOW_GLOBAL_SEARCH)),
+        EditableBinding::new(
             TOGGLE_WARP_DRIVE_BINDING_NAME,
             BindingDescription::new("Toggle Warp Drive")
                 .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Warp Drive"),

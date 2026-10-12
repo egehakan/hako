@@ -77,15 +77,25 @@ fn the_undo_summary_says_what_was_restored_and_what_was_not() {
             })
             .collect()
     };
-    assert_eq!(undo_summary(9, &[]), "Restored 9 files");
+    assert_eq!(undo_summary(9, &[], None), "Restored 9 files");
     assert_eq!(
-        undo_summary(1, &refused(1)),
+        undo_summary(1, &refused(1), None),
         "Restored 1 file. Left 1 file as it is"
     );
     assert_eq!(
-        undo_summary(0, &refused(2)),
+        undo_summary(0, &refused(2), None),
         "Nothing was restored. Left 2 files as they are"
     );
+    assert_eq!(
+        undo_summary(3, &refused(1), Some(4)),
+        "Restored 3 files. Stopped with 4 files left to restore. Left 1 file as it is"
+    );
+}
+
+#[test]
+fn a_change_is_named_by_both_texts() {
+    assert_eq!(describe_change("foo", "bar"), "“foo” → “bar”");
+    assert_eq!(describe_change("a\nb", ""), "“a⏎b” → “”");
 }
 
 #[test]

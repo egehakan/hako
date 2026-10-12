@@ -10,7 +10,8 @@ use project_replace::engine::SearchSpec;
 use project_replace::preview::{Previewer, RowPreview, preview_row};
 use project_replace::replacement::ReplaceSpec;
 use project_replace::report::{
-    ReplaceCounts, confirmation_title, replace_all_label, replace_summary,
+    ReplaceCounts, confirmation_title, describe_change, replace_all_label, replace_summary,
+    undo_summary,
 };
 use project_replace::selection::{Dismissals, Selection, TargetsBuilder, count_targets};
 use warp_core::ui::Icon;
@@ -18,13 +19,14 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill as ThemeFill;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::elements::{
-    ChildAnchor, ChildView, ConstrainedBox, Container, CrossAxisAlignment, Flex, Hoverable,
-    MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    Shrinkable, Stack, Text,
+    Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, Padding,
+    ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Shrinkable, Stack, Text,
 };
 use warpui::modals::{AlertDialogWithCallbacks, ModalButton};
 use warpui::platform::Cursor;
-use warpui::ui_components::components::UiComponent as _;
+use warpui::ui_components::components::{UiComponent as _, UiComponentStyles};
+use warpui::ui_components::text::Span;
 use warpui::{AppContext, Element, ModelHandle, SingletonEntity, ViewContext, ViewHandle};
 
 use super::{GlobalSearchAction, GlobalSearchView, Match, MatchedPath, ROW_ICON_SIZE};
@@ -39,6 +41,18 @@ use crate::workspace::view::global_search::replace_model::{
     ProjectReplace, ProjectReplaceEvent, ReplaceJob,
 };
 use crate::workspace::{ToastStack, WorkspaceAction};
+
+/// Most files listed in the summary of a run. The rest are counted.
+const MAX_SUMMARY_DETAILS: usize = 8;
+
+/// What the last replace or undo did.
+pub(super) struct RunSummary {
+    headline: String,
+    /// One line per file that was left alone, with the reason.
+    details: Vec<String>,
+    /// Whether the run was a replace that can be taken back.
+    can_undo: bool,
+}
 
 /// The state of the replace side of a global search.
 pub(super) struct ReplaceUi {
@@ -69,6 +83,16 @@ pub(super) struct ReplaceUi {
     pub(super) search_incomplete: bool,
     /// Where the results were scrolled to before a replace made them search again.
     pub(super) scroll_top_to_restore: Option<f32>,
+    /// Set for the search that follows a replace, which looks for the same thing and so keeps
+    /// what was set aside.
+    pub(super) keep_dismissals_once: bool,
+    /// Shown until dismissed or until the next run.
+    pub(super) summary: Option<RunSummary>,
+    pub(super) undo_button: ViewHandle<ActionButton>,
+    /// The undo button of the message the workspace shows, whose click goes through the
+    /// workspace back to this view.
+    pub(super) undo_toast_button: ViewHandle<ActionButton>,
+    pub(super) dismiss_summary_mouse_state: MouseStateHandle,
 }
 
 impl ReplaceUi {
@@ -107,6 +131,22 @@ impl ReplaceUi {
                 })
         });
 
+        let undo_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new("Undo", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(GlobalSearchAction::UndoLastReplace);
+                })
+        });
+
+        let undo_toast_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new("Undo", NakedTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WorkspaceAction::UndoLastProjectReplace);
+                })
+        });
+
         let model = ctx.add_model(|_| ProjectReplace::new());
         ctx.subscribe_to_model(&model, |me, _handle, event, ctx| {
             me.handle_replace_event(event, ctx);
@@ -128,6 +168,11 @@ impl ReplaceUi {
             truncated_file: None,
             search_incomplete: false,
             scroll_top_to_restore: None,
+            keep_dismissals_once: false,
+            summary: None,
+            undo_button,
+            undo_toast_button,
+            dismiss_summary_mouse_state: MouseStateHandle::default(),
         }
     }
 }
@@ -155,24 +200,100 @@ impl GlobalSearchView {
         match event {
             ProjectReplaceEvent::Progress => {}
             ProjectReplaceEvent::Finished(report) => {
-                let summary = replace_summary(
+                let headline = replace_summary(
                     report.counts(),
                     &report.skipped,
                     report.was_cancelled().then_some(report.not_attempted),
                 );
-                self.show_replace_toast(DismissibleToast::default(summary), ctx);
-
-                // The results on screen describe the files as they were, so search again, and
-                // come back to the same place in the list.
-                self.replace.scroll_top_to_restore =
-                    Some(self.uniform_list_state.scroll_top().as_f64() as f32);
-                self.rerun_search_from_query(ctx, true);
+                let details = report
+                    .skipped
+                    .iter()
+                    .map(|skipped| self.summary_line(&skipped.path, &skipped.reason.describe()))
+                    .collect();
+                self.show_run_summary(
+                    RunSummary {
+                        headline,
+                        details,
+                        can_undo: report.can_undo,
+                    },
+                    ctx,
+                );
+                let changed: Vec<PathBuf> = report
+                    .replaced
+                    .iter()
+                    .map(|replaced| replaced.path.clone())
+                    .collect();
+                self.search_again_after_run(&changed, ctx);
+            }
+            ProjectReplaceEvent::UndoFinished {
+                description,
+                report,
+            } => {
+                let headline = format!(
+                    "Undo of {}: {}",
+                    describe_change(&description.pattern, &description.replacement),
+                    undo_summary(
+                        report.restored.len(),
+                        &report.refused,
+                        report.was_cancelled().then_some(report.not_attempted),
+                    )
+                );
+                let details = report
+                    .refused
+                    .iter()
+                    .map(|refused| self.summary_line(&refused.path, &refused.reason.describe()))
+                    .collect();
+                self.show_run_summary(
+                    RunSummary {
+                        headline,
+                        details,
+                        can_undo: false,
+                    },
+                    ctx,
+                );
+                self.search_again_after_run(&report.restored, ctx);
+            }
+            ProjectReplaceEvent::NothingToUndo => {
+                let toast = DismissibleToast::default("There is no replace to undo.".to_string());
+                self.show_replace_toast(toast, ctx);
             }
             ProjectReplaceEvent::Failed(message) => {
                 self.show_replace_toast(DismissibleToast::error(message.clone()), ctx);
             }
         }
         self.refresh_replace_controls(ctx);
+    }
+
+    /// A line of a run summary: the file, relative to the folder it was searched from, and what
+    /// happened to it.
+    fn summary_line(&self, path: &Path, outcome: &str) -> String {
+        let relative = self
+            .search_roots
+            .iter()
+            .filter_map(|root| root.to_local_path())
+            .find_map(|root| path.strip_prefix(root).ok());
+        format!("{}: {outcome}", relative.unwrap_or(path).display())
+    }
+
+    /// Shows what a run did, in the panel and as a message with the same undo button.
+    fn show_run_summary(&mut self, summary: RunSummary, ctx: &mut ViewContext<Self>) {
+        let mut toast = DismissibleToast::default(summary.headline.clone());
+        if summary.can_undo {
+            toast = toast.with_action_button(self.replace.undo_toast_button.clone());
+        }
+        self.show_replace_toast(toast, ctx);
+        self.replace.summary = Some(summary);
+    }
+
+    /// The results on screen describe the files as they were before the run changed `changed`,
+    /// so searches again, to come back to the same place in the list with the same results set
+    /// aside.
+    fn search_again_after_run(&mut self, changed: &[PathBuf], ctx: &mut ViewContext<Self>) {
+        self.replace.dismissals.files_changed(changed);
+        self.replace.keep_dismissals_once = true;
+        self.replace.scroll_top_to_restore =
+            Some(self.uniform_list_state.scroll_top().as_f64() as f32);
+        self.rerun_search_from_query(ctx, true);
     }
 
     fn show_replace_toast(
@@ -185,6 +306,19 @@ impl GlobalSearchView {
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             toast_stack.add_ephemeral_toast(toast, window_id, ctx);
         });
+    }
+
+    /// Takes back the last replace made from any global search, the way it was made: file by
+    /// file, leaving alone what was edited since.
+    pub fn undo_last_replace(&mut self, ctx: &mut ViewContext<Self>) {
+        self.replace.model.update(ctx, |model, ctx| {
+            model.undo(ctx);
+        });
+    }
+
+    pub(super) fn dismiss_run_summary(&mut self, ctx: &mut ViewContext<Self>) {
+        self.replace.summary = None;
+        ctx.notify();
     }
 
     /// Shows the replacement field.
@@ -330,7 +464,8 @@ impl GlobalSearchView {
         let title = confirmation_title(counts, &search.pattern, &self.replacement_text(ctx));
         ctx.show_native_platform_modal(AlertDialogWithCallbacks::for_view(
             title,
-            "Files that changed since the search are left alone.",
+            "Files that changed since the search are left alone. The replace can be taken back \
+             with Undo Last Replace.",
             vec![
                 // The first button is the one Return presses.
                 ModalButton::for_view("Cancel", |_: &mut Self, _| {}),
@@ -395,6 +530,7 @@ impl GlobalSearchView {
             scope: options.scope.clone(),
             files,
         };
+        self.replace.summary = None;
         self.replace.model.update(ctx, |model, ctx| {
             model.start(job, ctx);
         });
@@ -605,11 +741,16 @@ impl GlobalSearchView {
                 .finish()
         };
         let row = if model.is_running() {
+            let activity = if model.is_undoing() {
+                "Undoing"
+            } else {
+                "Replacing"
+            };
             let progress = match model.progress() {
                 Some(progress) => {
-                    format!("Replacing… {} of {} files", progress.done, progress.total)
+                    format!("{activity}… {} of {} files", progress.done, progress.total)
                 }
-                None => "Replacing…".to_string(),
+                None => format!("{activity}…"),
             };
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -639,6 +780,81 @@ impl GlobalSearchView {
             row
         };
         Container::new(row.finish()).with_margin_bottom(4.).finish()
+    }
+
+    /// Whether a replace or an undo is under way, which shows even with the replacement field
+    /// hidden.
+    pub(super) fn is_replace_running(&self, app: &AppContext) -> bool {
+        self.replace.model.as_ref(app).is_running()
+    }
+
+    /// Renders what the last replace or undo did, with the files it left alone.
+    pub(super) fn render_run_summary(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let summary = self.replace.summary.as_ref()?;
+        let appearance = Appearance::as_ref(app);
+        let theme = appearance.theme();
+        let text = |text: String, color| {
+            Span::new(
+                text,
+                UiComponentStyles {
+                    font_family_id: Some(appearance.ui_font_family()),
+                    font_size: Some(12.),
+                    font_color: Some(color),
+                    ..Default::default()
+                },
+            )
+            .with_soft_wrap()
+            .build()
+            .finish()
+        };
+        let main_color = blended_colors::text_main(theme, theme.background());
+        let sub_color = blended_colors::text_sub(theme, theme.background());
+
+        let dismiss = Self::render_row_button(
+            RowButton {
+                icon: Icon::X,
+                tooltip: "Dismiss",
+                mouse_state: self.replace.dismiss_summary_mouse_state.clone(),
+                action: GlobalSearchAction::DismissReplaceSummary,
+            },
+            appearance,
+        );
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_child(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_child(
+                        Shrinkable::new(1.0, text(summary.headline.clone(), main_color)).finish(),
+                    )
+                    .with_child(dismiss)
+                    .finish(),
+            );
+        for detail in summary.details.iter().take(MAX_SUMMARY_DETAILS) {
+            column.add_child(text(detail.clone(), sub_color));
+        }
+        let hidden_details = summary.details.len().saturating_sub(MAX_SUMMARY_DETAILS);
+        if hidden_details > 0 {
+            column.add_child(text(format!("…and {hidden_details} more"), sub_color));
+        }
+        if summary.can_undo {
+            column.add_child(
+                Container::new(ChildView::new(&self.replace.undo_button).finish())
+                    .with_margin_top(4.)
+                    .finish(),
+            );
+        }
+
+        Some(
+            Container::new(column.finish())
+                .with_padding(Padding::uniform(6.))
+                .with_border(Border::all(1.).with_border_fill(theme.surface_3()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+                .with_margin_bottom(4.)
+                .finish(),
+        )
     }
 
     /// Why nothing can be replaced right now, when the reason is not plain from the results.

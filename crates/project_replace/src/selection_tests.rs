@@ -166,3 +166,31 @@ fn a_match_that_cannot_be_read_back_is_left_out() {
     builder.add_row(Path::new(A), 2, 1, "short", 3..40);
     assert!(builder.build().is_empty());
 }
+
+#[test]
+fn a_changed_file_with_matches_set_aside_is_set_aside_whole() {
+    let mut dismissals = Dismissals::default();
+    dismissals.toggle_match(Path::new(A), 1, 11);
+    dismissals.toggle_match(Path::new(B), 3, 2);
+
+    dismissals.files_changed(&[PathBuf::from(A), PathBuf::from("/project/untouched.txt")]);
+
+    // The match of `A` may be anywhere on its line now, so nothing in `A` is replaced.
+    assert!(dismissals.is_file_dismissed(Path::new(A)));
+    assert!(dismissals.is_match_dismissed(Path::new(A), 1, 5));
+    assert!(dismissals.is_match_dismissed(Path::new(A), 7, 1));
+    // Files that did not change keep what was set aside in them, and gain nothing.
+    assert!(!dismissals.is_file_dismissed(Path::new(B)));
+    assert!(dismissals.is_match_dismissed(Path::new(B), 3, 2));
+    assert!(!dismissals.is_file_dismissed(Path::new("/project/untouched.txt")));
+
+    let targets = targets(&dismissals, Selection::All);
+    assert!(targets.is_empty());
+}
+
+#[test]
+fn a_changed_file_with_nothing_set_aside_stays_included() {
+    let mut dismissals = Dismissals::default();
+    dismissals.files_changed(&[PathBuf::from(A)]);
+    assert!(dismissals.is_empty());
+}

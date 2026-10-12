@@ -175,13 +175,28 @@ pub fn replace_summary(
     summary
 }
 
+/// For example "“foo” → “bar”", to name a replace by what it replaced.
+pub fn describe_change(pattern: &str, replacement: &str) -> String {
+    format!("“{}” → “{}”", shortened(pattern), shortened(replacement))
+}
+
 /// For example "Restored 9 files", then what could not be restored.
-pub fn undo_summary(restored: usize, refused: &[RefusedFile]) -> String {
+pub fn undo_summary(
+    restored: usize,
+    refused: &[RefusedFile],
+    cancelled_with_remaining: Option<usize>,
+) -> String {
     let mut summary = if restored == 0 {
         "Nothing was restored".to_string()
     } else {
         format!("Restored {}", count(restored, "file", "files"))
     };
+    if let Some(remaining) = cancelled_with_remaining {
+        summary.push_str(&format!(
+            ". Stopped with {} left to restore",
+            count(remaining, "file", "files")
+        ));
+    }
     if !refused.is_empty() {
         summary.push_str(&format!(
             ". Left {} as {}",
