@@ -494,6 +494,10 @@ impl LeftPanelView {
         ctx.notify();
     }
 
+    pub fn panel_position(&self) -> super::PanelPosition {
+        self.panel_position
+    }
+
     /// Updates the available tool panel views.
     /// If the currently active view is no longer available, switches to the first available view.
     pub fn update_available_views(

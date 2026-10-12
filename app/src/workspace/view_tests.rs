@@ -5716,3 +5716,79 @@ fn test_tab_group_rename_blur_does_not_commit_unfinished_name() {
         });
     });
 }
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_files_from_the_tools_panel_open_beside_it() {
+    let from_tree = CodeSource::FileTree {
+        location: LocalOrRemotePath::Local("/repo/src/main.rs".into()),
+    };
+
+    assert!(matches!(
+        editor_split_direction(Some(&from_tree), PanelPosition::Left, None),
+        Direction::Left
+    ));
+    assert!(matches!(
+        editor_split_direction(Some(&from_tree), PanelPosition::Right, None),
+        Direction::Right
+    ));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_files_from_other_sources_open_on_the_right() {
+    let from_link = CodeSource::Link {
+        path: "/repo/src/main.rs".into(),
+        range_start: None,
+        range_end: None,
+    };
+    let from_palette = CodeSource::CommandPalette {
+        location: LocalOrRemotePath::Local("/repo/src/main.rs".into()),
+    };
+    let new_file = CodeSource::New {
+        default_directory: None,
+    };
+
+    for position in [PanelPosition::Left, PanelPosition::Right] {
+        for source in [&from_link, &from_palette, &new_file] {
+            assert!(matches!(
+                editor_split_direction(Some(source), position, None),
+                Direction::Right
+            ));
+        }
+        assert!(matches!(
+            editor_split_direction(None, position, None),
+            Direction::Right
+        ));
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_files_from_the_code_review_panel_open_beside_it() {
+    let from_review = CodeSource::Link {
+        path: "/repo/src/main.rs".into(),
+        range_start: None,
+        range_end: None,
+    };
+
+    // The tools panel's side does not matter for a file picked in another panel.
+    for tools_position in [PanelPosition::Left, PanelPosition::Right] {
+        assert!(matches!(
+            editor_split_direction(
+                Some(&from_review),
+                tools_position,
+                Some(PanelPosition::Left)
+            ),
+            Direction::Left
+        ));
+        assert!(matches!(
+            editor_split_direction(
+                Some(&from_review),
+                tools_position,
+                Some(PanelPosition::Right)
+            ),
+            Direction::Right
+        ));
+    }
+}

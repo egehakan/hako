@@ -586,6 +586,11 @@ impl RightPanelView {
         ctx.notify();
     }
 
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    pub fn panel_position(&self) -> super::PanelPosition {
+        self.panel_position
+    }
+
     #[cfg(feature = "local_fs")]
     pub fn update_session_env(
         &mut self,

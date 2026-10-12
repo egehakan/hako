@@ -821,6 +821,37 @@ pub enum PanelPosition {
     Right,
 }
 
+/// Side of the pane group on which a file gets its split pane, so that it opens next to the
+/// side panel it was picked in: `origin_panel` when the caller names where that panel sits, the
+/// tools panel for a file from the Project Explorer or global search, and otherwise the right.
+#[cfg(feature = "local_fs")]
+fn editor_split_direction(
+    source: Option<&CodeSource>,
+    tools_panel_position: PanelPosition,
+    origin_panel: Option<PanelPosition>,
+) -> Direction {
+    let beside = |position| match position {
+        PanelPosition::Left => Direction::Left,
+        PanelPosition::Right => Direction::Right,
+    };
+    if let Some(origin_panel) = origin_panel {
+        return beside(origin_panel);
+    }
+    match source {
+        Some(CodeSource::FileTree { .. }) => beside(tools_panel_position),
+        Some(
+            CodeSource::New { .. }
+            | CodeSource::Link { .. }
+            | CodeSource::AIAction { .. }
+            | CodeSource::ProjectRules { .. }
+            | CodeSource::CommandPalette { .. }
+            | CodeSource::Finder { .. }
+            | CodeSource::Skill { .. },
+        )
+        | None => Direction::Right,
+    }
+}
+
 pub struct TabPaneGroupIdentifiers {
     pub tab_idx: usize,
     pub pane_group_id: EntityId,
@@ -6619,6 +6650,22 @@ impl Workspace {
         code_source: CodeSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.open_file_with_target_beside(path, target, line_col, code_source, None, ctx);
+    }
+
+    /// Like [`Self::open_file_with_target`], for a file that belongs next to a particular side
+    /// panel whatever its source: `origin_panel` is the side that panel sits on, and a split pane
+    /// created for the file goes next to it.
+    #[cfg(feature = "local_fs")]
+    fn open_file_with_target_beside(
+        &mut self,
+        path: PathBuf,
+        target: FileTarget,
+        line_col: Option<LineAndColumnArg>,
+        code_source: CodeSource,
+        origin_panel: Option<PanelPosition>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Handle directories for CodeEditor(NewTab) target by opening a new terminal tab
         if path.is_dir() && matches!(target, FileTarget::CodeEditor(EditorLayout::NewTab)) {
             self.add_tab_with_pane_layout(
@@ -6638,11 +6685,12 @@ impl Workspace {
             FileTarget::MarkdownViewer(layout) => {
                 let session = self.get_active_session(ctx);
 
-                self.open_file_notebook(
+                self.open_file_notebook_beside(
                     LocalOrRemotePath::Local(path.clone()),
                     session,
                     layout,
                     Some(code_source),
+                    origin_panel,
                     ctx,
                 );
             }
@@ -6703,7 +6751,15 @@ impl Workspace {
             }
             FileTarget::CodeEditor(layout) => {
                 let open_as_preview = false;
-                self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+                self.open_code_beside(
+                    code_source,
+                    layout,
+                    line_col,
+                    open_as_preview,
+                    &[],
+                    origin_panel,
+                    ctx,
+                );
             }
             FileTarget::ExternalEditor(editor) => {
                 crate::util::file::open_file_path_with_editor(
@@ -6823,7 +6879,8 @@ impl Workspace {
                     self.toggle_right_panel_maximized(ctx);
                 }
 
-                self.open_file_with_target(
+                let code_review_panel_position = self.right_panel_view.as_ref(ctx).panel_position();
+                self.open_file_with_target_beside(
                     path.clone(),
                     target,
                     line_col,
@@ -6832,6 +6889,7 @@ impl Workspace {
                         range_start: line_col,
                         range_end: None,
                     },
+                    Some(code_review_panel_position),
                     ctx,
                 );
             }
@@ -8882,6 +8940,21 @@ impl Workspace {
         code_source: Option<CodeSource>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.open_file_notebook_beside(path, session, layout, code_source, None, ctx);
+    }
+
+    /// Like [`Self::open_file_notebook`], with the side of the panel the file was picked in when
+    /// that is not the tools panel.
+    #[cfg(feature = "local_fs")]
+    fn open_file_notebook_beside(
+        &mut self,
+        path: LocalOrRemotePath,
+        session: Option<Arc<Session>>,
+        layout: EditorLayout,
+        code_source: Option<CodeSource>,
+        origin_panel: Option<PanelPosition>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let existing_file_pane = {
             let pane_group = self.active_tab_pane_group();
             pane_group
@@ -8900,6 +8973,11 @@ impl Workspace {
             });
             return;
         }
+        let split_direction = editor_split_direction(
+            code_source.as_ref(),
+            self.left_panel_view.as_ref(ctx).panel_position(),
+            origin_panel,
+        );
         // The notebook viewer renders markdown rather than raw lines, but it
         // hands this source back when the user toggles to the raw code view, so
         // keeping it preserves the requested line for that view.
@@ -8921,7 +8999,7 @@ impl Workspace {
             EditorLayout::SplitPane => {
                 self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
                     pane_group.add_pane_with_direction(
-                        Direction::Right,
+                        split_direction,
                         pane,
                         true, /* focus_new_pane */
                         ctx,
@@ -8977,6 +9055,31 @@ impl Workspace {
         line_col: Option<LineAndColumnArg>,
         preview: bool,
         additional_paths: &[PathBuf],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.open_code_beside(
+            source,
+            layout,
+            line_col,
+            preview,
+            additional_paths,
+            None,
+            ctx,
+        );
+    }
+
+    /// Like [`Self::open_code`], with the side of the panel the file was picked in when that is
+    /// not the tools panel.
+    #[cfg(feature = "local_fs")]
+    #[allow(clippy::too_many_arguments)]
+    fn open_code_beside(
+        &mut self,
+        source: CodeSource,
+        layout: EditorLayout,
+        line_col: Option<LineAndColumnArg>,
+        preview: bool,
+        additional_paths: &[PathBuf],
+        origin_panel: Option<PanelPosition>,
         ctx: &mut ViewContext<Self>,
     ) {
         send_telemetry_from_ctx!(
@@ -9096,6 +9199,11 @@ impl Workspace {
             }
         }
 
+        let split_direction = editor_split_direction(
+            Some(&source),
+            self.left_panel_view.as_ref(ctx).panel_position(),
+            origin_panel,
+        );
         let pane = if preview {
             CodePane::new_preview(source, ctx)
         } else {
@@ -9112,7 +9220,7 @@ impl Workspace {
             EditorLayout::SplitPane => {
                 self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
                     pane_group.add_pane_with_direction(
-                        Direction::Right,
+                        split_direction,
                         pane,
                         !preview, /* focus_new_pane */
                         ctx,
@@ -17397,7 +17505,10 @@ impl Workspace {
                 target,
                 line_col,
             } => {
-                self.open_file_with_target(
+                // A file link followed from a pane opens where a file picked in the Project
+                // Explorer would.
+                let tools_panel_position = self.left_panel_view.as_ref(ctx).panel_position();
+                self.open_file_with_target_beside(
                     path.clone(),
                     target.clone(),
                     *line_col,
@@ -17410,6 +17521,7 @@ impl Workspace {
                         range_start: *line_col,
                         range_end: None,
                     },
+                    Some(tools_panel_position),
                     ctx,
                 );
             }
