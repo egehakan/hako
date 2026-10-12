@@ -592,6 +592,98 @@ pub(crate) fn push_args(branch: &str, destination: Option<&PushDestination>) -> 
     }
 }
 
+/// How far the checked-out branch and its upstream have moved apart.
+#[cfg(feature = "local_fs")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrackingCounts {
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+/// Counts the commits by which `HEAD` and its upstream differ, as of the last fetch. Returns
+/// `None` when the branch has no upstream.
+#[cfg(feature = "local_fs")]
+pub async fn tracking_counts(repo_path: &Path) -> Result<Option<TrackingCounts>> {
+    let has_upstream = run_git_command(
+        repo_path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .await
+    .is_ok_and(|upstream| !upstream.trim().is_empty());
+    if !has_upstream {
+        return Ok(None);
+    }
+    let output = run_git_command(
+        repo_path,
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+    )
+    .await?;
+    parse_tracking_counts(&output)
+        .map(Some)
+        .ok_or_else(|| anyhow!("Unexpected rev-list output: {output}"))
+}
+
+/// Parses the `<behind>\t<ahead>` output of `git rev-list --left-right --count @{u}...HEAD`.
+#[cfg(feature = "local_fs")]
+fn parse_tracking_counts(output: &str) -> Option<TrackingCounts> {
+    let mut counts = output.split_whitespace();
+    let behind = counts.next()?.parse().ok()?;
+    let ahead = counts.next()?.parse().ok()?;
+    Some(TrackingCounts { ahead, behind })
+}
+
+/// Fetches from the checked-out branch's remote, dropping remote-tracking refs that are gone.
+#[cfg(feature = "local_fs")]
+pub async fn run_fetch(repo_path: &Path, path_env: Option<&str>) -> Result<String> {
+    run_git_command_with_env(repo_path, &["fetch", "--prune"], path_env).await
+}
+
+/// Fast-forwards the checked-out branch to its upstream. Fails, leaving the working tree as it
+/// was, when that would need a merge or would overwrite uncommitted changes.
+#[cfg(feature = "local_fs")]
+pub async fn run_pull_ff_only(repo_path: &Path, path_env: Option<&str>) -> Result<String> {
+    run_git_command_with_env(repo_path, &["pull", "--ff-only"], path_env).await
+}
+
+/// Discards every uncommitted change in the working tree: staged and unstaged edits to tracked
+/// files, and untracked files and folders. Ignored files are kept.
+#[cfg(feature = "local_fs")]
+pub async fn discard_all_changes(repo_path: &Path) -> Result<()> {
+    let has_head = run_git_command(repo_path, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .await
+        .is_ok();
+    if has_head {
+        run_git_command(repo_path, &["reset", "--hard", "HEAD"]).await?;
+    } else {
+        // Before the first commit there is nothing to reset to: unstaging everything leaves the
+        // files untracked, for the clean below to remove.
+        run_git_command(
+            repo_path,
+            &["rm", "-r", "--cached", "--quiet", "--force", "."],
+        )
+        .await
+        .map(drop)
+        .or_else(|err| {
+            if err.to_string().contains("did not match any files") {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })?;
+    }
+    run_git_command(repo_path, &["clean", "-fd"]).await?;
+    Ok(())
+}
+
+/// Reads a file as committed at `HEAD`. Returns `None` when `HEAD` has no such file, including
+/// when the repository has no commits yet.
+#[cfg(feature = "local_fs")]
+pub async fn file_content_at_head(repo_path: &Path, relative_path: &str) -> Option<String> {
+    run_git_command(repo_path, &["show", &format!("HEAD:{relative_path}")])
+        .await
+        .ok()
+}
+
 /// Maximum number of characters of diff content to send to AI for commit
 /// message / PR title / PR description generation.
 #[cfg(feature = "local_fs")]

@@ -467,6 +467,33 @@ async fn configure_identity(repo: &Path) {
     git(repo, &["config", "commit.gpgsign", "false"]).await;
 }
 
+/// Adds a commit to the origin of `repo` from a second clone, so that `repo` falls behind.
+#[cfg(feature = "local_fs")]
+async fn commit_on_origin(repo: &Path, file: &str) {
+    let root = repo.parent().unwrap();
+    let other = root.join("other");
+    if !other.exists() {
+        git(
+            root,
+            &["clone", root.join("origin.git").to_str().unwrap(), "other"],
+        )
+        .await;
+        configure_identity(&other).await;
+    }
+    git(&other, &["pull"]).await;
+    std::fs::write(other.join(file), "remote\n").unwrap();
+    git(&other, &["add", "-A"]).await;
+    git(&other, &["commit", "-m", "remote change"]).await;
+    git(&other, &["push"]).await;
+}
+
+#[cfg(feature = "local_fs")]
+async fn commit_locally(repo: &Path, file: &str) {
+    std::fs::write(repo.join(file), "local\n").unwrap();
+    git(repo, &["add", "-A"]).await;
+    git(repo, &["commit", "-m", "local change"]).await;
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn push_goes_to_the_tracked_remote_branch() {
@@ -516,6 +543,63 @@ async fn push_destination_follows_the_branch_configuration() {
 }
 
 #[cfg(feature = "local_fs")]
+#[test]
+fn parses_rev_list_left_right_counts() {
+    assert_eq!(
+        super::parse_tracking_counts("3\t1\n"),
+        Some(super::TrackingCounts {
+            ahead: 1,
+            behind: 3
+        })
+    );
+    assert_eq!(super::parse_tracking_counts(""), None);
+    assert_eq!(super::parse_tracking_counts("x\ty"), None);
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn tracking_counts_reports_both_directions() {
+    let (_dir, repo) = init_repo_with_origin().await;
+    assert_eq!(
+        super::tracking_counts(&repo).await.unwrap(),
+        Some(super::TrackingCounts::default())
+    );
+
+    commit_locally(&repo, "local.txt").await;
+    commit_on_origin(&repo, "remote.txt").await;
+    super::run_fetch(&repo, None).await.unwrap();
+
+    assert_eq!(
+        super::tracking_counts(&repo).await.unwrap(),
+        Some(super::TrackingCounts {
+            ahead: 1,
+            behind: 1
+        })
+    );
+
+    git(&repo, &["checkout", "-b", "unpublished"]).await;
+    assert_eq!(super::tracking_counts(&repo).await.unwrap(), None);
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn pull_fast_forwards_and_refuses_to_merge() {
+    let (_dir, repo) = init_repo_with_origin().await;
+    commit_on_origin(&repo, "remote.txt").await;
+
+    super::run_pull_ff_only(&repo, None).await.unwrap();
+    assert!(repo.join("remote.txt").exists());
+
+    commit_locally(&repo, "local.txt").await;
+    commit_on_origin(&repo, "remote2.txt").await;
+    let head_before = git(&repo, &["rev-parse", "HEAD"]).await;
+
+    assert!(super::run_pull_ff_only(&repo, None).await.is_err());
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).await, head_before);
+    assert!(!super::git_operation_in_progress(&repo));
+}
+
+#[cfg(feature = "local_fs")]
 #[tokio::test]
 async fn operation_in_progress_is_detected_in_a_linked_worktree() {
     let (_dir, repo) = init_repo_with_origin().await;
@@ -542,5 +626,71 @@ async fn operation_in_progress_is_detected_in_a_linked_worktree() {
     assert!(
         !super::git_operation_in_progress(&repo),
         "a merge in a linked worktree does not block the main working tree"
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn discard_all_changes_restores_tracked_files_and_removes_new_ones() {
+    let (_dir, repo) = init_repo_with_origin().await;
+    std::fs::write(repo.join("second.txt"), "two\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "ignored.log\n").unwrap();
+    git(&repo, &["add", "-A"]).await;
+    git(&repo, &["commit", "-m", "second"]).await;
+
+    std::fs::write(repo.join("tracked.txt"), "edited\n").unwrap();
+    std::fs::remove_file(repo.join("second.txt")).unwrap();
+    std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+    git(&repo, &["add", "staged.txt"]).await;
+    std::fs::create_dir_all(repo.join("newdir")).unwrap();
+    std::fs::write(repo.join("newdir/untracked.txt"), "untracked\n").unwrap();
+    std::fs::write(repo.join("ignored.log"), "kept\n").unwrap();
+
+    super::discard_all_changes(&repo).await.unwrap();
+
+    assert_eq!(git(&repo, &["status", "--porcelain"]).await, "");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("tracked.txt")).unwrap(),
+        "one\n"
+    );
+    assert!(repo.join("second.txt").exists());
+    assert!(!repo.join("staged.txt").exists());
+    assert!(!repo.join("newdir").exists());
+    assert!(
+        repo.join("ignored.log").exists(),
+        "ignored files are not changes and must survive"
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn discard_all_changes_empties_a_repository_without_commits() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = dir.path().to_path_buf();
+    git(&repo, &["init", "-b", "main"]).await;
+    std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+    git(&repo, &["add", "staged.txt"]).await;
+    std::fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
+
+    super::discard_all_changes(&repo).await.unwrap();
+
+    assert!(!repo.join("staged.txt").exists());
+    assert!(!repo.join("untracked.txt").exists());
+    assert_eq!(git(&repo, &["status", "--porcelain"]).await, "");
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn file_content_at_head_reads_the_committed_version() {
+    let (_dir, repo) = init_repo_with_origin().await;
+    std::fs::write(repo.join("tracked.txt"), "edited\n").unwrap();
+
+    assert_eq!(
+        super::file_content_at_head(&repo, "tracked.txt").await,
+        Some("one\n".to_owned())
+    );
+    assert_eq!(
+        super::file_content_at_head(&repo, "missing.txt").await,
+        None
     );
 }
