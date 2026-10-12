@@ -277,10 +277,10 @@ impl Searcher {
     }
 
     fn build_query(&self, ctx: &mut ModelContext<Self>) -> anyhow::Result<Query> {
-        let whole_word_pattern = self
+        let whole_word = self
             .whole_word
             .then(|| whole_word_pattern(&self.query_text, self.regex));
-        let config = match &whole_word_pattern {
+        let config = match &whole_word {
             Some(pattern) => SearchConfig::regex(pattern),
             None => SearchConfig::new(&self.query_text).with_regex(self.regex),
         }
