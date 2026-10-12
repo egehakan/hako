@@ -172,7 +172,7 @@ fn test_resolve_bare_url() {
 }
 
 #[test]
-fn test_open_local_image_uses_system_generic_target() {
+fn test_open_local_image_opens_in_the_viewer() {
     App::test((), |mut app| async move {
         let base = tempdir().unwrap();
         let base_path = base.path();
@@ -201,7 +201,10 @@ fn test_open_local_image_uses_system_generic_target() {
                 line_col,
             } => {
                 assert_eq!(path, image_path);
-                assert_eq!(target, FileTarget::SystemGeneric);
+                assert!(
+                    matches!(target, FileTarget::CodeEditor(_)),
+                    "expected the editor pane, got {target:?}"
+                );
                 assert_eq!(line_col, None);
             }
             other => panic!("Expected OpenFileWithTarget event, got {other:?}"),

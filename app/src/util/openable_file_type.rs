@@ -81,6 +81,19 @@ pub fn renders_in_warp_notebook_viewer(path: impl AsRef<Path>) -> bool {
         || (FeatureFlag::JupyterNotebookRendering.is_enabled() && is_jupyter_notebook_file(path))
 }
 
+/// Whether `path` names a file that Warp shows in a viewer taking the place of an editor
+/// (an image, a PDF or an office document). Such a file opens in Warp whatever the editor
+/// chosen for text is: an editor has nothing to show for it.
+#[cfg(not(target_family = "wasm"))]
+pub fn opens_in_viewer(path: impl AsRef<Path>) -> bool {
+    file_viewers::kind::opens_in_viewer(path.as_ref())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn opens_in_viewer(_path: impl AsRef<Path>) -> bool {
+    false
+}
+
 pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
     path.as_ref()
         .extension()
@@ -182,6 +195,10 @@ pub fn resolve_file_target_to_open_in_warp(
     let is_markdown = matches!(openable_file_type, Some(OpenableFileType::Markdown));
     let layout = layout.unwrap_or(*settings.open_file_layout);
 
+    if opens_in_viewer(path) {
+        return FileTarget::CodeEditor(layout);
+    }
+
     // Jupyter notebooks render in Warp's notebook viewer unconditionally when
     // the feature flag is enabled (the whole point is to avoid raw JSON).
     if openable_file_type.is_some()
@@ -224,6 +241,12 @@ pub fn resolve_file_target_with_editor_choice(
     let is_markdown = matches!(is_openable_in_warp, Some(OpenableFileType::Markdown));
     let layout = layout.unwrap_or(default_layout);
     let is_openable_in_warp = is_openable_in_warp.is_some();
+
+    // Files shown by a viewer open in the editor pane, which hosts the viewers, ahead of any
+    // editor preference.
+    if opens_in_viewer(path) {
+        return FileTarget::CodeEditor(layout);
+    }
 
     // 0. Jupyter notebooks render in Warp's notebook viewer unconditionally
     // when the feature flag is enabled (not gated on `prefer_markdown_viewer`

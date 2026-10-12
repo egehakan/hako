@@ -1032,9 +1032,19 @@ fn test_open_file_editor_rust_source_opens_in_editor() {
 #[cfg(feature = "local_fs")]
 fn test_open_file_editor_binary_file_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("archive.zip");
+    std::fs::write(&p, b"PK\x03\x04\x14\0\0\0").unwrap();
+    assert!(!can_open_file_editor_path(&p));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_open_file_editor_accepts_a_file_with_a_viewer() {
+    let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("image.png");
     std::fs::write(&p, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
-    assert!(!can_open_file_editor_path(&p));
+    assert!(can_open_file_editor_path(&p));
+    assert_eq!(classify_open_file_action(&p, true), OpenFileAction::Editor);
 }
 
 #[test]

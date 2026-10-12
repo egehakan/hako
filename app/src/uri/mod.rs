@@ -44,7 +44,7 @@ use crate::settings_view::{
 use crate::tab_configs::TabConfig;
 use crate::user_config::{load_launch_configs, load_tab_configs, tab_configs_dir};
 use crate::util::openable_file_type::{
-    is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script,
+    is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script, opens_in_viewer,
     renders_in_warp_notebook_viewer, starts_with_shebang,
 };
 use crate::view_components::DismissibleToast;
@@ -1343,7 +1343,9 @@ fn classify_open_file_action(path: &Path, prefer_markdown_viewer: bool) -> OpenF
     } else if is_runnable_shell_script(path) {
         OpenFileAction::ExecuteInSession
     } else if path.is_file()
-        && (is_file_openable_in_warp(path).is_some() || starts_with_shebang(path))
+        && (is_file_openable_in_warp(path).is_some()
+            || opens_in_viewer(path)
+            || starts_with_shebang(path))
     {
         OpenFileAction::Editor
     } else {
@@ -1353,7 +1355,7 @@ fn classify_open_file_action(path: &Path, prefer_markdown_viewer: bool) -> OpenF
 
 #[cfg(feature = "local_fs")]
 fn can_open_file_editor_path(path: &Path) -> bool {
-    path.is_file() && is_file_openable_in_warp(path).is_some()
+    path.is_file() && (is_file_openable_in_warp(path).is_some() || opens_in_viewer(path))
 }
 
 /// Handle an incoming `file://` URL.

@@ -200,7 +200,7 @@ use crate::terminal::{ShellLaunchData, TerminalModel, TerminalView};
 use crate::ui_components::icons::Icon;
 use crate::util::link_detection::*;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{FileTarget, is_supported_image_file};
+use crate::util::openable_file_type::{FileTarget, is_supported_image_file, opens_in_viewer};
 use crate::util::time_format::format_message_timestamp;
 use crate::view_components::DismissibleToast;
 use crate::view_components::action_button::{
@@ -335,7 +335,8 @@ pub fn init(app: &mut AppContext) {
 #[cfg(feature = "local_fs")]
 impl AIBlock {
     fn detected_file_path_target_override(&self, absolute_path: &Path) -> Option<FileTarget> {
-        is_supported_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
+        (is_supported_image_file(absolute_path) && !opens_in_viewer(absolute_path))
+            .then_some(FileTarget::SystemGeneric)
     }
 }
 

@@ -113,7 +113,7 @@ fn test_resolve_file_target_to_open_in_warp_never_leaves_warp() {
 #[cfg(feature = "local_fs")]
 fn test_resolve_file_target_binary_is_system_generic() {
     let target = resolve_file_target_with_editor_choice(
-        Path::new("image.png"),
+        Path::new("archive.zip"),
         EditorChoice::Warp,
         true, /* prefer_markdown_viewer */
         EditorLayout::SplitPane,
@@ -125,9 +125,36 @@ fn test_resolve_file_target_binary_is_system_generic() {
 
 #[test]
 #[cfg(feature = "local_fs")]
+fn test_resolve_file_target_viewer_file_opens_in_warp_whatever_the_editor() {
+    for editor_choice in [
+        EditorChoice::Warp,
+        EditorChoice::EnvEditor,
+        EditorChoice::SystemDefault,
+    ] {
+        let target = resolve_file_target_with_editor_choice(
+            Path::new("image.png"),
+            editor_choice,
+            true, /* prefer_markdown_viewer */
+            EditorLayout::SplitPane,
+            Some(EditorLayout::NewTab),
+        );
+        assert_eq!(target, FileTarget::CodeEditor(EditorLayout::NewTab));
+    }
+}
+
+#[test]
+fn test_text_files_with_a_rendered_form_do_not_bypass_the_editor_choice() {
+    assert!(opens_in_viewer(Path::new("photo.JPG")));
+    assert!(!opens_in_viewer(Path::new("logo.svg")));
+    assert!(!opens_in_viewer(Path::new("data.csv")));
+    assert!(!opens_in_viewer(Path::new("archive.zip")));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
 fn test_resolve_file_target_binary_uses_env_editor() {
     let target = resolve_file_target_with_editor_choice(
-        Path::new("image.png"),
+        Path::new("archive.zip"),
         EditorChoice::EnvEditor,
         true, /* prefer_markdown_viewer */
         EditorLayout::SplitPane,

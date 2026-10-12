@@ -60,6 +60,7 @@ use crate::util::bindings::{CustomAction, custom_tag_to_keystroke};
 use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::{
     EditorLayout, FileTarget, is_file_content_binary, is_jupyter_notebook_file, is_markdown_file,
+    opens_in_viewer,
 };
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{
@@ -2699,7 +2700,7 @@ impl FileTreeView {
             match item {
                 FileTreeItem::File { .. } => {
                     let path_local = item.path().to_local_path_lossy();
-                    if !is_file_content_binary(&path_local) {
+                    if !is_file_content_binary(&path_local) || opens_in_viewer(&path_local) {
                         items.extend([
                             MenuItemFields::new("Open in new pane")
                                 .with_on_select_action(FileTreeAction::OpenInNewPane {

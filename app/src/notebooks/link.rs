@@ -19,7 +19,9 @@ use crate::uri::parse_url_paths::{WarpWebLink, get_item_data_from_warp_link};
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{FileTarget, is_supported_image_file, resolve_file_target};
+use crate::util::openable_file_type::{
+    FileTarget, is_supported_image_file, opens_in_viewer, resolve_file_target,
+};
 use crate::workspace::ActiveSession;
 
 #[cfg(test)]
@@ -365,8 +367,9 @@ fn open_file(
 ) {
     #[cfg(feature = "local_fs")]
     {
-        // Images are safe to open with the system default viewer.
-        if is_supported_image_file(&path) {
+        // Images are safe to open with the system default viewer, which is where the ones Warp
+        // has no viewer for go.
+        if is_supported_image_file(&path) && !opens_in_viewer(&path) {
             ctx.emit(LinkEvent::OpenFileWithTarget {
                 path,
                 target: FileTarget::SystemGeneric,

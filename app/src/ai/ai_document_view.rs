@@ -958,7 +958,7 @@ impl AIDocumentView {
             } => {
                 use crate::util::file::external_editor::EditorSettings;
                 use crate::util::openable_file_type::{
-                    is_supported_image_file, resolve_file_target,
+                    is_supported_image_file, opens_in_viewer, resolve_file_target,
                 };
 
                 if *force_open_in_warp {
@@ -975,7 +975,7 @@ impl AIDocumentView {
                     });
                 } else {
                     let settings = EditorSettings::as_ref(ctx);
-                    let target = if is_supported_image_file(path) {
+                    let target = if is_supported_image_file(path) && !opens_in_viewer(path) {
                         FileTarget::SystemGeneric
                     } else {
                         resolve_file_target(path, settings, None)
