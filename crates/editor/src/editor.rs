@@ -60,6 +60,9 @@ where
 pub struct TextDecoration<'a> {
     /// Base color map borrowed from cache (e.g., syntax highlighting)
     pub base_color_map: Option<Ref<'a, RangeMap<CharOffset, ColorU>>>,
+    /// Underlines that belong to the base styling, borrowed from the same cache. Entries of
+    /// `underline_range` take precedence over them.
+    pub base_underline_map: Option<Ref<'a, RangeMap<CharOffset, ColorU>>>,
     /// Override color map for colors that take precedence over base (e.g., search highlights)
     pub override_color_map: Option<RangeMap<CharOffset, ColorU>>,
     pub underline_range: Option<RangeMap<CharOffset, ColorU>>,
@@ -82,10 +85,21 @@ impl<'a> TextDecoration<'a> {
             color.extend(Self::extract_overlapping_ranges(&range, override_map));
         }
 
-        let underline = Self::find_overlapping_ranges(&range, &self.underline_range);
         PaintStyleOverride::default()
             .with_color(color)
-            .with_underline(underline)
+            .with_underline(self.underlines_in(&range))
+    }
+
+    /// Underlines within `range`, as offsets from its start.
+    fn underlines_in(&self, range: &Range<CharOffset>) -> RangeMap<usize, ColorU> {
+        let mut underline = RangeMap::new();
+        if let Some(base_map) = &self.base_underline_map {
+            underline.extend(Self::extract_overlapping_ranges(range, base_map));
+        }
+        if let Some(override_map) = &self.underline_range {
+            underline.extend(Self::extract_overlapping_ranges(range, override_map));
+        }
+        underline
     }
 
     fn extract_overlapping_ranges(
@@ -104,16 +118,6 @@ impl<'a> TextDecoration<'a> {
                 (start..end, *color)
             })
             .collect()
-    }
-
-    fn find_overlapping_ranges(
-        incoming_range: &Range<CharOffset>,
-        style_map: &Option<RangeMap<CharOffset, ColorU>>,
-    ) -> RangeMap<usize, ColorU> {
-        match style_map {
-            Some(style_map) => Self::extract_overlapping_ranges(incoming_range, style_map),
-            None => RangeMap::default(),
-        }
     }
 }
 
@@ -152,3 +156,7 @@ pub enum NavigationKey {
     Left,
     Right,
 }
+
+#[cfg(test)]
+#[path = "editor_tests.rs"]
+mod tests;

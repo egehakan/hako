@@ -3392,6 +3392,7 @@ impl warp_editor::editor::EditorView for RichTextEditorView {
 
         TextDecoration {
             base_color_map: None,
+            base_underline_map: None,
             override_color_map: if override_color_map.is_empty() {
                 None
             } else {

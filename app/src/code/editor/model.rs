@@ -1,6 +1,7 @@
 #![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
 // Adding this file level gate as some of the code around editability is not used in WASM yet.
 
+use std::cell::Ref;
 use std::future::Future;
 use std::ops::Range;
 use std::path::Path;
@@ -15,7 +16,9 @@ use line_ending::LineEnding;
 use num_traits::SaturatingSub;
 use rangemap::{RangeMap, RangeSet};
 use string_offset::CharOffset;
-use syntax_tree::{ColorMap, DecorationStateEvent, SyntaxTreeState};
+use syntax_tree::{
+    CaptureStyle, CaptureStyles, ColorMap, DecorationStateEvent, HighlightPalette, SyntaxTreeState,
+};
 use vec1::{Vec1, vec1};
 use vim::vim::{
     BracketChar, CharacterMotion, Direction, FindCharMotion, FirstNonWhitespaceMotion,
@@ -31,6 +34,7 @@ use vim::{
 use warp_core::platform::SessionPlatform;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_core::ui::theme::Fill;
+use warp_core::ui::theme::syntax::{SyntaxStyles, SyntaxTheme};
 use warp_editor::content::anchor::Anchor;
 use warp_editor::content::buffer::{
     AutoScrollBehavior, Buffer, BufferEditAction, BufferEvent, BufferSelectAction, EditOrigin,
@@ -415,11 +419,11 @@ impl CodeEditorModel {
 
         let selection_model = ctx.add_model(|_ctx| BufferSelectionModel::new(content.clone()));
 
-        let color_map = Self::syntax_highlighting_color_map(ctx);
+        let palette = Self::syntax_highlighting_palette(ctx);
         let buffer_version = content.as_ref(ctx).buffer_version();
         let buffer_handle = content.downgrade();
         let syntax_tree =
-            ctx.add_model(|_ctx| SyntaxTreeState::new(buffer_handle, buffer_version, color_map));
+            ctx.add_model(|_ctx| SyntaxTreeState::new(buffer_handle, buffer_version, palette));
         ctx.subscribe_to_model(&syntax_tree, |me, _, event, ctx| {
             me.handle_syntax_tree_model_event(event, ctx);
         });
@@ -1400,12 +1404,12 @@ impl CodeEditorModel {
         }
     }
 
-    fn syntax_highlighting_color_map(ctx: &mut ModelContext<Self>) -> ColorMap {
-        let appearance = Appearance::as_ref(ctx);
-        let terminal_color = appearance.theme().terminal_colors().normal;
+    fn syntax_highlighting_palette(ctx: &mut ModelContext<Self>) -> HighlightPalette {
+        let theme = Appearance::as_ref(ctx).theme();
+        let terminal_color = theme.terminal_colors().normal;
 
         // TODO: This mapping is not finalized. We still need to double check with design.
-        ColorMap {
+        let fallback = ColorMap {
             keyword_color: AnsiColorIdentifier::Magenta
                 .to_ansi_color(&terminal_color)
                 .into(),
@@ -1430,6 +1434,13 @@ impl CodeEditorModel {
             tag_color: AnsiColorIdentifier::Red
                 .to_ansi_color(&terminal_color)
                 .into(),
+        };
+
+        HighlightPalette {
+            fallback,
+            styles: theme
+                .syntax()
+                .map(|syntax| Arc::new(capture_styles(syntax))),
         }
     }
 
@@ -1442,10 +1453,19 @@ impl CodeEditorModel {
         let theme = Appearance::as_ref(ctx).theme();
         let underline_color = theme.accent().into_solid();
 
-        let base_color_map =
+        let highlights =
             self.syntax_tree
                 .as_ref(ctx)
                 .highlights_in_ranges(ranges, render_buffer_version, ctx);
+        let (base_color_map, base_underline_map) = match highlights {
+            Some(highlights) => {
+                let (colors, underlines) = Ref::map_split(highlights, |highlights| {
+                    (&highlights.colors, &highlights.underlines)
+                });
+                (Some(colors), Some(underlines))
+            }
+            None => (None, None),
+        };
 
         let underline_range = self
             .hovered_symbol_range
@@ -1454,6 +1474,7 @@ impl CodeEditorModel {
 
         TextDecoration {
             base_color_map,
+            base_underline_map,
             override_color_map: underline_range.clone(),
             underline_range,
         }
@@ -1802,12 +1823,12 @@ impl CodeEditorModel {
             StyleUpdateAction::Relayout => {
                 self.rebuild_layout_and_refresh_diff(ctx);
             }
-            StyleUpdateAction::None => return,
-            StyleUpdateAction::Repaint => (),
+            StyleUpdateAction::None | StyleUpdateAction::Repaint => (),
         };
 
-        // Rebuild the color map for syntax highlighting as the theme may have changed.
-        self.set_color_map(ctx);
+        // The syntax palette and the current line highlight come from parts of the theme that
+        // the text styles do not cover, so they may have changed even when the styles have not.
+        self.set_syntax_palette(ctx);
         self.update_cursor_line_highlights(ctx);
         ctx.notify();
     }
@@ -2543,11 +2564,11 @@ impl CodeEditorModel {
         }
     }
 
-    fn set_color_map(&self, ctx: &mut ModelContext<Self>) {
-        let color_map = Self::syntax_highlighting_color_map(ctx);
+    fn set_syntax_palette(&self, ctx: &mut ModelContext<Self>) {
+        let palette = Self::syntax_highlighting_palette(ctx);
 
         self.syntax_tree.update(ctx, |syntax_tree, _ctx| {
-            syntax_tree.set_color_map(color_map);
+            syntax_tree.set_palette(palette);
         });
     }
 
@@ -4366,6 +4387,30 @@ impl PlainTextEditorModel for CodeEditorModel {
             );
         }
     }
+}
+
+/// Converts the syntax section of a theme into the capture styles the syntax tree resolves.
+fn capture_styles(syntax: &SyntaxTheme) -> CaptureStyles {
+    fn convert(styles: &SyntaxStyles) -> Vec<(String, CaptureStyle)> {
+        styles
+            .iter()
+            .map(|(capture, style)| {
+                let style = CaptureStyle {
+                    color: style.color,
+                    underline: style.underline,
+                };
+                (capture.clone(), style)
+            })
+            .collect()
+    }
+
+    CaptureStyles::new(
+        convert(syntax.captures()),
+        syntax
+            .languages()
+            .iter()
+            .map(|(language, styles)| (language.clone(), convert(styles))),
+    )
 }
 
 impl Entity for CodeEditorModel {
