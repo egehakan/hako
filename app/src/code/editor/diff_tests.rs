@@ -25,18 +25,20 @@ fn test_diff_generation() {
             RangeMap::from_iter([
                 (
                     0..1,
+                    // The two lines share no word, so none is marked.
                     ChangeType::Replacement {
                         replaced_range: 0..1,
-                        insertion: vec![0..5, 6..10],
-                        deletion: vec![0..5, 6..11]
+                        insertion: vec![],
+                        deletion: vec![]
                     }
                 ),
                 (
                     2..4,
+                    // Only the first added line is an edit of the removed one.
                     ChangeType::Replacement {
                         replaced_range: 2..3,
-                        insertion: vec![8..13, 14..22, 23..27,],
-                        deletion: vec![8..11, 12..18]
+                        insertion: vec![8..12],
+                        deletion: vec![8..17]
                     }
                 )
             ])
@@ -64,10 +66,85 @@ fn test_diff_generation() {
                 0..2,
                 ChangeType::Replacement {
                     replaced_range: 0..2,
-                    insertion: vec![0..5, 6..12],
-                    deletion: vec![0..5, 6..11]
+                    insertion: vec![],
+                    deletion: vec![]
                 }
             ),])
+        );
+        assert!(deletion_mapping.is_empty());
+    });
+}
+
+#[test]
+fn test_word_changes_of_a_multi_line_replacement_count_from_the_hunk_start() {
+    use warpui::App;
+    App::test((), |_| async move {
+        let (change_mapping, deletion_mapping) = DiffModel::compute_diff_internal(
+            MultilineStr::try_new(
+                "fn main() {\n    let first = load(path);\n    let second = parse(first);\n}\n",
+            )
+            .unwrap(),
+            MultilineStr::try_new(
+                "fn main() {\n    let first = load(&path);\n    log(\"loaded\");\n    let second = parse(&first)?;\n}\n",
+            )
+            .unwrap(),
+        )
+        .await;
+
+        // Line 1 is 29 characters with its newline and line 2 is 19, so the third added line
+        // starts at 48. Each range is one inserted `&` or `?`; the unpaired line has none.
+        assert_eq!(
+            change_mapping,
+            RangeMap::from_iter([(
+                1..4,
+                ChangeType::Replacement {
+                    replaced_range: 1..3,
+                    insertion: vec![21..22, 71..72, 78..79],
+                    deletion: vec![]
+                }
+            )])
+        );
+        assert!(deletion_mapping.is_empty());
+    });
+}
+
+#[test]
+fn test_word_changes_of_removed_lines_count_from_the_hunk_start() {
+    use warpui::App;
+    App::test((), |_| async move {
+        let (change_mapping, _) = DiffModel::compute_diff_internal(
+            MultilineStr::try_new("alpha(one, two, three)\nbeta(four, five)\n").unwrap(),
+            MultilineStr::try_new("alpha(one, two)\nbeta(four, six)\n").unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            change_mapping,
+            RangeMap::from_iter([(
+                0..2,
+                ChangeType::Replacement {
+                    replaced_range: 0..2,
+                    insertion: vec![27..30],
+                    deletion: vec![14..21, 34..38]
+                }
+            )])
+        );
+    });
+}
+
+#[test]
+fn test_a_pure_insertion_has_no_word_changes() {
+    use warpui::App;
+    App::test((), |_| async move {
+        let (change_mapping, deletion_mapping) = DiffModel::compute_diff_internal(
+            MultilineStr::try_new("first\nlast\n").unwrap(),
+            MultilineStr::try_new("first\nadded one\nadded two\nlast\n").unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            change_mapping,
+            RangeMap::from_iter([(1..3, ChangeType::Addition)])
         );
         assert!(deletion_mapping.is_empty());
     });

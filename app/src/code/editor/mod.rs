@@ -13,6 +13,7 @@ pub mod model;
 mod nav_bar;
 pub mod scroll;
 pub mod view;
+mod word_diff;
 
 pub use comment_editor::{CommentEditor, CommentEditorEvent};
 pub use comments::{EditorCommentsModel, EditorReviewComment};

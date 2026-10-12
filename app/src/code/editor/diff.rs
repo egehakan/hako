@@ -10,7 +10,7 @@ use futures::stream::AbortHandle;
 use itertools::Itertools;
 use pathfinder_color::ColorU;
 use rangemap::RangeMap;
-use similar::{ChangeTag, DiffOp, TextDiff};
+use similar::{DiffOp, TextDiff};
 use string_offset::CharOffset;
 use warp_core::ui::theme::{AnsiColorIdentifier, Fill};
 use warp_editor::content::edit::TemporaryBlock;
@@ -20,6 +20,7 @@ use warp_editor::render::model::{Decoration, LineCount, LineDecoration};
 use warpui::{Entity, ModelContext};
 
 use super::super::DiffResult;
+use super::word_diff::hunk_word_changes;
 use crate::appearance::Appearance;
 use crate::code::editor::line::EditorLineLocation;
 use crate::code::editor::line_iterator::LineIterator;
@@ -771,49 +772,39 @@ fn coalesce_replacements<'a>(
     change_mapping.extend(replacements_to_insert);
 }
 
-/// Given a replace operation, iterate through its associated diff hunks and collect
-/// the deletions and insertions from the generated diff.
+/// The word-level changes of a replace operation, as character ranges counted from the start of
+/// the first replaced line, respectively of the first replacing line.
 /// Return order: (deletions, insertions)
 fn record_replacement<'a>(
     replace_op: &DiffOp,
     diffs: &'a TextDiff<'a, 'a, 'a, str>,
 ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let mut old_offset = 0;
-    let mut new_offset = 0;
-    let mut inline_deletion = Vec::new();
-    let mut inline_insertion = Vec::new();
+    let old_lines = &diffs.old_slices()[replace_op.old_range()];
+    let new_lines = &diffs.new_slices()[replace_op.new_range()];
+    let changes = hunk_word_changes(old_lines, new_lines);
 
-    for inline_diff in diffs.iter_inline_changes(replace_op) {
-        match inline_diff.tag() {
-            ChangeTag::Equal => {
-                log::warn!("Unexpected equal change tag in a replace op");
-                continue;
-            }
-            ChangeTag::Delete => {
-                record_inline_diff_as_changes(&mut inline_deletion, &mut old_offset, inline_diff);
-            }
-            ChangeTag::Insert => {
-                record_inline_diff_as_changes(&mut inline_insertion, &mut new_offset, inline_diff);
-            }
-        }
-    }
-
-    (inline_deletion, inline_insertion)
+    (
+        ranges_from_hunk_start(old_lines, changes.removed),
+        ranges_from_hunk_start(new_lines, changes.added),
+    )
 }
 
-fn record_inline_diff_as_changes(
-    changes: &mut Vec<Range<usize>>,
-    offset: &mut usize,
-    inline_diff: similar::InlineChange<str>,
-) {
-    for (highlight, val) in inline_diff.values() {
-        let char_len = val.chars().count();
-
-        if *highlight {
-            changes.push(*offset..*offset + char_len);
-        }
-        *offset += char_len;
+/// Turns per-line character ranges into ranges counted from the start of the first line.
+fn ranges_from_hunk_start(
+    lines: &[&str],
+    ranges_by_line: Vec<Vec<Range<usize>>>,
+) -> Vec<Range<usize>> {
+    let mut line_start = 0;
+    let mut ranges = Vec::new();
+    for (line, line_ranges) in lines.iter().zip(ranges_by_line) {
+        ranges.extend(
+            line_ranges
+                .into_iter()
+                .map(|range| line_start + range.start..line_start + range.end),
+        );
+        line_start += line.chars().count();
     }
+    ranges
 }
 
 impl Entity for DiffModel {
