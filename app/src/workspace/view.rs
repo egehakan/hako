@@ -3715,8 +3715,9 @@ impl Workspace {
             create_auth_secret_modal: None,
         };
 
+        let is_restored = matches!(workspace_setting, NewWorkspaceSource::Restored { .. });
         ws.configure_new_workspace(workspace_setting, ctx);
-        ws.join_tab_folders(ctx);
+        ws.join_tab_folders(!is_restored, ctx);
         ctx.subscribe_to_model(&TabFolders::handle(ctx), |me, _, event, ctx| match event {
             TabFoldersEvent::Changed => me.adopt_tab_folders(true, ctx),
         });
@@ -20281,6 +20282,18 @@ impl Workspace {
     }
 
     pub(crate) fn focus_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        // A dialog that is waiting for an answer keeps the keyboard, so that Enter and Escape
+        // answer it rather than reach the terminal behind it. Menus hand the focus back to the
+        // active tab when they close, which is right after one of their items opened the dialog.
+        if self.pending_close.is_some() {
+            ctx.focus(&self.close_confirmation_dialog);
+            return;
+        }
+        if self.customizing_tab_group.is_some() {
+            self.tab_group_customize_dialog
+                .update(ctx, |dialog, ctx| dialog.focus_input(ctx));
+            return;
+        }
         self.active_tab_pane_group().update(ctx, |tab, ctx| {
             tab.focus(ctx);
         })
@@ -24610,6 +24623,9 @@ impl TypedActionView for Workspace {
         }
 
         self.store_tab_group_order();
+        if !self.tab_groups.is_empty() {
+            self.publish_tab_folder_order(ctx);
+        }
 
         match action {
             ActivateTab(index) => self.activate_tab(*index, ctx),
@@ -28728,16 +28744,7 @@ impl View for Workspace {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
-        if !focus_ctx.is_self_focused() {
-            return;
-        }
-        // A dialog that is waiting for an answer keeps the keyboard, so that Enter and Escape
-        // answer it rather than reach the terminal behind it.
-        if self.pending_close.is_some() {
-            ctx.focus(&self.close_confirmation_dialog);
-        } else if self.customizing_tab_group.is_some() {
-            ctx.focus(&self.tab_group_customize_dialog);
-        } else {
+        if focus_ctx.is_self_focused() {
             self.focus_active_tab(ctx);
         }
     }

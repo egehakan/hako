@@ -459,6 +459,29 @@ fn removing_a_folder_takes_it_out_of_every_window() {
 }
 
 #[test]
+fn a_new_window_lists_the_folders_in_the_order_of_the_last_one() {
+    with_tab_sidebar(|app| {
+        let fixture = Fixture::new();
+        let first = mock_workspace(app);
+        let order = first.update(app, |workspace, ctx| {
+            workspace.add_tab_folder_for_directory(fixture.plain.clone(), ctx);
+            let other_id = workspace.add_tab_folder_for_directory(fixture.other.clone(), ctx);
+            workspace.handle_action(&WorkspaceAction::MoveTabGroupUp(other_id), ctx);
+            folders_in_order(workspace)
+        });
+        assert_eq!(
+            order[order.len() - 2..],
+            [fixture.other.clone(), fixture.plain.clone()]
+        );
+
+        let second = mock_workspace(app);
+        second.read(app, |workspace, _| {
+            assert_eq!(folders_in_order(workspace), order);
+        });
+    });
+}
+
+#[test]
 fn a_folder_looks_the_same_in_every_window() {
     with_tab_sidebar(|app| {
         let fixture = Fixture::new();

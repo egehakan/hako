@@ -148,8 +148,13 @@ impl TabGroupCustomizeDialog {
         self.icon_text_editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text(&icon_text, ctx);
         });
-        ctx.focus(&self.hex_editor);
+        self.focus_input(ctx);
         ctx.notify();
+    }
+
+    /// Puts the keyboard in the hex field, where typing and Escape are handled.
+    pub fn focus_input(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.focus(&self.hex_editor);
     }
 
     fn handle_hex_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {

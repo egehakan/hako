@@ -157,7 +157,8 @@ impl Workspace {
     }
 
     /// Registers the folders this window was created with, then takes on every other folder.
-    pub(super) fn join_tab_folders(&mut self, ctx: &mut ViewContext<Self>) {
+    /// A window that has no order of its own yet lists the folders in the app-wide order.
+    pub(super) fn join_tab_folders(&mut self, follow_app_order: bool, ctx: &mut ViewContext<Self>) {
         if !FeatureFlag::GroupedTabs.is_enabled() || self.is_tab_drag_preview {
             return;
         }
@@ -165,6 +166,23 @@ impl Workspace {
             self.publish_tab_folder(group_id, ctx);
         }
         self.adopt_tab_folders(false, ctx);
+        if follow_app_order {
+            let folders = TabFolders::as_ref(ctx).folders();
+            let app_position = |group_id: &TabGroupId| {
+                self.tab_groups
+                    .get(group_id)
+                    .and_then(|group| group.directory.as_ref())
+                    .and_then(|directory| {
+                        folders
+                            .iter()
+                            .position(|folder| folder.directory == *directory)
+                    })
+                    .unwrap_or(usize::MAX)
+            };
+            let mut order = self.ordered_tab_group_ids();
+            order.sort_by_key(app_position);
+            self.tab_group_order = order;
+        }
     }
 
     /// Brings this window's folders in line with the app-wide list: missing folders are added
