@@ -4,8 +4,8 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::Fill;
 use warpui::elements::{
-    Align, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    Empty, Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
+    Align, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty,
+    Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
     ParentElement, ParentOffsetBounds, Radius, Stack, Text,
 };
 use warpui::fonts::Weight;
@@ -18,13 +18,11 @@ use warpui::{
 };
 
 use crate::appearance::Appearance;
-use crate::editor::{
-    EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions,
-};
+use crate::editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions};
 use crate::ui_components::dialog::{Dialog, dialog_styles};
 use crate::workspace::tab_folders::{
-    MATERIAL_GROUP_ICONS, MAX_RECENT_COLORS, TabFolders, TabGroupIcon, color_swatch_rows, format_hex_color,
-    parse_hex_color,
+    MATERIAL_GROUP_ICONS, MAX_RECENT_COLORS, TabFolders, TabGroupIcon, color_swatch_rows,
+    format_hex_color, parse_hex_color,
 };
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 

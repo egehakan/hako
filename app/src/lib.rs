@@ -312,9 +312,6 @@ use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 use crate::system::SystemStats;
 use crate::tab::TabShortcutModifierState;
-use crate::workspace::close_confirmation::CloseStakes;
-use crate::workspace::tab_folders::TabFolders;
-use crate::workspace::view::WindowCloseConfirmation;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
@@ -329,6 +326,9 @@ use crate::vim_registers::VimRegisters;
 use crate::warp_managed_paths_watcher::{WarpManagedPathsWatcher, ensure_warp_watch_roots_exist};
 use crate::workflows::aliases::WorkflowAliases;
 use crate::workflows::local_workflows::LocalWorkflows;
+use crate::workspace::close_confirmation::CloseStakes;
+use crate::workspace::tab_folders::TabFolders;
+use crate::workspace::view::WindowCloseConfirmation;
 use crate::workspace::{
     ActiveSession, OneTimeModalModel, PaneViewLocator, ToastStack, Workspace, WorkspaceAction,
 };

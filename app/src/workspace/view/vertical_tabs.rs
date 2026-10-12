@@ -1917,10 +1917,13 @@ fn render_groups(
 
     // Groups without tabs stay in the list. While searching, only those whose name matches do.
     let ordered_group_ids = workspace.ordered_tab_group_ids();
-    let groups_with_tabs: HashSet<TabGroupId> =
-        workspace.tabs.iter().filter_map(|tab| tab.group_id).collect();
-    let empty_groups_matching_query =
-        (!query.is_empty()).then(|| matched_group_ids(&workspace.tab_groups, &query.to_lowercase()));
+    let groups_with_tabs: HashSet<TabGroupId> = workspace
+        .tabs
+        .iter()
+        .filter_map(|tab| tab.group_id)
+        .collect();
+    let empty_groups_matching_query = (!query.is_empty())
+        .then(|| matched_group_ids(&workspace.tab_groups, &query.to_lowercase()));
     let shown_empty_groups: Vec<TabGroupId> = ordered_group_ids
         .iter()
         .copied()

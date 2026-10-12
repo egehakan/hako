@@ -105,7 +105,6 @@ use crate::pane_group::pane::terminal_pane::{
 };
 use crate::persistence::ModelEvent;
 use crate::quit_warning::UnsavedStateSummary;
-use crate::workspace::close_confirmation::{CloseStakes, confirms_every_close};
 use crate::resource_center::{
     Tip, TipAction, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
 };
@@ -168,6 +167,7 @@ use crate::util::openable_file_type::FileTarget;
 use crate::view_components::ToastFlavor;
 use crate::workflows::workflow::Workflow;
 use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
+use crate::workspace::close_confirmation::{CloseStakes, confirms_every_close};
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::{
     self, CommandSearchOptions, PaneViewLocator, TabBarLocation, WorkspaceAction,

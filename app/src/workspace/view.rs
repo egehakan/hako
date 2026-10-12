@@ -2,8 +2,8 @@ pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
 pub(crate) mod chatgpt_plan_modal;
-pub(crate) mod cloud_agent_capacity_modal;
 mod closing;
+pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
@@ -122,6 +122,8 @@ use warpui::{
     UpdateModel, UpdateView, View, ViewAsRef, ViewContext, ViewHandle, WeakViewHandle, WindowId,
 };
 
+pub use self::closing::WindowCloseConfirmation;
+use self::closing::{PendingClose, PendingGroupClose};
 use self::vertical_tabs::telemetry::{VerticalTabsDisplayOption, VerticalTabsTelemetryEvent};
 use self::vertical_tabs::{
     SummaryPaneKind, SummaryPaneKindIcons, VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID,
@@ -150,8 +152,6 @@ use super::hoa_onboarding::{
 };
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
-use self::closing::{PendingClose, PendingGroupClose};
-pub use self::closing::WindowCloseConfirmation;
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
@@ -505,6 +505,7 @@ use crate::workspace::action::CommandSearchOptions;
 use crate::workspace::bonus_grant_notification_model::BonusGrantNotificationEvent;
 #[cfg(target_os = "macos")]
 use crate::workspace::cli_install;
+use crate::workspace::close_confirmation::{CloseConfirmationDialog, confirms_every_close};
 use crate::workspace::cross_window_tab_drag::{
     AttachTarget, CrossWindowTabDrag, DragResult, DropResult, GhostState,
 };
@@ -512,10 +513,9 @@ use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderTo
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
 use crate::workspace::sync_inputs::SyncedInputState;
-use crate::workspace::close_confirmation::{CloseConfirmationDialog, confirms_every_close};
 use crate::workspace::tab_folders::{TabFolders, TabFoldersEvent};
-use crate::workspace::tab_group_customize_dialog::TabGroupCustomizeDialog;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
+use crate::workspace::tab_group_customize_dialog::TabGroupCustomizeDialog;
 use crate::workspace::tab_settings::TabCloseButtonPosition;
 use crate::workspace::toast_stack::{
     ToastStack, ToastStack as WorkspaceToastStack, ToastStackEvent as WorkspaceToastStackEvent,

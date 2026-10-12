@@ -16,9 +16,8 @@ use super::schema::{
     mcp_server_installations, mcp_server_panes, notebook_panes, notebooks, object_actions,
     object_metadata, object_permissions, pane_branches, pane_leaves, pane_nodes, panels,
     project_rules, projects, server_experiments, settings_panes, tab_folders, tab_groups, tabs,
-    team_members,
-    team_settings, teams, terminal_panes, user_profiles, windows, workflow_panes, workflows,
-    workspace_language_server, workspace_metadata, workspace_teams, workspaces,
+    team_members, team_settings, teams, terminal_panes, user_profiles, windows, workflow_panes,
+    workflows, workspace_language_server, workspace_metadata, workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]

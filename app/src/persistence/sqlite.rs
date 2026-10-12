@@ -59,9 +59,10 @@ use super::model::{
     self, AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, ActiveMCPServer, CODE_PANE_KIND,
     CurrentUserInformation, ENV_VAR_COLLECTION_PANE_KIND, EXECUTION_PROFILE_EDITOR_PANE_KIND,
     MCP_SERVER_PANE_KIND, MCPEnvironmentVariables, NOTEBOOK_PANE_KIND, NewActiveMCPServer, NewApp,
-    NewCommand, NewServerExperiment, NewTab, NewTabFolder, NewTabGroup, NewTeam, NewWindow, NewWorkspace,
-    NewWorkspaceMetadata, NewWorkspaceTeam, Project, SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, Tab,
-    TabGroup, WORKFLOW_PANE_KIND, Window, WorkspaceMetadata as WorkspaceMetadataModel,
+    NewCommand, NewServerExperiment, NewTab, NewTabFolder, NewTabGroup, NewTeam, NewWindow,
+    NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, Project, SETTINGS_PANE_KIND,
+    TERMINAL_PANE_KIND, Tab, TabGroup, WORKFLOW_PANE_KIND, Window,
+    WorkspaceMetadata as WorkspaceMetadataModel,
 };
 use super::{
     BlockCompleted, FinishedCommandMetadata, ModelEvent, PersistedData, PersistedDataScope,
@@ -910,7 +911,9 @@ fn deduplicate_events(events: Vec<ModelEvent>) -> Vec<ModelEvent> {
 fn serialize_group_color(color: SelectedTabColor) -> Option<String> {
     match color {
         SelectedTabColor::Unset => None,
-        SelectedTabColor::Cleared | SelectedTabColor::Color(_) => serde_yaml::to_string(&color).ok(),
+        SelectedTabColor::Cleared | SelectedTabColor::Color(_) => {
+            serde_yaml::to_string(&color).ok()
+        }
     }
 }
 

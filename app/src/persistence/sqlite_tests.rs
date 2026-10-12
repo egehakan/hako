@@ -1091,7 +1091,10 @@ fn test_sqlite_round_trips_folders_and_groups_without_tabs() {
         .iter()
         .map(|group| group.directory.as_ref().and_then(|d| d.to_str()))
         .collect();
-    assert_eq!(directories, vec![Some("/srv/empty"), Some("/srv/api"), None]);
+    assert_eq!(
+        directories,
+        vec![Some("/srv/empty"), Some("/srv/api"), None]
+    );
 
     let restored_styled = &window.tab_groups[1];
     assert_eq!(

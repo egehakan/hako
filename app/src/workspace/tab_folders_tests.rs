@@ -35,7 +35,9 @@ fn hex_colors_parse_in_long_and_short_form() {
 
 #[test]
 fn invalid_hex_colors_are_rejected() {
-    for input in ["", "#", "#12", "#12345", "#1234567", "#gggggg", "red", "#é9"] {
+    for input in [
+        "", "#", "#12", "#12345", "#1234567", "#gggggg", "red", "#é9",
+    ] {
         assert_eq!(parse_hex_color(input), None, "{input:?}");
     }
 }
@@ -148,12 +150,18 @@ fn a_missing_directory_resolves_to_itself() {
 
 #[test]
 fn folder_names_default_to_the_directory_name() {
-    assert_eq!(default_folder_name(&PathBuf::from("/srv/projects/api")), "api");
+    assert_eq!(
+        default_folder_name(&PathBuf::from("/srv/projects/api")),
+        "api"
+    );
     assert_eq!(default_folder_name(&PathBuf::from("/")), "/");
     if let Some(home) = dirs::home_dir() {
         assert_eq!(default_folder_name(&home), "Home");
         assert_eq!(display_directory(&home), "~");
-        assert_eq!(display_directory(&home.join("code").join("api")), "~/code/api");
+        assert_eq!(
+            display_directory(&home.join("code").join("api")),
+            "~/code/api"
+        );
     }
     assert_eq!(display_directory(&PathBuf::from("/srv/api")), "/srv/api");
 }
@@ -263,7 +271,10 @@ fn the_first_tab_of_a_group_goes_in_front_of_the_next_group_with_tabs() {
     let order = [a, empty, also_empty, b];
 
     assert_eq!(insertion_index_for_empty_group(empty, &tabs, &order), 2);
-    assert_eq!(insertion_index_for_empty_group(also_empty, &tabs, &order), 2);
+    assert_eq!(
+        insertion_index_for_empty_group(also_empty, &tabs, &order),
+        2
+    );
     // Nothing with tabs follows, so the tab goes to the end of the list.
     assert_eq!(
         insertion_index_for_empty_group(empty, &tabs, &[a, b, empty]),

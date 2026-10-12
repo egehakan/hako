@@ -102,11 +102,8 @@ impl Workspace {
         }
         let tab_groups: Vec<Option<TabGroupId>> =
             self.tabs.iter().map(|tab| tab.group_id).collect();
-        let index = insertion_index_for_empty_group(
-            group_id,
-            &tab_groups,
-            &self.ordered_tab_group_ids(),
-        );
+        let index =
+            insertion_index_for_empty_group(group_id, &tab_groups, &self.ordered_tab_group_ids());
         if self.tab_groups.get(&group_id).is_some_and(|g| g.pinned) {
             index.min(self.pinned_boundary_index(&self.tabs))
         } else {
@@ -529,7 +526,11 @@ impl Workspace {
     }
 
     /// Opens the dialog in which a group's color and icon are chosen.
-    pub(super) fn customize_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+    pub(super) fn customize_tab_group(
+        &mut self,
+        group_id: TabGroupId,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(group) = self.tab_groups.get(&group_id) else {
             return;
         };

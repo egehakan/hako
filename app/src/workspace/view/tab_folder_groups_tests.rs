@@ -156,7 +156,10 @@ fn a_start_directory_resolves_to_the_deepest_folder_inside_its_repository() {
     );
     // A folder above the repository does not swallow the repository's tabs.
     assert_eq!(
-        resolve_folder_for_start_directory(&fixture.repo, [(above_id, above.as_path())].into_iter()),
+        resolve_folder_for_start_directory(
+            &fixture.repo,
+            [(above_id, above.as_path())].into_iter()
+        ),
         Err(fixture.repo.clone())
     );
     assert_eq!(
@@ -188,9 +191,14 @@ fn a_new_terminal_tab_is_filed_under_the_folder_of_its_directory() {
             assert_eq!(workspace.tab_groups.len(), folders_at_start + 2);
 
             let repo_id = folder_id(workspace, &fixture.repo);
-            let repo_tabs: Vec<usize> = super::group_member_indices(&workspace.tabs, repo_id).collect();
+            let repo_tabs: Vec<usize> =
+                super::group_member_indices(&workspace.tabs, repo_id).collect();
             assert_eq!(repo_tabs.len(), 2);
-            assert_eq!(repo_tabs[1], repo_tabs[0] + 1, "a folder's tabs sit together");
+            assert_eq!(
+                repo_tabs[1],
+                repo_tabs[0] + 1,
+                "a folder's tabs sit together"
+            );
 
             let registered = TabFolders::as_ref(ctx);
             assert!(registered.folder(&fixture.repo).is_some());
@@ -566,7 +574,9 @@ fn a_plain_group_still_goes_when_its_last_tab_is_moved_out() {
             let group = TabGroup::new();
             let group_id = group.id;
             workspace.tab_groups.insert(group_id, group);
-            let folder = workspace.tabs[0].group_id.expect("the first tab is in a folder");
+            let folder = workspace.tabs[0]
+                .group_id
+                .expect("the first tab is in a folder");
             workspace.tabs[0].group_id = Some(group_id);
 
             workspace.handle_action(&WorkspaceAction::RemoveTabFromGroup(0), ctx);

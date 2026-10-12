@@ -106,11 +106,7 @@ fn closing_the_non_active_tabs_asks_first() {
 fn closing_the_tabs_to_the_right_asks_first() {
     assert_asks_before_closing_tabs(WorkspaceAction::CloseTabsRight(0), "Close 2 tabs?", 1);
     assert_asks_before_closing_tabs(WorkspaceAction::CloseTabsRight(1), "Close this tab?", 2);
-    assert_asks_before_closing_tabs(
-        WorkspaceAction::CloseTabsRightActiveTab,
-        "Close 2 tabs?",
-        1,
-    );
+    assert_asks_before_closing_tabs(WorkspaceAction::CloseTabsRightActiveTab, "Close 2 tabs?", 1);
 }
 
 #[test]
@@ -218,8 +214,9 @@ fn closing_a_pane_asks_first() {
 fn closing_the_only_pane_of_a_tab_asks_about_the_tab() {
     App::test((), |mut app| async move {
         let workspace = confirming_workspace(&mut app);
-        let pane_group =
-            workspace.read(&app, |workspace, _| workspace.get_pane_group_view(1).unwrap().clone());
+        let pane_group = workspace.read(&app, |workspace, _| {
+            workspace.get_pane_group_view(1).unwrap().clone()
+        });
 
         pane_group.update(&mut app, |view, ctx| {
             view.handle_action(&PaneGroupAction::RemoveActive, ctx);
