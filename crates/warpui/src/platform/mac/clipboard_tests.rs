@@ -59,3 +59,52 @@ fn pasteboard_type_for_image_mime_type_memory_behavior() {
         }
     }
 }
+
+/// A pasteboard of its own for a test, so that the user's clipboard is left alone.
+fn private_clipboard() -> super::Clipboard {
+    super::Clipboard(objc2_app_kit::NSPasteboard::pasteboardWithUniqueName())
+}
+
+/// Frees a pasteboard made by [`private_clipboard`], which the pasteboard server otherwise keeps.
+fn release(clipboard: super::Clipboard) {
+    let _: () = unsafe { objc2::msg_send![&*clipboard.0, releaseGlobally] };
+}
+
+#[test]
+fn file_paths_round_trip_as_file_urls() {
+    use objc2_app_kit::NSPasteboardTypeFileURL;
+    use warpui_core::clipboard::{Clipboard as _, ClipboardContent};
+
+    let mut clipboard = private_clipboard();
+    let paths = vec![
+        "/tmp/warp clipboard test/notes.txt".to_owned(),
+        "/tmp/warp clipboard test/a folder".to_owned(),
+    ];
+    clipboard.write(ClipboardContent {
+        plain_text: paths.join("\n"),
+        paths: Some(paths.clone()),
+        ..Default::default()
+    });
+
+    // File URLs are what Finder and other apps paste files from.
+    let types = clipboard.0.types().expect("types are declared");
+    assert!(types.containsObject(unsafe { NSPasteboardTypeFileURL }));
+
+    let content = clipboard.read();
+    assert_eq!(content.paths, Some(paths.clone()));
+    assert_eq!(content.plain_text, paths.join("\n"));
+    release(clipboard);
+}
+
+#[test]
+fn text_is_read_back_without_file_paths() {
+    use warpui_core::clipboard::{Clipboard as _, ClipboardContent};
+
+    let mut clipboard = private_clipboard();
+    clipboard.write(ClipboardContent::plain_text("just text".to_owned()));
+
+    let content = clipboard.read();
+    assert_eq!(content.plain_text, "just text");
+    assert_eq!(content.paths, None);
+    release(clipboard);
+}

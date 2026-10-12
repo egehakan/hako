@@ -44,8 +44,7 @@ BOOL isDarkMode() {
     return name == NSAppearanceNameDarkAqua;
 }
 
-NSArray *getFilePathsFromPasteboard() {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+NSArray *getFilePathsFromPasteboard(NSPasteboard *pb) {
     NSArray *types = [pb types];
 
     if ([types containsObject:NSPasteboardTypeFileURL]) {
@@ -53,6 +52,20 @@ NSArray *getFilePathsFromPasteboard() {
     }
 
     return [NSArray array];
+}
+
+// Puts the files at `paths` on the pasteboard as file URLs, one item per file, so that Finder and
+// other apps can paste the files themselves. `text` is what an app that only takes text gets.
+void writeFilePathsToPasteboard(NSPasteboard *pb, NSArray<NSString *> *paths, NSString *text) {
+    NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:paths.count];
+    for (NSString *path in paths) {
+        [urls addObject:[NSURL fileURLWithPath:path]];
+    }
+
+    [pb clearContents];
+    [pb writeObjects:urls];
+    [pb addTypes:@[ NSPasteboardTypeString ] owner:nil];
+    [pb setString:text forType:NSPasteboardTypeString];
 }
 
 void *registerGlobalHotkey(NSUInteger key, NSUInteger modifiers) {

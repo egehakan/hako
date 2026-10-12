@@ -10,7 +10,8 @@ use objc2_foundation::{NSArray, NSData, NSString, ns_string};
 use warpui_core::clipboard::{ClipboardContent, ImageData};
 
 unsafe extern "C" {
-    fn getFilePathsFromPasteboard() -> id;
+    fn getFilePathsFromPasteboard(pasteboard: id) -> id;
+    fn writeFilePathsToPasteboard(pasteboard: id, paths: id, text: id);
 }
 
 pub struct Clipboard(Retained<NSPasteboard>);
@@ -38,6 +39,23 @@ fn pasteboard_type_for_image_mime_type(mime_type: &str) -> Option<&'static NSStr
 
 impl crate::Clipboard for Clipboard {
     fn write(&mut self, contents: ClipboardContent) {
+        // Files go on the pasteboard as file URLs, which is what lets other apps paste the files
+        // rather than their names.
+        if let Some(paths) = contents.paths.as_ref().filter(|paths| !paths.is_empty()) {
+            let paths: Vec<Retained<NSString>> =
+                paths.iter().map(|path| NSString::from_str(path)).collect();
+            let paths = NSArray::from_retained_slice(&paths);
+            let text = NSString::from_str(&contents.plain_text);
+            unsafe {
+                writeFilePathsToPasteboard(
+                    Retained::as_ptr(&self.0) as id,
+                    Retained::as_ptr(&paths) as id,
+                    Retained::as_ptr(&text) as id,
+                );
+            }
+            return;
+        }
+
         unsafe {
             let nsstr = NSString::from_str(&contents.plain_text);
             self.0
@@ -74,7 +92,8 @@ impl crate::Clipboard for Clipboard {
         unsafe {
             // Try getting file paths from the clipboard. If we end up with an empty
             // array of file paths, fallback to getting the string from the pasteboard.
-            let file_paths = &*getFilePathsFromPasteboard().cast::<NSArray<NSString>>();
+            let file_paths = &*getFilePathsFromPasteboard(Retained::as_ptr(&self.0) as id)
+                .cast::<NSArray<NSString>>();
             let available_paths = file_paths.count();
 
             let text = self.0.stringForType(NSPasteboardTypeString);
