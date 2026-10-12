@@ -289,6 +289,7 @@ enum AgentHarness {
   CODEX
   GEMINI
   OZ
+  PI
 }
 
 """Controls whether a team can configure settings for agent harnesses."""
@@ -2173,6 +2174,7 @@ union ListWarpDevImagesResult = ListWarpDevImagesOutput | UserFacingError
 type ListedHarnessAuthSecretsConfig {
   claudeAuthSecretName: String
   codexAuthSecretName: String
+  piAuthSecretName: String
 }
 
 type ListedHarnessConfig {
@@ -2484,6 +2486,12 @@ type ManagedSecretOpenAiApiKeyValue {
   baseUrl: String
 }
 
+type ManagedSecretProviderApiKeyValue {
+  provider: String!
+  apiKey: String!
+  baseUrl: String
+}
+
 """A raw, unencrypted managed secret value."""
 type ManagedSecretRawValue {
   value: String!
@@ -2503,10 +2511,11 @@ enum ManagedSecretType {
   DOCKER_REGISTRY
   DOTENVX
   OPENAI_API_KEY
+  PROVIDER_API_KEY
   RAW_VALUE
 }
 
-union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretAwsEcrCredentialValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretRawValue
+union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretAwsEcrCredentialValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretProviderApiKeyValue | ManagedSecretRawValue
 
 input ManagedSecretsInput {
   """Pagination cursor, currently unused."""

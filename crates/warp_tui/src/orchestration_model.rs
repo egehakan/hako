@@ -1075,6 +1075,7 @@ impl TuiOrchestrationModel {
                 harness @ (Harness::Claude
                 | Harness::OpenCode
                 | Harness::Gemini
+                | Harness::Pi
                 | Harness::Codex
                 | Harness::Unknown),
             ) => {
