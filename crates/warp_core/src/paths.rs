@@ -275,9 +275,14 @@ pub fn state_dir() -> PathBuf {
 ///
 /// On macOS, this will use the App Group container directory if available.
 pub fn secure_state_dir() -> Option<PathBuf> {
-    // Do not use the secure state directory in integration tests, which have a temporary home directory instead.
-    if ChannelState::channel() == Channel::Integration {
-        return None;
+    match ChannelState::channel() {
+        // Integration tests have a temporary home directory instead.
+        Channel::Integration => return None,
+        // Locally built OSS bundles are not signed for Warp's app group, so macOS asks for
+        // cross-app data access after every rebuild and the app falls back to another database
+        // whenever the prompt is not answered.
+        Channel::Oss => return None,
+        Channel::Stable | Channel::Preview | Channel::Dev | Channel::Local => {}
     }
 
     #[cfg(target_os = "macos")]
