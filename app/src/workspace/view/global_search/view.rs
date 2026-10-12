@@ -1041,8 +1041,14 @@ impl GlobalSearchView {
                     NameGroup::new(NameMatchKind::Folder, results.folders.clone());
                 self.file_matches = NameGroup::new(NameMatchKind::File, results.files.clone());
 
-                // The groups are inserted above the text matches, which moves the selected row.
-                if let Some(index) = self.selected_row_index() {
+                // The groups are inserted above the text matches. A list that was already scrolled
+                // moves along with them so the rows on screen stay put; otherwise only the
+                // selected row has to be kept in view.
+                let inserted_rows =
+                    self.folder_matches.visible_count() + self.file_matches.visible_count();
+                if self.uniform_list_state.scroll_top().as_f64() > 0. {
+                    self.uniform_list_state.add_scroll_top(inserted_rows as f32);
+                } else if let Some(index) = self.selected_row_index() {
                     self.uniform_list_state.scroll_to(index);
                 }
                 ctx.notify();
