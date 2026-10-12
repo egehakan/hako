@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
+use project_replace::scope::ScopeGlobs;
 
 use super::proto::{
     RipgrepSearchError, RipgrepSearchMatch, RipgrepSearchRequest, RipgrepSearchResponse,
@@ -50,11 +51,14 @@ pub(super) fn validate_request(msg: RipgrepSearchRequest) -> Result<RipgrepSearc
 pub(super) async fn run_search(
     params: RipgrepSearchParams,
 ) -> anyhow::Result<RipgrepSearchSuccess> {
+    // The request names no files to narrow the search to: the client narrows what comes back.
+    let scope = ScopeGlobs::default();
     let stream = warp_ripgrep::search::search_streaming(
         std::slice::from_ref(&params.pattern),
         &params.roots,
         params.ignore_case,
         params.multiline,
+        &scope,
     )?;
     futures::pin_mut!(stream);
 
