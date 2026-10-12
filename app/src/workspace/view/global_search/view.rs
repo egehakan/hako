@@ -32,7 +32,7 @@ use warpui::elements::{
 use warpui::fonts::{Properties, Weight};
 use warpui::keymap::FixedBinding;
 use warpui::platform::Cursor;
-use warpui::text_layout::{TextAlignment, TextStyle};
+use warpui::text_layout::{ClipConfig, ClipDirection, ClipStyle, TextAlignment, TextStyle};
 use warpui::ui_components::components::{UiComponent as _, UiComponentStyles};
 use warpui::ui_components::text::Span;
 use warpui::{
@@ -55,7 +55,13 @@ use crate::ui_components::render_file_search_row::{FileSearchRowOptions, render_
 use crate::util::path::{display_name_with_host, display_path_with_host};
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
 use crate::workspace::view::global_search::model::GlobalSearch;
-use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
+use crate::workspace::view::global_search::name_groups::{
+    NameGroup, NameGroupRow, NameMatchEntry, NameMatchLabel, SectionCounts, SectionRow,
+    name_match_summary,
+};
+use crate::workspace::view::global_search::{
+    GlobalSearchMatch, NameMatchKind, NameSearchResults, SearchConfig,
+};
 
 const BORDER_RADIUS: f32 = 6.;
 const BORDER_WIDTH: f32 = 1.;
@@ -67,6 +73,11 @@ const MAX_MATCH_COUNT: usize = 20000;
 const QUERY_EDITOR_MAX_LINES: usize = 6;
 
 const QUERY_DEBOUNCE_PERIOD: Duration = Duration::from_millis(300);
+
+const ROW_ICON_SIZE: f32 = 16.;
+
+/// Left padding that lines a name group's rows up with the label of its header.
+const NAME_GROUP_ROW_INDENT: f32 = 24.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalSearchEntryFocus {
@@ -98,6 +109,11 @@ pub enum GlobalSearchAction {
         line_number: u32,
         column_num: Option<usize>,
     },
+    ClickNameGroupRow {
+        kind: NameMatchKind,
+        row: NameGroupRow,
+    },
+    ClickTextMatchesHeader,
     ResultsUp,
     ResultsDown,
     ResultsLeft,
@@ -114,6 +130,13 @@ pub enum GlobalSearchEvent {
     Started {
         search_id: u32,
         remote_host_count: usize,
+        /// Whether file and folder names are being matched too, in which case `NameMatches`
+        /// follows once that is done.
+        name_search_started: bool,
+    },
+    NameMatches {
+        search_id: u32,
+        results: NameSearchResults,
     },
     Progress {
         search_id: u32,
@@ -148,6 +171,10 @@ pub enum Event {
         line_number: u32,
         column_num: Option<usize>,
     },
+    /// Open a file that matched by name.
+    OpenFile { location: LocalOrRemotePath },
+    /// Show a folder that matched by name in the file tree.
+    RevealFolder { location: LocalOrRemotePath },
 }
 
 enum SelectionDirection {
@@ -155,11 +182,23 @@ enum SelectionDirection {
     Down,
 }
 
-/// Absolute row index in the flattened view.
+/// Row index among the flattened text match rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GlobalIndex(usize);
 
-/// Hierarchical index that identifies a specific row by its position in the
+/// A row of the results list, identified by its place in the section it belongs to rather than by
+/// its index, so that it stays valid while results arrive around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ResultRow {
+    NameGroup {
+        kind: NameMatchKind,
+        row: NameGroupRow,
+    },
+    TextMatchesHeader,
+    TextMatch(RowIndex),
+}
+
+/// Hierarchical index that identifies a specific text match row by its position in the
 /// directory/file/match hierarchy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RowIndex {
@@ -326,7 +365,14 @@ pub struct GlobalSearchView {
     last_searched_pattern: Option<String>,
     directory_entries: Vec<DirectoryEntry>,
     directory_path_to_directory_index_entry: HashMap<LocalOrRemotePath, usize>,
-    selected_row: Option<RowIndex>,
+    folder_matches: NameGroup,
+    file_matches: NameGroup,
+    /// The search whose name matches are still awaited. Tracked apart from `current_search_id`
+    /// because name matching outlives a text search that is cut short.
+    pending_name_search_id: Option<u32>,
+    is_text_matches_collapsed: bool,
+    text_matches_header_mouse_state: MouseStateHandle,
+    selected_row: Option<ResultRow>,
     total_match_count: usize,
     is_search_in_progress: bool,
     capped_matches: bool,
@@ -363,7 +409,7 @@ impl TypedActionView for GlobalSearchView {
                 if let Some(row_index) =
                     self.path_to_row_index(directory_path, file_path, *match_index)
                 {
-                    self.set_selected_row(row_index, ctx);
+                    self.set_selected_row(ResultRow::TextMatch(row_index), ctx);
                     self.enter_results_mode(ctx);
                 }
             }
@@ -388,11 +434,32 @@ impl TypedActionView for GlobalSearchView {
                 });
                 self.enter_query_mode(ctx);
             }
+            GlobalSearchAction::ClickNameGroupRow { kind, row } => {
+                self.set_selected_row(
+                    ResultRow::NameGroup {
+                        kind: *kind,
+                        row: *row,
+                    },
+                    ctx,
+                );
+                self.enter_results_mode(ctx);
+                self.activate_selected_row(ctx);
+                match row {
+                    // Hand focus back to the query, as opening a text match does.
+                    NameGroupRow::Match(_) => self.enter_query_mode(ctx),
+                    NameGroupRow::Header | NameGroupRow::HiddenMatches => {}
+                }
+            }
+            GlobalSearchAction::ClickTextMatchesHeader => {
+                self.set_selected_row(ResultRow::TextMatchesHeader, ctx);
+                self.enter_results_mode(ctx);
+                self.toggle_text_matches_collapsed(ctx);
+            }
             GlobalSearchAction::ResultsDown => {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
                     return;
                 }
-                if self.directory_entries.is_empty() {
+                if !self.has_results() {
                     return;
                 }
                 self.move_selection(SelectionDirection::Down, ctx);
@@ -401,7 +468,7 @@ impl TypedActionView for GlobalSearchView {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
                     return;
                 }
-                if self.directory_entries.is_empty() {
+                if !self.has_results() {
                     return;
                 }
                 if self.is_first_row_selected() {
@@ -414,65 +481,13 @@ impl TypedActionView for GlobalSearchView {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
                     return;
                 }
-                let Some(selected) = self.selected_row.clone() else {
-                    return;
-                };
-
-                match &selected.index_type {
-                    RowIndexType::DirectoryHeader => {
-                        let is_collapsed = self.is_directory_collapsed(&selected);
-                        if !is_collapsed
-                            && let Some(dir_path) =
-                                self.directory_path_for_row_index(&selected).cloned()
-                        {
-                            self.toggle_directory_collapsed(&dir_path, ctx);
-                        }
-                    }
-                    RowIndexType::FileHeader { .. } => {
-                        let is_collapsed = self.is_file_collapsed(&selected);
-                        if !is_collapsed
-                            && let (Some(dir_path), Some(file_path)) = (
-                                self.directory_path_for_row_index(&selected).cloned(),
-                                self.file_path_for_row_index(&selected).cloned(),
-                            )
-                        {
-                            self.toggle_file_collapsed(&dir_path, &file_path, ctx);
-                        }
-                    }
-                    RowIndexType::Match { .. } => {}
-                }
+                self.set_selected_row_collapsed(true, ctx);
             }
             GlobalSearchAction::ResultsRight => {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
                     return;
                 }
-                let Some(selected) = self.selected_row.clone() else {
-                    return;
-                };
-
-                match &selected.index_type {
-                    RowIndexType::DirectoryHeader => {
-                        let is_collapsed = self.is_directory_collapsed(&selected);
-                        if is_collapsed
-                            && let Some(dir_path) =
-                                self.directory_path_for_row_index(&selected).cloned()
-                        {
-                            self.toggle_directory_collapsed(&dir_path, ctx);
-                        }
-                    }
-                    RowIndexType::FileHeader { .. } => {
-                        let is_collapsed = self.is_file_collapsed(&selected);
-                        if is_collapsed
-                            && let (Some(dir_path), Some(file_path)) = (
-                                self.directory_path_for_row_index(&selected).cloned(),
-                                self.file_path_for_row_index(&selected).cloned(),
-                            )
-                        {
-                            self.toggle_file_collapsed(&dir_path, &file_path, ctx);
-                        }
-                    }
-                    RowIndexType::Match { .. } => {}
-                }
+                self.set_selected_row_collapsed(false, ctx);
             }
             GlobalSearchAction::ResultsEnter => {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
@@ -508,6 +523,51 @@ impl TypedActionView for GlobalSearchView {
 }
 
 impl GlobalSearchView {
+    /// Collapses or expands the section, directory or file whose header row is selected. Does
+    /// nothing when the header is already in that state or another kind of row is selected.
+    fn set_selected_row_collapsed(&mut self, collapsed: bool, ctx: &mut ViewContext<Self>) {
+        let Some(selected) = self.selected_row.clone() else {
+            return;
+        };
+
+        match selected {
+            ResultRow::NameGroup { kind, row } => match row {
+                NameGroupRow::Header => {
+                    if self.name_group(kind).is_collapsed() != collapsed {
+                        self.toggle_name_group_collapsed(kind, ctx);
+                    }
+                }
+                NameGroupRow::Match(_) | NameGroupRow::HiddenMatches => {}
+            },
+            ResultRow::TextMatchesHeader => {
+                if self.is_text_matches_collapsed != collapsed {
+                    self.toggle_text_matches_collapsed(ctx);
+                }
+            }
+            ResultRow::TextMatch(selected) => match &selected.index_type {
+                RowIndexType::DirectoryHeader => {
+                    if self.is_directory_collapsed(&selected) != collapsed
+                        && let Some(dir_path) =
+                            self.directory_path_for_row_index(&selected).cloned()
+                    {
+                        self.toggle_directory_collapsed(&dir_path, ctx);
+                    }
+                }
+                RowIndexType::FileHeader { .. } => {
+                    if self.is_file_collapsed(&selected) != collapsed
+                        && let (Some(dir_path), Some(file_path)) = (
+                            self.directory_path_for_row_index(&selected).cloned(),
+                            self.file_path_for_row_index(&selected).cloned(),
+                        )
+                    {
+                        self.toggle_file_collapsed(&dir_path, &file_path, ctx);
+                    }
+                }
+                RowIndexType::Match { .. } => {}
+            },
+        }
+    }
+
     /// Convert submatch byte ranges into character indices for highlighting.
     fn highlight_indices_from_submatches(line_text: &str, submatches: &[Submatch]) -> Vec<usize> {
         if line_text.is_empty() || submatches.is_empty() {
@@ -655,7 +715,7 @@ impl GlobalSearchView {
             };
 
             let mut editor = EditorView::new(options, ctx);
-            editor.set_placeholder_text("Search in files", ctx);
+            editor.set_placeholder_text("Search text, files and folders", ctx);
             editor
         });
 
@@ -704,6 +764,11 @@ impl GlobalSearchView {
             last_searched_pattern: None,
             directory_entries: Vec::new(),
             directory_path_to_directory_index_entry: HashMap::new(),
+            folder_matches: NameGroup::empty(NameMatchKind::Folder),
+            file_matches: NameGroup::empty(NameMatchKind::File),
+            pending_name_search_id: None,
+            is_text_matches_collapsed: false,
+            text_matches_header_mouse_state: MouseStateHandle::default(),
             selected_row: None,
             total_match_count: 0,
             is_search_in_progress: false,
@@ -734,7 +799,7 @@ impl GlobalSearchView {
                 self.enter_query_mode(ctx);
             }
             GlobalSearchEntryFocus::Results => {
-                if self.directory_entries.is_empty() {
+                if !self.has_results() {
                     self.enter_query_mode(ctx);
                 } else {
                     self.enter_results_mode(ctx);
@@ -816,15 +881,26 @@ impl GlobalSearchView {
             self.abort_search(ctx);
         }
     }
+    /// Stops collecting text matches once there are too many of them. Name matching for the same
+    /// search carries on.
     fn abort_search(&mut self, ctx: &mut ViewContext<Self>) {
         self.capped_matches = true;
-        self.cancel_search(ctx);
+        self.stop_tracking_text_search();
+
+        self.find_model.update(ctx, |model, model_ctx| {
+            model.abort_content_search(model_ctx);
+        });
     }
 
-    fn cancel_search(&mut self, ctx: &mut ViewContext<Self>) {
+    fn stop_tracking_text_search(&mut self) {
         self.is_search_in_progress = false;
         self.current_search_id = None;
         self.search_started_at = None;
+    }
+
+    fn cancel_search(&mut self, ctx: &mut ViewContext<Self>) {
+        self.stop_tracking_text_search();
+        self.pending_name_search_id = None;
 
         self.find_model.update(ctx, |model, model_ctx| {
             model.abort_search(model_ctx);
@@ -840,7 +916,7 @@ impl GlobalSearchView {
                 if !matches!(self.focus_mode, FocusMode::QueryEditor) {
                     return;
                 }
-                if self.directory_entries.is_empty() {
+                if !self.has_results() {
                     return;
                 }
                 self.enter_results_mode(ctx);
@@ -869,12 +945,19 @@ impl GlobalSearchView {
         let _ = self.query_change_tx.try_send(());
     }
 
-    fn reset_search_state(&mut self, clear_last_pattern: bool) {
+    fn clear_text_matches(&mut self) {
         self.directory_entries.clear();
         self.directory_path_to_directory_index_entry.clear();
-        self.selected_row = None;
         self.total_match_count = 0;
         self.capped_matches = false;
+    }
+
+    fn reset_search_state(&mut self, clear_last_pattern: bool) {
+        self.clear_text_matches();
+        self.folder_matches = NameGroup::empty(NameMatchKind::Folder);
+        self.file_matches = NameGroup::empty(NameMatchKind::File);
+        self.is_text_matches_collapsed = false;
+        self.selected_row = None;
         self.last_error = None;
         self.uniform_list_state = UniformListState::new();
 
@@ -935,15 +1018,33 @@ impl GlobalSearchView {
             GlobalSearchEvent::Started {
                 search_id,
                 remote_host_count,
+                name_search_started,
             } => {
                 send_telemetry_from_ctx!(TelemetryEvent::GlobalSearchQueryStarted, ctx);
 
                 self.current_search_id = Some(*search_id);
+                self.pending_name_search_id = name_search_started.then_some(*search_id);
                 self.search_started_at = Some(Instant::now());
                 self.active_search_remote_host_count = *remote_host_count;
 
                 self.is_search_in_progress = true;
                 self.reset_search_state(false);
+                ctx.notify();
+            }
+            GlobalSearchEvent::NameMatches { search_id, results } => {
+                if Some(*search_id) != self.pending_name_search_id {
+                    return;
+                }
+
+                self.pending_name_search_id = None;
+                self.folder_matches =
+                    NameGroup::new(NameMatchKind::Folder, results.folders.clone());
+                self.file_matches = NameGroup::new(NameMatchKind::File, results.files.clone());
+
+                // The groups are inserted above the text matches, which moves the selected row.
+                if let Some(index) = self.selected_row_index() {
+                    self.uniform_list_state.scroll_to(index);
+                }
                 ctx.notify();
             }
             GlobalSearchEvent::Progress { search_id, result } => {
@@ -1005,7 +1106,14 @@ impl GlobalSearchView {
 
                 self.is_search_in_progress = false;
                 self.search_started_at = None;
-                self.reset_search_state(false);
+                // Name matches come from a separate source and stay valid.
+                self.clear_text_matches();
+                if matches!(
+                    self.selected_row,
+                    Some(ResultRow::TextMatchesHeader | ResultRow::TextMatch(_))
+                ) {
+                    self.selected_row = None;
+                }
                 self.last_error = Some(error.clone());
                 ctx.notify();
             }
@@ -1091,14 +1199,27 @@ impl GlobalSearchView {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
 
-        // Convert global index to hierarchical RowIndex
-        let Some(row_index) = self.to_row_index(GlobalIndex(index)) else {
-            return Empty::new().finish();
+        let row_index = match self.result_row_at(index) {
+            Some(ResultRow::NameGroup { kind, row }) => {
+                return self.render_name_group_row(index, kind, row, appearance, app);
+            }
+            Some(ResultRow::TextMatchesHeader) => {
+                return self.render_group_header(
+                    index,
+                    "Text matches",
+                    self.total_match_count,
+                    self.is_text_matches_collapsed,
+                    self.text_matches_header_mouse_state.clone(),
+                    GlobalSearchAction::ClickTextMatchesHeader,
+                    appearance,
+                );
+            }
+            Some(ResultRow::TextMatch(row_index)) => row_index,
+            None => return Empty::new().finish(),
         };
 
         // Get the directory entry
         let Some(dir_entry) = self.directory_entries.get(row_index.directory_index) else {
-            debug_assert!(self.to_row_index(GlobalIndex(index)).is_some());
             return Empty::new().finish();
         };
 
@@ -1391,10 +1512,89 @@ impl GlobalSearchView {
     }
 
     fn items_count(&self) -> usize {
-        self.items_count_from_entries()
+        self.section_counts().total()
     }
 
-    /// Converts a global (flat) index to a hierarchical RowIndex.
+    fn has_results(&self) -> bool {
+        self.items_count() > 0
+    }
+
+    fn section_counts(&self) -> SectionCounts {
+        SectionCounts {
+            folders: self.folder_matches.visible_count(),
+            files: self.file_matches.visible_count(),
+            text_matches: (!self.directory_entries.is_empty()).then(|| {
+                if self.is_text_matches_collapsed {
+                    0
+                } else {
+                    self.items_count_from_entries()
+                }
+            }),
+        }
+    }
+
+    fn name_group(&self, kind: NameMatchKind) -> &NameGroup {
+        match kind {
+            NameMatchKind::Folder => &self.folder_matches,
+            NameMatchKind::File => &self.file_matches,
+        }
+    }
+
+    fn name_group_mut(&mut self, kind: NameMatchKind) -> &mut NameGroup {
+        match kind {
+            NameMatchKind::Folder => &mut self.folder_matches,
+            NameMatchKind::File => &mut self.file_matches,
+        }
+    }
+
+    /// The row at `index` in the flattened results list.
+    fn result_row_at(&self, index: usize) -> Option<ResultRow> {
+        let name_group_row = |kind| move |row| ResultRow::NameGroup { kind, row };
+        match self.section_counts().row_at(index)? {
+            SectionRow::Folders(offset) => self
+                .folder_matches
+                .row_at(offset)
+                .map(name_group_row(NameMatchKind::Folder)),
+            SectionRow::Files(offset) => self
+                .file_matches
+                .row_at(offset)
+                .map(name_group_row(NameMatchKind::File)),
+            SectionRow::TextMatchesHeader => Some(ResultRow::TextMatchesHeader),
+            SectionRow::TextMatch(offset) => self
+                .to_row_index(GlobalIndex(offset))
+                .map(ResultRow::TextMatch),
+        }
+    }
+
+    /// The index of `row` in the flattened results list, if the row exists and is visible.
+    fn result_row_index(&self, row: &ResultRow) -> Option<usize> {
+        let section_row = match row {
+            ResultRow::NameGroup { kind, row } => {
+                let offset = self.name_group(*kind).offset_of(*row)?;
+                match kind {
+                    NameMatchKind::Folder => SectionRow::Folders(offset),
+                    NameMatchKind::File => SectionRow::Files(offset),
+                }
+            }
+            ResultRow::TextMatchesHeader => SectionRow::TextMatchesHeader,
+            ResultRow::TextMatch(row_index) => {
+                // Validate the row still exists in the data model
+                let dir_entry = self.directory_entries.get(row_index.directory_index)?;
+                match &row_index.index_type {
+                    RowIndexType::DirectoryHeader => {}
+                    RowIndexType::FileHeader { path_index }
+                    | RowIndexType::Match { path_index, .. } => {
+                        // Check path exists
+                        dir_entry.matched_paths.paths.get(*path_index)?;
+                    }
+                }
+                SectionRow::TextMatch(self.to_global_index(row_index))
+            }
+        };
+        self.section_counts().index_of(section_row)
+    }
+
+    /// Converts a flat index among the text match rows to a hierarchical RowIndex.
     /// Returns None if the index is out of bounds.
     fn to_row_index(&self, global: GlobalIndex) -> Option<RowIndex> {
         let mut running_count = 0;
@@ -1463,7 +1663,7 @@ impl GlobalSearchView {
         None
     }
 
-    /// Converts a hierarchical RowIndex to a global (flat) index.
+    /// Converts a hierarchical RowIndex to a flat index among the text match rows.
     fn to_global_index(&self, row: &RowIndex) -> usize {
         let mut running_count = 0;
 
@@ -1525,7 +1725,7 @@ impl GlobalSearchView {
         }
     }
 
-    /// Returns the total number of visible rows
+    /// Returns the total number of visible text match rows
     fn items_count_from_entries(&self) -> usize {
         self.directory_entries
             .iter()
@@ -1636,7 +1836,7 @@ impl GlobalSearchView {
     }
 
     fn render_results(&self, app: &AppContext) -> Option<Box<dyn Element>> {
-        if self.directory_entries.is_empty() {
+        if !self.has_results() {
             return None;
         }
 
@@ -1675,52 +1875,30 @@ impl GlobalSearchView {
         Some(scrollable)
     }
 
-    /// Converts a global index to a RowIndex
-    fn row_index_for_global_index(&self, index: usize) -> Option<RowIndex> {
-        self.to_row_index(GlobalIndex(index))
-    }
-
-    /// Returns the global index for the currently selected row.
-    /// Uses to_global_index for O(directories) lookup.
+    /// Returns the index of the currently selected row in the flattened results list.
     fn selected_row_index(&self) -> Option<usize> {
-        let selected_row = self.selected_row.as_ref()?;
-        // Validate the selection still exists in the data model
-        let dir_entry = self.directory_entries.get(selected_row.directory_index)?;
-        match &selected_row.index_type {
-            RowIndexType::DirectoryHeader => {}
-            RowIndexType::FileHeader { path_index } | RowIndexType::Match { path_index, .. } => {
-                // Check path exists
-                dir_entry.matched_paths.paths.get(*path_index)?;
-            }
-        }
-        Some(self.to_global_index(selected_row))
+        self.result_row_index(self.selected_row.as_ref()?)
     }
 
-    fn set_selected_row(&mut self, selected_row: RowIndex, ctx: &mut ViewContext<Self>) {
-        let global_index = self.to_global_index(&selected_row);
+    fn set_selected_row(&mut self, selected_row: ResultRow, ctx: &mut ViewContext<Self>) {
+        if let Some(index) = self.result_row_index(&selected_row) {
+            self.uniform_list_state.scroll_to(index);
+        }
         self.selected_row = Some(selected_row);
-        self.uniform_list_state.scroll_to(global_index);
         ctx.notify();
     }
 
     fn set_selected_row_by_index(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        let Some(row_index) = self.row_index_for_global_index(index) else {
+        let Some(row) = self.result_row_at(index) else {
             return;
         };
-        self.selected_row = Some(row_index);
+        self.selected_row = Some(row);
         self.uniform_list_state.scroll_to(index);
         ctx.notify();
     }
 
-    /// Selects the first row (directory header at index 0).
     fn select_first_row(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.directory_entries.is_empty() {
-            let row_index = RowIndex {
-                directory_index: 0,
-                index_type: RowIndexType::DirectoryHeader,
-            };
-            self.set_selected_row(row_index, ctx);
-        }
+        self.set_selected_row_by_index(0, ctx);
     }
 
     fn ensure_selection(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1729,13 +1907,13 @@ impl GlobalSearchView {
             self.selected_row = None;
         }
 
-        if self.selected_row.is_none() && !self.directory_entries.is_empty() {
+        if self.selected_row.is_none() {
             self.select_first_row(ctx);
         }
     }
 
     fn move_selection(&mut self, direction: SelectionDirection, ctx: &mut ViewContext<Self>) {
-        let total_items = self.items_count_from_entries();
+        let total_items = self.items_count();
         if total_items == 0 {
             return;
         }
@@ -1758,8 +1936,17 @@ impl GlobalSearchView {
     }
 
     fn activate_selected_row(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(selected_row) = self.selected_row.clone() else {
-            return;
+        let selected_row = match self.selected_row.clone() {
+            Some(ResultRow::NameGroup { kind, row }) => {
+                self.activate_name_group_row(kind, row, ctx);
+                return;
+            }
+            Some(ResultRow::TextMatchesHeader) => {
+                self.toggle_text_matches_collapsed(ctx);
+                return;
+            }
+            Some(ResultRow::TextMatch(selected_row)) => selected_row,
+            None => return,
         };
 
         match &selected_row.index_type {
@@ -1799,6 +1986,75 @@ impl GlobalSearchView {
         }
     }
 
+    fn activate_name_group_row(
+        &mut self,
+        kind: NameMatchKind,
+        row: NameGroupRow,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match row {
+            NameGroupRow::Header => self.toggle_name_group_collapsed(kind, ctx),
+            NameGroupRow::Match(index) => {
+                let Some(entry) = self.name_group(kind).entry(index) else {
+                    return;
+                };
+                let location = entry.name_match.location.clone();
+                ctx.emit(match kind {
+                    NameMatchKind::Folder => Event::RevealFolder { location },
+                    NameMatchKind::File => Event::OpenFile { location },
+                });
+            }
+            NameGroupRow::HiddenMatches => {
+                if let Some(first_revealed) = self.name_group_mut(kind).show_more() {
+                    self.set_selected_row(
+                        ResultRow::NameGroup {
+                            kind,
+                            row: NameGroupRow::Match(first_revealed),
+                        },
+                        ctx,
+                    );
+                }
+            }
+        }
+    }
+
+    fn toggle_name_group_collapsed(&mut self, kind: NameMatchKind, ctx: &mut ViewContext<Self>) {
+        let group = self.name_group_mut(kind);
+        group.toggle_collapsed();
+        let is_collapsed = group.is_collapsed();
+
+        // If collapsing and selection was inside this group, move to the group header
+        if is_collapsed
+            && let Some(ResultRow::NameGroup {
+                kind: selected_kind,
+                ..
+            }) = self.selected_row
+            && selected_kind == kind
+        {
+            self.selected_row = Some(ResultRow::NameGroup {
+                kind,
+                row: NameGroupRow::Header,
+            });
+        }
+
+        self.ensure_selection(ctx);
+        ctx.notify();
+    }
+
+    fn toggle_text_matches_collapsed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.is_text_matches_collapsed = !self.is_text_matches_collapsed;
+
+        // If collapsing and selection was on a text match row, move to the section header
+        if self.is_text_matches_collapsed
+            && matches!(self.selected_row, Some(ResultRow::TextMatch(_)))
+        {
+            self.selected_row = Some(ResultRow::TextMatchesHeader);
+        }
+
+        self.ensure_selection(ctx);
+        ctx.notify();
+    }
+
     fn toggle_directory_collapsed(
         &mut self,
         directory_path: &LocalOrRemotePath,
@@ -1819,14 +2075,14 @@ impl GlobalSearchView {
 
         // If collapsing and selection was inside this directory, move to directory header
         if !was_collapsed
-            && let Some(selected_row) = self.selected_row.as_ref()
+            && let Some(ResultRow::TextMatch(selected_row)) = self.selected_row.as_ref()
             && selected_row.directory_index == dir_idx
             && !matches!(selected_row.index_type, RowIndexType::DirectoryHeader)
         {
-            self.selected_row = Some(RowIndex {
+            self.selected_row = Some(ResultRow::TextMatch(RowIndex {
                 directory_index: dir_idx,
                 index_type: RowIndexType::DirectoryHeader,
-            });
+            }));
         }
 
         self.ensure_selection(ctx);
@@ -1858,7 +2114,7 @@ impl GlobalSearchView {
 
         // If collapsing and selection was on a match in this file, move to file header
         if !was_collapsed
-            && let Some(selected_row) = self.selected_row.as_ref()
+            && let Some(ResultRow::TextMatch(selected_row)) = self.selected_row.as_ref()
             && let RowIndexType::Match { path_index, .. } = &selected_row.index_type
         {
             // Check if the selection is in this file
@@ -1867,12 +2123,12 @@ impl GlobalSearchView {
                 && dir_path == directory_path
                 && sel_file_path == file_path
             {
-                self.selected_row = Some(RowIndex {
+                self.selected_row = Some(ResultRow::TextMatch(RowIndex {
                     directory_index: selected_row.directory_index,
                     index_type: RowIndexType::FileHeader {
                         path_index: *path_index,
                     },
-                });
+                }));
             }
         }
 
@@ -1886,7 +2142,7 @@ impl GlobalSearchView {
     }
 
     fn enter_results_mode(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.directory_entries.is_empty() {
+        if !self.has_results() {
             return;
         }
         self.focus_mode = FocusMode::ResultsList;
@@ -1906,6 +2162,316 @@ impl GlobalSearchView {
     /// Checks if the row at the given global index is currently selected.
     fn is_row_at_index_selected(&self, global_index: usize) -> bool {
         self.selected_row_index() == Some(global_index)
+    }
+
+    fn render_name_group_row(
+        &self,
+        index: usize,
+        kind: NameMatchKind,
+        row: NameGroupRow,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let group = self.name_group(kind);
+        match row {
+            NameGroupRow::Header => {
+                let label = match kind {
+                    NameMatchKind::Folder => "Folders",
+                    NameMatchKind::File => "Files",
+                };
+                self.render_group_header(
+                    index,
+                    label,
+                    group.total(),
+                    group.is_collapsed(),
+                    group.header_mouse_state.clone(),
+                    GlobalSearchAction::ClickNameGroupRow { kind, row },
+                    appearance,
+                )
+            }
+            NameGroupRow::Match(match_index) => {
+                let Some(entry) = group.entry(match_index) else {
+                    return Empty::new().finish();
+                };
+                self.render_name_match_row(index, kind, match_index, entry, appearance, app)
+            }
+            NameGroupRow::HiddenMatches => {
+                self.render_hidden_matches_row(index, group, appearance)
+            }
+        }
+    }
+
+    /// Renders the collapsible header of one of the sections the results are grouped into.
+    #[allow(clippy::too_many_arguments)]
+    fn render_group_header(
+        &self,
+        index: usize,
+        label: &'static str,
+        count: usize,
+        is_collapsed: bool,
+        mouse_state: MouseStateHandle,
+        click_action: GlobalSearchAction,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let is_selected = self.is_row_at_index_selected(index);
+        let theme = appearance.theme();
+
+        Hoverable::new(mouse_state, move |mouse_state| {
+            let list_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
+            let color = list_highlight_state.text_and_icon_color(appearance);
+
+            let chevron_icon_enum = if is_collapsed {
+                Icon::ChevronRight
+            } else {
+                Icon::ChevronDown
+            };
+            let chevron_icon = ConstrainedBox::new(
+                chevron_icon_enum
+                    .to_warpui_icon(ThemeFill::from(color))
+                    .finish(),
+            )
+            .with_width(ROW_ICON_SIZE)
+            .with_height(ROW_ICON_SIZE)
+            .finish();
+            let chevron_container = Container::new(chevron_icon).with_margin_right(8.).finish();
+
+            let label_text = Text::new_inline(label, appearance.ui_font_family(), 14.)
+                .with_color(color)
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .finish();
+
+            let count_text = Text::new_inline(count.to_string(), appearance.ui_font_family(), 12.0)
+                .with_color(theme.background().into())
+                .finish();
+            let count_badge = Container::new(count_text)
+                .with_horizontal_padding(4.)
+                .with_vertical_padding(1.)
+                .with_background_color(theme.terminal_colors().normal.yellow.into())
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                .finish();
+
+            let left_row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(chevron_container)
+                .with_child(Shrinkable::new(1.0, label_text).finish())
+                .finish();
+
+            let header_row = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(Shrinkable::new(1.0, left_row).finish())
+                .with_child(count_badge)
+                .finish();
+
+            let mut row =
+                Container::new(header_row).with_padding(Padding::uniform(4.).with_left(0.));
+
+            if let Some(background_fill) = list_highlight_state.background_color(appearance) {
+                let corner_radius = list_highlight_state
+                    .corner_radius()
+                    .unwrap_or_else(|| CornerRadius::with_all(Radius::Pixels(4.)));
+                row = row
+                    .with_background(background_fill)
+                    .with_corner_radius(corner_radius);
+            }
+
+            row.finish()
+        })
+        .with_cursor(Cursor::PointingHand)
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(click_action.clone());
+        })
+        .finish()
+    }
+
+    fn render_name_match_row(
+        &self,
+        index: usize,
+        kind: NameMatchKind,
+        match_index: usize,
+        entry: &NameMatchEntry,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let is_selected = self.is_row_at_index_selected(index);
+        let theme = appearance.theme();
+        let label = NameMatchLabel::new(&entry.name_match);
+        let location_path = entry.name_match.location.display_path();
+        let tooltip_text = display_path_with_host(&entry.name_match.location, false, app);
+
+        Hoverable::new(entry.mouse_state.clone(), move |mouse_state| {
+            let list_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
+
+            let name_color = match list_highlight_state {
+                ItemHighlightState::None => blended_colors::text_main(theme, theme.background()),
+                ItemHighlightState::Hovered | ItemHighlightState::Selected => {
+                    theme.foreground().into()
+                }
+            };
+            let highlight = Highlight::new().with_text_style(TextStyle::new().with_background_color(
+                theme.ansi_overlay_2(
+                    AnsiColorIdentifier::Yellow.to_ansi_color(&theme.terminal_colors().normal),
+                ),
+            ));
+
+            let icon = match kind {
+                NameMatchKind::Folder => icon_from_folder_path(&location_path, false),
+                NameMatchKind::File => icon_from_file_path(&location_path, appearance)
+                    .unwrap_or_else(default_file_icon),
+            };
+            let icon = Container::new(
+                ConstrainedBox::new(icon)
+                    .with_width(ROW_ICON_SIZE)
+                    .with_height(ROW_ICON_SIZE)
+                    .finish(),
+            )
+            .with_padding_right(8.)
+            .finish();
+
+            let mut name_text =
+                Text::new_inline(label.name.to_string(), appearance.ui_font_family(), 14.)
+                    .with_color(name_color);
+            if !label.name_highlights.is_empty() {
+                name_text = name_text.with_single_highlight(highlight, label.name_highlights);
+            }
+
+            // The name must stay readable in a narrow panel, so the parent path gives way first.
+            let mut content = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(icon)
+                .with_child(Shrinkable::new(20.0, name_text.finish()).finish());
+
+            if !label.parent.is_empty() {
+                let mut parent_text =
+                    Text::new_inline(label.parent.to_string(), appearance.ui_font_family(), 12.)
+                        .with_color(blended_colors::text_sub(theme, theme.background()))
+                        .with_clip(ClipConfig {
+                            direction: ClipDirection::Start,
+                            style: ClipStyle::Ellipsis,
+                        });
+                if !label.parent_highlights.is_empty() {
+                    parent_text =
+                        parent_text.with_single_highlight(highlight, label.parent_highlights);
+                }
+                content.add_child(
+                    Shrinkable::new(
+                        1.0,
+                        Container::new(parent_text.finish())
+                            .with_padding_left(6.)
+                            .finish(),
+                    )
+                    .finish(),
+                );
+            }
+
+            let mut row = Container::new(content.finish())
+                .with_padding(Padding::uniform(4.).with_left(NAME_GROUP_ROW_INDENT));
+
+            if let Some(background_fill) = list_highlight_state.background_color(appearance) {
+                let corner_radius = list_highlight_state
+                    .corner_radius()
+                    .unwrap_or_else(|| CornerRadius::with_all(Radius::Pixels(4.)));
+                row = row
+                    .with_background(background_fill)
+                    .with_corner_radius(corner_radius);
+            }
+
+            let base_row = row.finish();
+
+            // Add a tooltip on hover that shows the full (untruncated) path.
+            if mouse_state.is_hovered() {
+                let tooltip = appearance
+                    .ui_builder()
+                    .tool_tip(tooltip_text)
+                    .build()
+                    .finish();
+
+                let mut stack = Stack::new().with_child(base_row);
+                stack.add_positioned_overlay_child(
+                    tooltip,
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., 4.),
+                        ParentOffsetBounds::WindowByPosition,
+                        ParentAnchor::BottomMiddle,
+                        ChildAnchor::TopLeft,
+                    ),
+                );
+                stack.finish()
+            } else {
+                base_row
+            }
+        })
+        .with_cursor(Cursor::PointingHand)
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(GlobalSearchAction::ClickNameGroupRow {
+                kind,
+                row: NameGroupRow::Match(match_index),
+            });
+        })
+        .finish()
+    }
+
+    fn render_hidden_matches_row(
+        &self,
+        index: usize,
+        group: &NameGroup,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let is_selected = self.is_row_at_index_selected(index);
+        let theme = appearance.theme();
+        let kind = group.kind();
+        let hidden_count = group.hidden_count();
+        let can_show_more = group.can_show_more();
+        let label = if can_show_more {
+            format!("Show more ({hidden_count} hidden)")
+        } else {
+            format!("{hidden_count} more not shown. Narrow your search to see them.")
+        };
+
+        let row = Hoverable::new(
+            group.hidden_matches_mouse_state.clone(),
+            move |mouse_state| {
+                let list_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
+
+                let text_color = match list_highlight_state {
+                    ItemHighlightState::None => blended_colors::text_sub(theme, theme.background()),
+                    ItemHighlightState::Hovered => {
+                        blended_colors::text_main(theme, theme.background())
+                    }
+                    ItemHighlightState::Selected => theme.foreground().into(),
+                };
+                let text = Text::new_inline(label, appearance.ui_font_family(), 14.)
+                    .with_color(text_color)
+                    .finish();
+
+                let mut row = Container::new(text)
+                    .with_padding(Padding::uniform(4.).with_left(NAME_GROUP_ROW_INDENT));
+
+                if let Some(background_fill) = list_highlight_state.background_color(appearance) {
+                    let corner_radius = list_highlight_state
+                        .corner_radius()
+                        .unwrap_or_else(|| CornerRadius::with_all(Radius::Pixels(4.)));
+                    row = row
+                        .with_background(background_fill)
+                        .with_corner_radius(corner_radius);
+                }
+
+                row.finish()
+            },
+        )
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(GlobalSearchAction::ClickNameGroupRow {
+                kind,
+                row: NameGroupRow::HiddenMatches,
+            });
+        });
+
+        if can_show_more {
+            row.with_cursor(Cursor::PointingHand).finish()
+        } else {
+            row.finish()
+        }
     }
 
     fn render_directory_header_from_entry(
@@ -2130,16 +2696,26 @@ impl View for GlobalSearchView {
         let files = self.unique_match_count();
         let file_word = if files == 1 { "file" } else { "files" };
 
+        let name_summary =
+            name_match_summary(self.folder_matches.total(), self.file_matches.total());
+        let is_searching = self.is_search_in_progress || self.pending_name_search_id.is_some();
+
         let message = if let Some(error) = &self.last_error {
             error.clone()
-        } else if self.is_search_in_progress && self.total_match_count == 0 {
-            "Searching…".to_string()
-        } else if !self.is_search_in_progress && self.total_match_count == 0 {
-            "No results found. Review your gitignore files.".to_string()
+        } else if self.total_match_count == 0 {
+            match name_summary {
+                Some(name_summary) => name_summary,
+                None if is_searching => "Searching…".to_string(),
+                None => "No results found. Review your gitignore files.".to_string(),
+            }
         } else {
-            match self.total_match_count {
+            let text_summary = match self.total_match_count {
                 1 => format!("1 result in {files} {file_word}"),
                 n => format!("{n} results in {files} {file_word}"),
+            };
+            match name_summary {
+                Some(name_summary) => format!("{text_summary} · {name_summary}"),
+                None => text_summary,
             }
         };
 
@@ -2217,7 +2793,7 @@ impl View for GlobalSearchView {
             body = body.with_child(Shrinkable::new(1.0, results_section).finish());
         }
 
-        let has_results = !self.directory_entries.is_empty();
+        let has_results = self.has_results();
 
         EventHandler::new(body.finish())
             .on_left_mouse_down(move |ctx, _, _| {
@@ -2313,7 +2889,7 @@ impl GlobalSearchView {
         self.render_zero_state(
             Icon::Search,
             "Global search",
-            "Search in files across your current directories.",
+            "Search file contents, file names and folder names across your current directories.",
             app,
         )
     }

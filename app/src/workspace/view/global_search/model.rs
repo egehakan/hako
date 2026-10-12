@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use futures::StreamExt as _;
@@ -20,6 +22,8 @@ use warp_util::standardized_path::StandardizedPath;
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, ModelContext, ModelSpawner, SingletonEntity};
 
+use crate::workspace::view::global_search::name_match::NameMatcher;
+use crate::workspace::view::global_search::name_search::{resolve_roots, search_names};
 use crate::workspace::view::global_search::view::GlobalSearchEvent;
 use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
 
@@ -57,9 +61,20 @@ struct SourceResult {
     capped: bool,
 }
 
+/// The background task matching file and folder names for one search.
+struct NameSearchTask {
+    search_id: u32,
+    handle: SpawnedFutureHandle,
+    /// Stops the task between entries, since it never yields to the executor while it runs.
+    cancelled: Arc<AtomicBool>,
+}
+
 pub struct GlobalSearch {
     /// Spawned local/remote search tasks for the current search.
     search_handles: Vec<SpawnedFutureHandle>,
+    /// Name matching for the current search. It runs apart from the content sources, so neither
+    /// kind of result waits for the other.
+    name_search: Option<NameSearchTask>,
     /// Request ids of remote searches started for the current search, so
     /// they can be aborted daemon-side when the query changes. May contain
     /// ids of already-resolved requests; aborting those is a no-op.
@@ -96,6 +111,7 @@ impl GlobalSearch {
     pub fn new() -> Self {
         GlobalSearch {
             search_handles: Vec::new(),
+            name_search: None,
             in_flight_remote_requests: Vec::new(),
             active_search: None,
             next_search_id: 1,
@@ -103,6 +119,19 @@ impl GlobalSearch {
     }
 
     pub fn abort_search(&mut self, ctx: &mut ModelContext<Self>) {
+        self.abort_content_search(ctx);
+        self.abort_name_search();
+    }
+
+    fn abort_name_search(&mut self) {
+        if let Some(task) = self.name_search.take() {
+            task.cancelled.store(true, Ordering::Relaxed);
+            task.handle.abort();
+        }
+    }
+
+    /// Stops searching file contents, leaving name matching for the current search running.
+    pub fn abort_content_search(&mut self, ctx: &mut ModelContext<Self>) {
         for handle in self.search_handles.drain(..) {
             handle.abort();
         }
@@ -136,6 +165,9 @@ impl GlobalSearch {
         let search_id = self.next_search_id;
         self.next_search_id += 1;
 
+        let name_search_started =
+            self.spawn_name_search(search_id, &pattern, &roots, &search_config, ctx);
+
         let effective_pattern = if search_config.use_regex {
             pattern
         } else {
@@ -164,6 +196,7 @@ impl GlobalSearch {
         ctx.emit(GlobalSearchEvent::Started {
             search_id,
             remote_host_count,
+            name_search_started,
         });
         let source_count = usize::from(!local_roots.is_empty()) + remote_roots.len();
         if source_count == 0 {
@@ -208,6 +241,52 @@ impl GlobalSearch {
             };
             self.spawn_remote_search(search_id, host_id, params, ctx);
         }
+    }
+
+    /// Starts matching file and folder names below `roots`. Returns whether a task was started,
+    /// in which case a [`GlobalSearchEvent::NameMatches`] follows unless the search is aborted.
+    fn spawn_name_search(
+        &mut self,
+        search_id: u32,
+        pattern: &str,
+        roots: &[LocalOrRemotePath],
+        search_config: &SearchConfig,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let Some(matcher) = NameMatcher::new(pattern, search_config) else {
+            return false;
+        };
+        let roots = resolve_roots(roots, ctx);
+        if roots.is_empty() {
+            return false;
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let handle = ctx.spawn(
+            {
+                let cancelled = cancelled.clone();
+                async move { search_names(&roots, &matcher, &cancelled) }
+            },
+            move |me, results, ctx| {
+                if me
+                    .name_search
+                    .as_ref()
+                    .is_none_or(|task| task.search_id != search_id)
+                {
+                    return;
+                }
+                me.name_search = None;
+                if let Some(results) = results {
+                    ctx.emit(GlobalSearchEvent::NameMatches { search_id, results });
+                }
+            },
+        );
+        self.name_search = Some(NameSearchTask {
+            search_id,
+            handle,
+            cancelled,
+        });
+        true
     }
 
     fn spawn_local_search(

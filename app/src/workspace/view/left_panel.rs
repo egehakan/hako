@@ -901,45 +901,86 @@ impl LeftPanelView {
                     line_num: *line_number as usize,
                     column_num: *column_num,
                 };
-
-                let settings = EditorSettings::as_ref(ctx);
-                let target = match location {
-                    LocalOrRemotePath::Local(path) => resolve_file_target_with_editor_choice(
-                        path,
-                        *settings.open_code_panels_file_editor,
-                        *settings.prefer_markdown_viewer,
-                        *settings.open_file_layout,
-                        None,
-                    ),
-                    // Local-fs-based target resolution can't inspect remote
-                    // files; mirror the file tree's remote handling (code
-                    // editor, or markdown viewer by extension + preference).
-                    LocalOrRemotePath::Remote(remote) => {
-                        let is_markdown =
-                            is_markdown_file(std::path::Path::new(remote.path.as_str()));
-                        if is_markdown && *settings.prefer_markdown_viewer {
-                            FileTarget::MarkdownViewer(EditorLayout::SplitPane)
-                        } else {
-                            FileTarget::CodeEditor(EditorLayout::SplitPane)
-                        }
-                    }
-                };
-
-                send_telemetry_from_ctx!(
-                    TelemetryEvent::CodePanelsFileOpened {
-                        entrypoint: CodePanelsFileOpenEntrypoint::GlobalSearch,
-                        target: target.clone(),
-                    },
-                    ctx
-                );
-
-                ctx.emit(LeftPanelEvent::OpenFileWithTarget {
-                    location: location.clone(),
-                    target,
-                    line_col: Some(line_col),
-                });
+                self.open_global_search_result(location, Some(line_col), ctx);
+            }
+            GlobalSearchViewEvent::OpenFile { location } => {
+                self.open_global_search_result(location, None, ctx);
+            }
+            GlobalSearchViewEvent::RevealFolder { location } => {
+                self.reveal_folder_in_file_tree(location, ctx);
             }
         }
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn open_global_search_result(
+        &mut self,
+        location: &LocalOrRemotePath,
+        line_col: Option<LineAndColumnArg>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let settings = EditorSettings::as_ref(ctx);
+        let target = match location {
+            LocalOrRemotePath::Local(path) => resolve_file_target_with_editor_choice(
+                path,
+                *settings.open_code_panels_file_editor,
+                *settings.prefer_markdown_viewer,
+                *settings.open_file_layout,
+                None,
+            ),
+            // Local-fs-based target resolution can't inspect remote
+            // files; mirror the file tree's remote handling (code
+            // editor, or markdown viewer by extension + preference).
+            LocalOrRemotePath::Remote(remote) => {
+                let is_markdown = is_markdown_file(std::path::Path::new(remote.path.as_str()));
+                if is_markdown && *settings.prefer_markdown_viewer {
+                    FileTarget::MarkdownViewer(EditorLayout::SplitPane)
+                } else {
+                    FileTarget::CodeEditor(EditorLayout::SplitPane)
+                }
+            }
+        };
+
+        send_telemetry_from_ctx!(
+            TelemetryEvent::CodePanelsFileOpened {
+                entrypoint: CodePanelsFileOpenEntrypoint::GlobalSearch,
+                target: target.clone(),
+            },
+            ctx
+        );
+
+        ctx.emit(LeftPanelEvent::OpenFileWithTarget {
+            location: location.clone(),
+            target,
+            line_col,
+        });
+    }
+
+    /// Switches to the Project Explorer and selects `location` in its tree. Does nothing when the
+    /// Project Explorer is turned off.
+    #[cfg(feature = "local_fs")]
+    fn reveal_folder_in_file_tree(
+        &mut self,
+        location: &LocalOrRemotePath,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let is_project_explorer_available = self
+            .toolbelt_buttons
+            .iter()
+            .any(|button| matches!(button.action, LeftPanelAction::ProjectExplorer));
+        if !is_project_explorer_available {
+            return;
+        }
+        let Some(file_tree_view) = self.active_file_tree_view(ctx) else {
+            return;
+        };
+
+        active_view_state::set(self, ToolPanelView::ProjectExplorer, ctx);
+        let path = location.path_component();
+        file_tree_view.update(ctx, |view, ctx| {
+            view.reveal_directory(&path, ctx);
+        });
+        ctx.focus(&file_tree_view);
     }
 
     #[cfg(feature = "local_fs")]

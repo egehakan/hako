@@ -282,9 +282,9 @@ pub struct FileTreeView {
     registered_lazy_loaded_paths: HashSet<StandardizedPath>,
     /// Directory the view wants to focus once its entry becomes available.
     ///
-    /// Set when a descendant path is absorbed into an ancestor root but the
-    /// descendant's entry has not yet been materialized (e.g. the ancestor
-    /// is still lazy-loading). Re-evaluated on every rebuild; cleared when
+    /// Set when a descendant path is absorbed into an ancestor root, or a
+    /// directory is revealed, but its entry has not yet been materialized
+    /// (e.g. the ancestor is still lazy-loading). Re-evaluated on every rebuild; cleared when
     /// the target is selected by the user or when the target root stops
     /// being displayed.
     pending_focus_target: Option<PendingFocusTarget>,
@@ -821,6 +821,28 @@ impl FileTreeView {
             };
             self.select_id(&id, ctx);
         }
+    }
+
+    /// Expands the tree down to the directory at `directory_path` and selects it. If the directory
+    /// has not been loaded into the tree yet, it is selected once it has.
+    pub fn reveal_directory(
+        &mut self,
+        directory_path: &StandardizedPath,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(root) = self.find_deepest_root_for_file(directory_path) else {
+            return;
+        };
+        self.expand_ancestors_to_path(&root, directory_path, ctx);
+        self.rebuild_flattened_items();
+
+        self.pending_focus_target = Some(PendingFocusTarget {
+            root,
+            path: directory_path.clone(),
+            scrolled: false,
+        });
+        self.apply_pending_focus_target();
+        ctx.notify();
     }
 
     /// Expands all ancestor directories between root and target_path.
