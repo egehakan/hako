@@ -128,6 +128,11 @@ fn parses_branch_tracking_and_entries() {
     let status = parse_porcelain_v2_status(&output);
 
     assert_eq!(status.branch, "feature/login");
+    assert!(!status.is_detached);
+    assert_eq!(
+        status.head_oid.as_deref(),
+        Some("1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b")
+    );
     assert_eq!(status.upstream.as_deref(), Some("origin/feature/login"));
     assert_eq!((status.ahead, status.behind), (3, 1));
     let files: Vec<(&str, &GitFileStatus)> = status
@@ -161,8 +166,21 @@ fn shows_abbreviated_commit_for_detached_head() {
     let status = parse_porcelain_v2_status(output);
 
     assert_eq!(status.branch, "1a2b3c4");
+    assert!(status.is_detached);
     assert_eq!(status.upstream, None);
     assert!(status.files.is_empty());
+}
+
+#[test]
+fn reports_no_head_commit_before_the_first_commit() {
+    let output = "# branch.oid (initial)\0# branch.head main\0? notes.md\0";
+
+    let status = parse_porcelain_v2_status(output);
+
+    assert_eq!(status.branch, "main");
+    assert!(!status.is_detached);
+    assert_eq!(status.head_oid, None);
+    assert_eq!(status.files.len(), 1);
 }
 
 #[test]

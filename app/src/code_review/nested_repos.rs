@@ -32,6 +32,12 @@ const WATCHER_DEBOUNCE: Duration = Duration::from_millis(1500);
 /// Length of the abbreviated commit shown in place of a branch name for a detached `HEAD`.
 const SHORT_OID_LENGTH: usize = 7;
 
+/// Value of `branch.head` in porcelain v2 output when `HEAD` is detached.
+const DETACHED_HEAD: &str = "(detached)";
+
+/// Value of `branch.oid` in porcelain v2 output before the first commit.
+const UNBORN_OID: &str = "(initial)";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NestedRepoKind {
     Repository,
@@ -130,6 +136,9 @@ pub struct NestedRepoFile {
 pub struct NestedRepoStatus {
     /// Branch name, or an abbreviated commit when `HEAD` is detached.
     pub branch: String,
+    pub is_detached: bool,
+    /// Commit that `HEAD` points at. `None` before the repository's first commit.
+    pub head_oid: Option<String>,
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
@@ -200,8 +209,10 @@ pub(crate) fn parse_porcelain_v2_status(output: &str) -> NestedRepoStatus {
             });
         }
     }
+    status.is_detached = head == Some(DETACHED_HEAD);
+    status.head_oid = oid.filter(|oid| *oid != UNBORN_OID).map(str::to_owned);
     status.branch = match (head, oid) {
-        (Some("(detached)"), Some(oid)) => oid.chars().take(SHORT_OID_LENGTH).collect(),
+        (Some(DETACHED_HEAD), Some(oid)) => oid.chars().take(SHORT_OID_LENGTH).collect(),
         (Some(head), _) => head.to_owned(),
         (None, _) => String::new(),
     };
@@ -323,6 +334,12 @@ impl NestedReposModel {
         }
         self.start_queued_status_loads(ctx);
         self.rescan(ctx);
+    }
+
+    /// Reloads the status of one repository, e.g. after running a git operation in it.
+    pub fn reload_status(&mut self, repo_root: &Path, ctx: &mut ModelContext<Self>) {
+        self.queue_status_load(repo_root);
+        self.start_queued_status_loads(ctx);
     }
 
     fn rescan(&mut self, ctx: &mut ModelContext<Self>) {
