@@ -66,13 +66,8 @@ impl LocalCodeEditorView {
         });
 
         let Some(captured_path) = interactive_path.as_mut().now_or_never() else {
-            // The shell's `PATH` is still being captured. A flush cannot wait for it, and without
-            // it there is no telling whether a project formatter owns this file, so the file is
-            // saved as it is rather than formatted by the wrong tool.
-            if matches!(trigger, FormatTrigger::Flush(_)) {
-                self.finish_format(trigger, None, ctx);
-                return true;
-            }
+            // The shell's `PATH` is still being captured, and without it there is no telling
+            // whether a project formatter owns this file, so the choice waits for it.
             let Some(text) = self.buffer_text(ctx) else {
                 self.finish_format(trigger, None, ctx);
                 return true;
@@ -133,24 +128,17 @@ impl LocalCodeEditorView {
                 true
             }
             Selection::External(invocation) => {
-                match trigger {
-                    // A flush is followed by the editor closing, so it is written as it is
-                    // rather than made to wait on a formatter.
-                    FormatTrigger::Flush(_) => self.finish_format(trigger, None, ctx),
-                    FormatTrigger::Save(_) | FormatTrigger::Command => {
-                        match self.buffer_text(ctx) {
-                            Some(text) => {
-                                let outcome = code_formatters::format_with_in_background(
-                                    invocation,
-                                    text,
-                                    Some(path_env),
-                                    limits,
-                                );
-                                self.await_project_format(trigger, file, outcome, ctx);
-                            }
-                            None => self.finish_format(trigger, None, ctx),
-                        }
+                match self.buffer_text(ctx) {
+                    Some(text) => {
+                        let outcome = code_formatters::format_with_in_background(
+                            invocation,
+                            text,
+                            Some(path_env),
+                            limits,
+                        );
+                        self.await_project_format(trigger, file, outcome, ctx);
                     }
+                    None => self.finish_format(trigger, None, ctx),
                 }
                 true
             }
@@ -301,7 +289,7 @@ impl LocalCodeEditorView {
     ) {
         log::warn!("Could not format {}: {failure}", file.display());
         let should_notify = match trigger {
-            FormatTrigger::Save(_) | FormatTrigger::Flush(_) => REPORTED_SAVE_FAILURES.record(file),
+            FormatTrigger::Save(_) => REPORTED_SAVE_FAILURES.record(file),
             FormatTrigger::Command => true,
         };
         if should_notify {

@@ -1863,6 +1863,7 @@ impl CodeView {
     ) {
         match intent {
             Some(PendingSaveIntent::Save) => {
+                self.mark_next_save_as_flush(index, ctx);
                 self.save_local(
                     index,
                     Some(Box::new(move |outcome, me, ctx| {
@@ -1880,6 +1881,14 @@ impl CodeView {
         }
     }
 
+    /// Has the tab at `index` write its next save straight away, because the tab closes as soon as
+    /// the save has been asked for.
+    fn mark_next_save_as_flush(&self, index: usize, ctx: &mut ViewContext<Self>) {
+        if let Some(editor_view) = self.tab_at(index).and_then(TabData::editor) {
+            editor_view.update(ctx, |editor, _| editor.mark_next_save_as_flush());
+        }
+    }
+
     fn clear_tab_group_with_intent(
         &mut self,
         unsaved_indices: Vec<usize>,
@@ -1889,6 +1898,7 @@ impl CodeView {
     ) {
         match intent {
             Some(PendingSaveIntent::Save) => {
+                self.mark_next_save_as_flush(unsaved_indices[current_index], ctx);
                 self.save_local(
                     unsaved_indices[current_index],
                     Some(Box::new(move |outcome, me, ctx| {

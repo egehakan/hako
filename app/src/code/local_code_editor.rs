@@ -145,9 +145,6 @@ const NO_FORMATTER_NOTICE: &str = "No formatter is available for this file.";
 enum FormatTrigger {
     /// A save, which goes ahead once formatting has finished, whether or not it worked.
     Save(FileId),
-    /// A save made on the way to closing the editor. It behaves like [`Self::Save`] except that it
-    /// never waits on a project formatter, which could outlive the editor.
-    Flush(FileId),
     /// The "Format document" command.
     Command,
 }
@@ -1167,12 +1164,13 @@ impl LocalCodeEditorView {
             return;
         }
 
-        let trigger = if is_flush {
-            FormatTrigger::Flush(file_id)
-        } else {
-            FormatTrigger::Save(file_id)
-        };
-        self.format_buffer(trigger, ctx);
+        // A flush is followed by the editor closing, so the text is written as it is: a formatter's
+        // result would arrive after the editor is gone, and the save waiting on it would be lost.
+        if is_flush {
+            self.perform_save(file_id, ctx);
+            return;
+        }
+        self.format_buffer(FormatTrigger::Save(file_id), ctx);
     }
 
     /// Formats the buffer on request, whether or not format on save is enabled.
@@ -1205,9 +1203,7 @@ impl LocalCodeEditorView {
         ctx: &mut ViewContext<Self>,
     ) {
         match trigger {
-            FormatTrigger::Save(file_id) | FormatTrigger::Flush(file_id) => {
-                self.perform_save(file_id, ctx)
-            }
+            FormatTrigger::Save(file_id) => self.perform_save(file_id, ctx),
             FormatTrigger::Command => {
                 if let Some(problem) = problem {
                     self.show_format_notice(problem, ctx);
@@ -1469,6 +1465,12 @@ impl LocalCodeEditorView {
     /// is enabled, so closing a file flushes edits silently.
     pub fn mark_next_save_as_auto_save(&mut self) {
         self.auto_save_in_flight = true;
+        self.next_save_is_flush = true;
+    }
+
+    /// Marks the next save as the last thing this editor does before it closes, so that the text
+    /// is written straight away instead of after a formatter has run.
+    pub fn mark_next_save_as_flush(&mut self) {
         self.next_save_is_flush = true;
     }
 
