@@ -287,7 +287,7 @@ fn to_arborium_name(lang: &str) -> &str {
 }
 
 /// Get the bundled highlight query from arborium for a given language.
-fn get_arborium_highlight_query(lang: &str) -> Option<&str> {
+fn get_arborium_highlight_query(lang: &str) -> Option<&'static str> {
     match lang {
         "rust" => Some(arborium::lang_rust::HIGHLIGHTS_QUERY),
         "golang" => Some(arborium::lang_go::HIGHLIGHTS_QUERY),
@@ -328,6 +328,20 @@ fn get_arborium_highlight_query(lang: &str) -> Option<&str> {
     }
 }
 
+/// Returns the highlight query source for a language: arborium's bundled query followed by the
+/// language's optional `highlights.scm`, whose patterns take precedence because the editor
+/// applies captures in pattern order.
+fn highlight_query_source(lang: &str) -> Option<Cow<'static, str>> {
+    let bundled = get_arborium_highlight_query(lang);
+    let local = load_text(&[lang, "highlights.scm"].join("\\"));
+    match (bundled, local) {
+        (Some(bundled), Some(local)) => Some(Cow::Owned(format!("{bundled}\n{local}"))),
+        (Some(bundled), None) => Some(Cow::Borrowed(bundled)),
+        (None, Some(local)) => Some(local),
+        (None, None) => None,
+    }
+}
+
 fn load_language(lang: &str) -> Option<Language> {
     let arborium_name = to_arborium_name(lang);
     let grammar = arborium::get_language(arborium_name)?;
@@ -346,9 +360,9 @@ fn load_language(lang: &str) -> Option<Language> {
         })
         .collect();
 
-    let highlight_query_str = get_arborium_highlight_query(lang)?;
-    let highlight_query = Query::new(&grammar, highlight_query_str)
-        .expect("arborium highlight query should be valid");
+    let highlight_query_str = highlight_query_source(lang)?;
+    let highlight_query = Query::new(&grammar, &highlight_query_str)
+        .unwrap_or_else(|err| panic!("highlight query for {lang} should be valid: {err}"));
 
     let indents_query_path = [lang, "indents.scm"].join("\\");
     let indents_query = load_query(&indents_query_path, &grammar);
@@ -381,12 +395,16 @@ fn load_yaml(path: &str) -> LanguageConfig {
     }
 }
 
-fn load_query(path: &str, grammar: &ParserGrammar) -> Option<Query> {
+fn load_text(path: &str) -> Option<Cow<'static, str>> {
     let file = <Grammars as RustEmbed>::get(path)?;
-    let query_content = match file.data {
+    Some(match file.data {
         Cow::Borrowed(inner) => Cow::Borrowed(std::str::from_utf8(inner).unwrap()),
         Cow::Owned(inner) => Cow::Owned(String::from_utf8(inner).unwrap()),
-    };
+    })
+}
+
+fn load_query(path: &str, grammar: &ParserGrammar) -> Option<Query> {
+    let query_content = load_text(path)?;
 
     Some(
         Query::new(grammar, &query_content)

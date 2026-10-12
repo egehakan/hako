@@ -1,9 +1,11 @@
+use std::ops::Range;
 use std::path::Path;
 
+use arborium::tree_sitter::{Parser, QueryCursor, StreamingIterator};
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
-    SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename,
+    SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename, language_by_name,
     language_name_for_filename_parts, load_language,
 };
 
@@ -21,6 +23,52 @@ fn language_name(filename: &str) -> Option<&'static str> {
         );
     }
     name
+}
+
+/// Parses `source` and returns `(capture name, captured text)` for every highlighted node. When
+/// several patterns capture the same node, only the last one is kept, as in the editor.
+fn highlights(language_name: &str, source: &str) -> Vec<(String, String)> {
+    let language = language_by_name(language_name)
+        .unwrap_or_else(|| panic!("{language_name} should be a supported language"));
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language.grammar)
+        .expect("grammar should be compatible with the parser");
+    let tree = parser.parse(source, None).expect("source should parse");
+
+    let capture_names = language.highlight_query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(
+        &language.highlight_query,
+        tree.root_node(),
+        source.as_bytes(),
+    );
+    let mut winners: Vec<(Range<usize>, &str)> = Vec::new();
+    while let Some((query_match, capture_index)) = captures.next() {
+        let capture = query_match.captures[*capture_index];
+        let range = capture.node.byte_range();
+        let name = capture_names[capture.index as usize];
+        match winners.iter_mut().find(|(existing, _)| *existing == range) {
+            Some(winner) => winner.1 = name,
+            None => winners.push((range, name)),
+        }
+    }
+    winners
+        .into_iter()
+        .map(|(range, name)| (name.to_string(), source[range].to_string()))
+        .collect()
+}
+
+fn assert_highlights(language_name: &str, source: &str, expected: &[(&str, &str)]) {
+    let actual = highlights(language_name, source);
+    for (name, text) in expected {
+        assert!(
+            actual
+                .iter()
+                .any(|(actual_name, actual_text)| actual_name == name && actual_text == text),
+            "expected {text:?} to be highlighted as {name} in {language_name}, got {actual:#?}",
+        );
+    }
 }
 
 fn assert_language_names(cases: &[(&str, &str)]) {
@@ -235,6 +283,63 @@ fn unmapped_files_resolve_to_no_language() {
             "{filename} should not resolve to a language",
         );
     }
+}
+
+#[test]
+fn sql_highlights_numbers_and_plpgsql_function_bodies() {
+    let source = "\
+create or replace function public.bump(amount integer)
+returns integer
+language plpgsql
+as $$
+begin
+  update counters set total = total + 42 where id = 1.5;
+  return amount;
+end;
+$$;
+";
+    assert_highlights(
+        "sql",
+        source,
+        &[
+            ("keyword", "create"),
+            ("keyword", "function"),
+            ("keyword", "begin"),
+            ("keyword", "update"),
+            ("number", "42"),
+            ("number", "1.5"),
+        ],
+    );
+}
+
+#[test]
+fn dotenv_highlights_as_shell_assignments() {
+    let source = "# Database\nDATABASE_URL=\"postgres://localhost/db\"\nexport PORT=3000\n";
+    assert_highlights(
+        "shell",
+        source,
+        &[
+            ("comment", "# Database"),
+            ("property", "DATABASE_URL"),
+            ("string", "\"postgres://localhost/db\""),
+            ("keyword", "export"),
+            ("property", "PORT"),
+        ],
+    );
+}
+
+#[test]
+fn blade_and_handlebars_markup_highlights_as_html() {
+    let source = "\
+@if ($user)
+    <h1 class=\"title\">{{ $user->name }}</h1>
+@endif
+";
+    assert_highlights(
+        "html",
+        source,
+        &[("tag", "h1"), ("attribute", "class"), ("string", "title")],
+    );
 }
 
 /// Filename-only matches must work through both public lookups, which split paths differently.

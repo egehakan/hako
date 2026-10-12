@@ -9,7 +9,10 @@ You can find this information on language specific documentation and style guide
 
 Another place to look is at Zed's config.toml files, e.g.: https://github.com/zed-industries/zed/blob/85bdd9329b550475aae34340e50abd4e79f2dd82/crates/languages/src/python/config.toml
 
-**Note:** We don't use custom highlights.scm files - we use arborium's bundled highlighting queries instead.
+## highlights.scm
+Highlighting comes from arborium's bundled queries, so most languages have no `highlights.scm`.
+
+Add one only to correct or extend the bundled query. Its patterns are appended after arborium's and therefore win when both capture the same node. Use capture names the editor colors: `keyword`, `function`, `string`, `type`, `number`, `comment`, `property`, `tag` and `punctuation` (optionally dot-suffixed), plus `text.title`, `text.literal`, `text.uri` and `text.reference`.
 
 ## indents.scm
 This controls how we know when a cursor should be indented relative to the previous line.
