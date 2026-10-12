@@ -10,6 +10,9 @@ serde.workspace = true
 serde_yaml.workspace = true
 rust-embed.workspace = true
 arborium.workspace = true
+codebook-tree-sitter-latex.workspace = true
+tree-sitter-make.workspace = true
+tree-sitter-prisma-io.workspace = true
 lazy_static.workspace = true
 warp_editor = { path = "../editor" }
 warp_util.workspace = true

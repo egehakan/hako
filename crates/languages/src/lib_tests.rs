@@ -464,6 +464,102 @@ index 83db48f..bf2a3c1 100644
     );
 }
 
+#[test]
+fn makefile_latex_and_prisma_files_resolve_to_their_grammar() {
+    assert_language_names(&[
+        ("Makefile", "make"),
+        ("makefile", "make"),
+        ("GNUmakefile", "make"),
+        ("rules.mk", "make"),
+        ("thesis.tex", "latex"),
+        ("resume.cls", "latex"),
+        ("schema.prisma", "prisma"),
+    ]);
+}
+
+#[test]
+fn makefile_highlights_variables_targets_and_directives() {
+    let source = "\
+# Build
+CC := gcc
+.PHONY: all
+all: $(OBJ)
+\t$(CC) -o $@ $^
+ifeq ($(DEBUG),1)
+include config.mk
+endif
+";
+    assert_highlights(
+        "make",
+        source,
+        &[
+            ("comment", "# Build"),
+            ("property", "CC"),
+            ("string", "gcc"),
+            ("keyword", ".PHONY"),
+            ("function", "all"),
+            ("property", "OBJ"),
+            ("property", "$@"),
+            ("keyword", "ifeq"),
+            ("keyword", "include"),
+        ],
+    );
+}
+
+#[test]
+fn latex_highlights_commands_sections_and_references() {
+    let source = "\
+% preamble
+\\usepackage{amsmath}
+\\begin{document}
+\\section{Introduction}
+Some \\textbf{bold} text, $x^2$ \\cite{knuth}.
+\\end{document}
+";
+    assert_highlights(
+        "latex",
+        source,
+        &[
+            ("comment", "% preamble"),
+            ("keyword", "\\usepackage"),
+            ("string", "amsmath"),
+            ("keyword", "\\begin"),
+            ("type", "document"),
+            ("text.title", "Introduction"),
+            ("function", "\\textbf"),
+            ("string", "$x^2$"),
+            ("text.reference", "knuth"),
+        ],
+    );
+}
+
+#[test]
+fn prisma_highlights_models_fields_and_attributes() {
+    let source = "\
+// schema
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  @@map(\"users\")
+}
+";
+    assert_highlights(
+        "prisma",
+        source,
+        &[
+            ("comment", "// schema"),
+            ("keyword", "model"),
+            ("type", "User"),
+            ("type", "Int"),
+            ("property", "id"),
+            ("property", "default"),
+            ("function", "autoincrement"),
+            ("property", "@@"),
+            ("string", "\"users\""),
+        ],
+    );
+}
+
 /// Filename-only matches must work through both public lookups, which split paths differently.
 #[test]
 fn filename_matches_resolve_through_both_lookups() {

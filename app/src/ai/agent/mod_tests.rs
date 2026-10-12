@@ -425,6 +425,9 @@ fn test_programming_language_to_extension() {
         ("ini", "ini"),
         ("diff", "diff"),
         ("patch", "diff"),
+        ("makefile", "mk"),
+        ("latex", "tex"),
+        ("prisma", "prisma"),
     ];
     for (token, expected_extension) in cases {
         let language = ProgrammingLanguage::from((*token).to_string());

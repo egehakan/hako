@@ -1,0 +1,8 @@
+display_name: "Makefile"
+indent_unit: tab
+comment_prefix: "#"
+brackets:
+  - start: "("
+    end: ")"
+  - start: "{"
+    end: "}"

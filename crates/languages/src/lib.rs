@@ -18,7 +18,7 @@ lazy_static! {
     static ref LANGUAGE_REGISTRY: LanguageRegistry = LanguageRegistry::new();
 }
 
-pub const SUPPORTED_LANGUAGES: [&str; 40] = [
+pub const SUPPORTED_LANGUAGES: [&str; 43] = [
     "rust",
     "golang",
     "yaml",
@@ -59,6 +59,9 @@ pub const SUPPORTED_LANGUAGES: [&str; 40] = [
     "typst",
     "ini",
     "diff",
+    "make",
+    "latex",
+    "prisma",
 ];
 
 /// Registry that holds all of the supported languages.
@@ -130,6 +133,8 @@ fn normalize_language_name(name: &str) -> &str {
         "svg" | "plist" => "xml",
         "typ" => "typst",
         "patch" => "diff",
+        "makefile" => "make",
+        "tex" => "latex",
         other => other,
     }
 }
@@ -178,6 +183,7 @@ fn language_name_for_filename(filename: &str) -> Option<&'static str> {
         // These rc files may hold either JSON or YAML; YAML is a superset, so it covers both.
         ".prettierrc" | ".eslintrc" | ".stylelintrc" | ".clang-format" | ".yamllint" => "yaml",
         ".npmrc" | ".editorconfig" => "ini",
+        "Makefile" | "makefile" | "GNUmakefile" => "make",
         _ => {
             if filename.starts_with("Dockerfile.") || filename.starts_with("Containerfile.") {
                 "dockerfile"
@@ -238,6 +244,9 @@ fn language_name_for_extension(extension: &str) -> Option<&'static str> {
         "typ" => "typst",
         "ini" | "cfg" | "service" => "ini",
         "diff" | "patch" => "diff",
+        "mk" | "mak" => "make",
+        "tex" | "sty" | "cls" | "ltx" => "latex",
+        "prisma" => "prisma",
         _ => return None,
     };
     Some(name)
@@ -360,9 +369,19 @@ fn highlight_query_source(lang: &str) -> Option<Cow<'static, str>> {
     }
 }
 
+/// Returns the tree-sitter grammar for a language, from a standalone grammar crate for the few
+/// languages arborium does not bundle.
+fn grammar_for(lang: &str) -> Option<ParserGrammar> {
+    match lang {
+        "make" => Some(tree_sitter_make::LANGUAGE.into()),
+        "latex" => Some(codebook_tree_sitter_latex::LANGUAGE.into()),
+        "prisma" => Some(tree_sitter_prisma_io::LANGUAGE.into()),
+        _ => arborium::get_language(to_arborium_name(lang)),
+    }
+}
+
 fn load_language(lang: &str) -> Option<Language> {
-    let arborium_name = to_arborium_name(lang);
-    let grammar = arborium::get_language(arborium_name)?;
+    let grammar = grammar_for(lang)?;
 
     let config_path = [lang, "config.yaml"].join("\\");
     let config = load_yaml(&config_path);

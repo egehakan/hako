@@ -12,7 +12,7 @@ Another place to look is at Zed's config.toml files, e.g.: https://github.com/ze
 ## highlights.scm
 Highlighting comes from arborium's bundled queries, so most languages have no `highlights.scm`.
 
-Add one only to correct or extend the bundled query. Its patterns are appended after arborium's and therefore win when both capture the same node. Use capture names the editor colors: `keyword`, `function`, `string`, `type`, `number`, `comment`, `property`, `tag` and `punctuation` (optionally dot-suffixed), plus `text.title`, `text.literal`, `text.uri` and `text.reference`.
+Add one only to correct or extend the bundled query. Its patterns are appended after arborium's and therefore win when both capture the same node. Languages whose grammar comes from a standalone crate rather than arborium have no bundled query, so their `highlights.scm` is the whole query. Use capture names the editor colors: `keyword`, `function`, `string`, `type`, `number`, `comment`, `property`, `tag` and `punctuation` (optionally dot-suffixed), plus `text.title`, `text.literal`, `text.uri` and `text.reference`.
 
 ## indents.scm
 This controls how we know when a cursor should be indented relative to the previous line.
