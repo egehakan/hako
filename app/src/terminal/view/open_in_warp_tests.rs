@@ -45,7 +45,7 @@ fn test_any_text_file_type_supported() {
         result,
         Some(OpenablePath {
             path: workspace_root().join("app/assets/bundled/svg/file.svg"),
-            file_type: OpenableFileType::Text,
+            file_type: OpenableFileType::Code,
         })
     );
 }
