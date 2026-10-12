@@ -1,10 +1,9 @@
 //! Showing office documents by converting them to PDF, once per version of the file.
 
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs, io};
 
 use thiserror::Error;
 

@@ -32,8 +32,8 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors as blended_colors;
 use warpui::r#async::Timer;
 use warpui::elements::{
-    Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Expanded, Flex,
-    MainAxisSize, MouseStateHandle, ParentElement, Shrinkable, Text, Wrap,
+    Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Expanded, Flex, MainAxisSize,
+    MouseStateHandle, ParentElement, Shrinkable, Text, Wrap,
 };
 use warpui::image_cache::StaticImage;
 use warpui::keymap::{self, EditableBinding, FixedBinding};
