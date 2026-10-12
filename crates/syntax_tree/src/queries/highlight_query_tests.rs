@@ -2,14 +2,54 @@ use warpui_core::color::ColorU;
 
 use super::{ColorMap, convert_capture_name_to_color};
 
-const KEYWORD: ColorU = ColorU { r: 1, g: 0, b: 0, a: 255 };
-const FUNCTION: ColorU = ColorU { r: 2, g: 0, b: 0, a: 255 };
-const STRING: ColorU = ColorU { r: 3, g: 0, b: 0, a: 255 };
-const TYPE: ColorU = ColorU { r: 4, g: 0, b: 0, a: 255 };
-const NUMBER: ColorU = ColorU { r: 5, g: 0, b: 0, a: 255 };
-const COMMENT: ColorU = ColorU { r: 6, g: 0, b: 0, a: 255 };
-const PROPERTY: ColorU = ColorU { r: 7, g: 0, b: 0, a: 255 };
-const TAG: ColorU = ColorU { r: 8, g: 0, b: 0, a: 255 };
+const KEYWORD: ColorU = ColorU {
+    r: 1,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const FUNCTION: ColorU = ColorU {
+    r: 2,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const STRING: ColorU = ColorU {
+    r: 3,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const TYPE: ColorU = ColorU {
+    r: 4,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const NUMBER: ColorU = ColorU {
+    r: 5,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const COMMENT: ColorU = ColorU {
+    r: 6,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const PROPERTY: ColorU = ColorU {
+    r: 7,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+const TAG: ColorU = ColorU {
+    r: 8,
+    g: 0,
+    b: 0,
+    a: 255,
+};
 
 fn color_map() -> ColorMap {
     ColorMap {
@@ -79,7 +119,18 @@ fn older_and_markup_capture_names_are_colored() {
 
 #[test]
 fn unclassified_capture_names_are_left_uncolored() {
-    for name in ["variable", "operator", "constant", "constant.builtin", "markup.bold", "none"] {
-        assert_eq!(convert_capture_name_to_color(name, &color_map()), None, "{name}");
+    for name in [
+        "variable",
+        "operator",
+        "constant",
+        "constant.builtin",
+        "markup.bold",
+        "none",
+    ] {
+        assert_eq!(
+            convert_capture_name_to_color(name, &color_map()),
+            None,
+            "{name}"
+        );
     }
 }
