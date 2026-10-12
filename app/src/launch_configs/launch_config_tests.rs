@@ -23,6 +23,7 @@ fn single_tab_snapshot(root: PaneNodeSnapshot) -> AppState {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             }],
             active_tab_index: 0,
             team_uid: None,
@@ -43,6 +44,7 @@ fn single_tab_snapshot(root: PaneNodeSnapshot) -> AppState {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     }
 }
 
@@ -69,6 +71,7 @@ fn multi_tab_snapshot(active_tab_index: usize, tabs: Vec<TabSnapshot>) -> AppSta
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     }
 }
 
@@ -391,6 +394,7 @@ fn test_config_with_active_tab_index() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             };
             3
         ],
@@ -427,6 +431,7 @@ fn test_config_with_active_tab_index_and_filtered_tabs() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             },
             TabSnapshot {
                 custom_title: None,
@@ -458,6 +463,7 @@ fn test_config_with_active_tab_index_and_filtered_tabs() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             },
         ],
     );
@@ -501,6 +507,7 @@ fn test_config_with_active_tab_being_filtered() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             },
             TabSnapshot {
                 custom_title: None,
@@ -524,6 +531,7 @@ fn test_config_with_active_tab_being_filtered() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             },
         ],
     );
@@ -561,6 +569,7 @@ fn terminal_tab(cwd: &str, group_id: Option<TabGroupId>) -> TabSnapshot {
         right_panel: None,
         group_id,
         pinned: false,
+        stays_ungrouped: None,
     }
 }
 
@@ -583,6 +592,7 @@ fn unsaveable_tab(group_id: Option<TabGroupId>) -> TabSnapshot {
         right_panel: None,
         group_id,
         pinned: false,
+        stays_ungrouped: None,
     }
 }
 
@@ -599,6 +609,9 @@ fn group(name: &str, id: TabGroupId) -> TabGroupSnapshot {
         color: SelectedTabColor::Color(AnsiColorIdentifier::Blue),
         collapsed: false,
         pinned: false,
+        directory: None,
+        custom_color: None,
+        icon: None,
     }
 }
 

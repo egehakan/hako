@@ -15,7 +15,8 @@ use super::schema::{
     generic_string_objects, ignored_suggestions, mcp_environment_variables,
     mcp_server_installations, mcp_server_panes, notebook_panes, notebooks, object_actions,
     object_metadata, object_permissions, pane_branches, pane_leaves, pane_nodes, panels,
-    project_rules, projects, server_experiments, settings_panes, tab_groups, tabs, team_members,
+    project_rules, projects, server_experiments, settings_panes, tab_folders, tab_groups, tabs,
+    team_members,
     team_settings, teams, terminal_panes, user_profiles, windows, workflow_panes, workflows,
     workspace_language_server, workspace_metadata, workspace_teams, workspaces,
 };
@@ -359,6 +360,8 @@ pub struct Tab {
     pub color: Option<String>,
     pub tab_group_id: Option<i32>,
     pub pinned: bool,
+    /// Whether the user took the tab out of its group. `None` in rows written before folders.
+    pub stays_ungrouped: Option<bool>,
 }
 
 #[derive(Insertable)]
@@ -369,6 +372,7 @@ pub struct NewTab {
     pub color: Option<String>,
     pub tab_group_id: Option<i32>,
     pub pinned: bool,
+    pub stays_ungrouped: Option<bool>,
 }
 
 /// Persisted form of a tab group. `name` is optional — untitled groups omit
@@ -383,6 +387,11 @@ pub struct TabGroup {
     pub color: Option<String>,
     pub collapsed: bool,
     pub pinned: bool,
+    /// The directory of a folder; `None` for a group that is not tied to one.
+    pub directory: Option<String>,
+    /// A `#RRGGBB` color, which takes precedence over `color`.
+    pub custom_color: Option<String>,
+    pub icon: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -393,6 +402,34 @@ pub struct NewTabGroup {
     pub color: Option<String>,
     pub collapsed: bool,
     pub pinned: bool,
+    pub directory: Option<String>,
+    pub custom_color: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// Persisted form of a folder: a directory that keeps its place in every window's tab list,
+/// whether or not a tab is open in it. Rows are stored in display order.
+#[derive(Identifiable, Queryable)]
+#[diesel(table_name = tab_folders)]
+pub struct TabFolder {
+    pub id: i32,
+    pub directory: String,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub custom_color: Option<String>,
+    pub icon: Option<String>,
+    pub collapsed: bool,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = tab_folders)]
+pub struct NewTabFolder {
+    pub directory: String,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub custom_color: Option<String>,
+    pub icon: Option<String>,
+    pub collapsed: bool,
 }
 
 /// The panes data model includes pane_nodes, pane_leaves and pane_branches.

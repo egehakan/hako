@@ -34,6 +34,7 @@ use crate::terminal::ShellLaunchData;
 use crate::terminal::model::block::SerializedBlock;
 use crate::terminal::model::session::SessionId;
 use crate::themes::theme::AnsiColorIdentifier;
+use crate::workspace::tab_folders::{TabFolder, TabGroupIcon, parse_hex_color};
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspaces::team::{MembershipRole, Team, TeamMember};
 use crate::workspaces::user_profiles::UserProfileWithUID;
@@ -152,6 +153,7 @@ fn sqlite_read_restores_app_state_and_codebase_metadata() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
     save_app_state(&mut conn, &app_state).expect("app state should save");
 
@@ -311,18 +313,21 @@ fn test_deduplicate_snapshots() {
         block_lists: Default::default(),
         windows: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
     let snapshot_2 = AppState {
         active_window_index: Some(2),
         block_lists: Default::default(),
         windows: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
     let snapshot_3 = AppState {
         active_window_index: Some(3),
         block_lists: Default::default(),
         windows: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     let original_events = vec![
@@ -402,6 +407,7 @@ fn test_terminal_window_snapshot(vertical_tabs_panel_open: bool) -> WindowSnapsh
             right_panel: None,
             group_id: None,
             pinned: false,
+            stays_ungrouped: None,
         }],
         active_tab_index: 0,
         team_uid: None,
@@ -435,6 +441,7 @@ fn test_sqlite_round_trips_vertical_tabs_panel_open() {
         active_window_index: Some(1),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -469,6 +476,7 @@ fn test_sqlite_round_trips_window_team_uid() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -517,6 +525,7 @@ fn test_sqlite_round_trips_custom_vertical_tabs_title() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             }],
             active_tab_index: 0,
             team_uid: None,
@@ -537,6 +546,7 @@ fn test_sqlite_round_trips_custom_vertical_tabs_title() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -596,6 +606,7 @@ fn test_sqlite_round_trips_code_pane_with_multiple_tabs() {
                 right_panel: None,
                 group_id: None,
                 pinned: false,
+                stays_ungrouped: None,
             }],
             active_tab_index: 0,
             team_uid: None,
@@ -616,6 +627,7 @@ fn test_sqlite_round_trips_code_pane_with_multiple_tabs() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -683,6 +695,7 @@ fn test_sqlite_round_trips_tab_groups() {
         right_panel: None,
         group_id: Some(group_id),
         pinned: false,
+        stays_ungrouped: None,
     };
     let tab_outside_group = TabSnapshot {
         custom_title: None,
@@ -711,6 +724,7 @@ fn test_sqlite_round_trips_tab_groups() {
         right_panel: None,
         group_id: None,
         pinned: false,
+        stays_ungrouped: None,
     };
 
     let app_state = AppState {
@@ -736,11 +750,15 @@ fn test_sqlite_round_trips_tab_groups() {
                 color: SelectedTabColor::Color(AnsiColorIdentifier::Blue),
                 collapsed: true,
                 pinned: false,
+                directory: None,
+                custom_color: None,
+                icon: None,
             }],
         }],
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -807,6 +825,7 @@ fn test_sqlite_round_trips_pinned_state() {
         right_panel: None,
         group_id: None,
         pinned: true,
+        stays_ungrouped: None,
     };
     let unpinned_tab = TabSnapshot {
         custom_title: None,
@@ -835,6 +854,7 @@ fn test_sqlite_round_trips_pinned_state() {
         right_panel: None,
         group_id: Some(unpinned_group_id),
         pinned: false,
+        stays_ungrouped: None,
     };
     let tab_in_pinned_group = TabSnapshot {
         custom_title: None,
@@ -863,6 +883,7 @@ fn test_sqlite_round_trips_pinned_state() {
         right_panel: None,
         group_id: Some(pinned_group_id),
         pinned: false,
+        stays_ungrouped: None,
     };
 
     let app_state = AppState {
@@ -889,6 +910,9 @@ fn test_sqlite_round_trips_pinned_state() {
                     color: SelectedTabColor::default(),
                     collapsed: false,
                     pinned: true,
+                    directory: None,
+                    custom_color: None,
+                    icon: None,
                 },
                 TabGroupSnapshot {
                     id: unpinned_group_id,
@@ -896,12 +920,16 @@ fn test_sqlite_round_trips_pinned_state() {
                     color: SelectedTabColor::default(),
                     collapsed: false,
                     pinned: false,
+                    directory: None,
+                    custom_color: None,
+                    icon: None,
                 },
             ],
         }],
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -935,6 +963,276 @@ fn test_sqlite_round_trips_pinned_state() {
         .expect("unpinned group should restore");
     assert!(restored_pinned_group.pinned);
     assert!(!restored_loose_group.pinned);
+}
+
+fn folder_test_tab(uuid: u8, cwd: &str, group_id: Option<TabGroupId>) -> TabSnapshot {
+    TabSnapshot {
+        custom_title: None,
+        root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: true,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![uuid],
+                cwd: Some(cwd.to_string()),
+                shell_launch_data: None,
+                is_active: true,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![],
+                active_conversation_id: None,
+            }),
+        }),
+        default_directory_color: None,
+        selected_color: SelectedTabColor::default(),
+        left_panel: None,
+        right_panel: None,
+        group_id,
+        pinned: false,
+        stays_ungrouped: Some(false),
+    }
+}
+
+fn folder_test_state(
+    tabs: Vec<TabSnapshot>,
+    tab_groups: Vec<TabGroupSnapshot>,
+    tab_folders: Vec<TabFolder>,
+) -> AppState {
+    AppState {
+        windows: vec![WindowSnapshot {
+            tabs,
+            tab_groups,
+            ..test_terminal_window_snapshot(true)
+        }],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+        tab_folders,
+    }
+}
+
+fn folder_group(id: TabGroupId, directory: &str) -> TabGroupSnapshot {
+    TabGroupSnapshot {
+        id,
+        name: None,
+        color: SelectedTabColor::default(),
+        collapsed: false,
+        pinned: false,
+        directory: Some(PathBuf::from(directory)),
+        custom_color: None,
+        icon: None,
+    }
+}
+
+/// Folders, their looks and their order survive a restart, and so do groups that hold no tabs.
+#[test]
+fn test_sqlite_round_trips_folders_and_groups_without_tabs() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let empty_first = TabGroupId::new();
+    let with_tabs = TabGroupId::new();
+    let empty_plain = TabGroupId::new();
+    let styled_group = TabGroupSnapshot {
+        name: Some("API".to_string()),
+        collapsed: true,
+        custom_color: parse_hex_color("#1E90FF"),
+        icon: TabGroupIcon::material("folder-api"),
+        ..folder_group(with_tabs, "/srv/api")
+    };
+    let emoji_folder = TabFolder {
+        name: Some("Docs".to_string()),
+        color: SelectedTabColor::Color(AnsiColorIdentifier::Green),
+        icon: TabGroupIcon::text("📚"),
+        collapsed: true,
+        ..TabFolder::new(PathBuf::from("/srv/docs"))
+    };
+    let app_state = folder_test_state(
+        vec![
+            folder_test_tab(1, "/srv/api", Some(with_tabs)),
+            TabSnapshot {
+                stays_ungrouped: Some(true),
+                ..folder_test_tab(2, "/srv/api/src", None)
+            },
+        ],
+        vec![
+            folder_group(empty_first, "/srv/empty"),
+            styled_group.clone(),
+            TabGroupSnapshot {
+                name: Some("Scratch".to_string()),
+                directory: None,
+                ..folder_group(empty_plain, "")
+            },
+        ],
+        vec![
+            TabFolder::new(PathBuf::from("/srv/empty")),
+            emoji_folder.clone(),
+            TabFolder {
+                custom_color: parse_hex_color("#1E90FF"),
+                ..TabFolder::new(PathBuf::from("/srv/api"))
+            },
+        ],
+    );
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+    // A second save replaces the first instead of adding to it.
+    save_app_state(&mut conn, &app_state).expect("app state should save again");
+
+    let restored = read_sqlite_data(&mut conn, None, PersistedDataScope::Full)
+        .expect("app state should load")
+        .app_state
+        .expect("app state should be present for the full scope");
+
+    let window = &restored.windows[0];
+    let directories: Vec<Option<&str>> = window
+        .tab_groups
+        .iter()
+        .map(|group| group.directory.as_ref().and_then(|d| d.to_str()))
+        .collect();
+    assert_eq!(directories, vec![Some("/srv/empty"), Some("/srv/api"), None]);
+
+    let restored_styled = &window.tab_groups[1];
+    assert_eq!(
+        TabGroupSnapshot {
+            id: with_tabs,
+            ..restored_styled.clone()
+        },
+        styled_group
+    );
+    assert_eq!(window.tab_groups[2].name.as_deref(), Some("Scratch"));
+
+    assert_eq!(window.tabs[0].group_id, Some(restored_styled.id));
+    assert_eq!(window.tabs[0].stays_ungrouped, Some(false));
+    assert_eq!(window.tabs[1].group_id, None);
+    assert_eq!(window.tabs[1].stays_ungrouped, Some(true));
+
+    assert_eq!(restored.tab_folders, app_state.tab_folders);
+    assert_eq!(restored.tab_folders[1], emoji_folder);
+}
+
+/// A database written before folders existed is upgraded in place: its tabs and groups come back
+/// as they were, with nothing recorded about folders.
+#[test]
+fn test_sqlite_upgrades_a_database_saved_before_folders() {
+    use diesel_migrations::MigrationHarness as _;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let group_id = TabGroupId::new();
+    let app_state = folder_test_state(
+        vec![
+            folder_test_tab(1, "/srv/api", Some(group_id)),
+            folder_test_tab(2, "/srv/docs", None),
+        ],
+        vec![TabGroupSnapshot {
+            name: Some("Backend".to_string()),
+            color: SelectedTabColor::Color(AnsiColorIdentifier::Blue),
+            directory: None,
+            ..folder_group(group_id, "")
+        }],
+        Vec::new(),
+    );
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    // Take the schema back to what it was before the folders migration, keeping the session.
+    let reverted = conn
+        .revert_last_migration(persistence::MIGRATIONS)
+        .expect("the folders migration should revert");
+    assert_eq!(reverted.to_string(), "20261012000000");
+    drop(conn);
+
+    let mut conn = setup_database(&database_path).expect("database should upgrade");
+    let restored = read_sqlite_data(&mut conn, None, PersistedDataScope::Full)
+        .expect("app state should load")
+        .app_state
+        .expect("app state should be present for the full scope");
+
+    let window = &restored.windows[0];
+    assert_eq!(window.tabs.len(), 2);
+    assert_eq!(window.tab_groups.len(), 1);
+    let group = &window.tab_groups[0];
+    assert_eq!(group.name.as_deref(), Some("Backend"));
+    assert_eq!(
+        group.color,
+        SelectedTabColor::Color(AnsiColorIdentifier::Blue)
+    );
+    assert_eq!(group.directory, None);
+    assert_eq!(group.custom_color, None);
+    assert_eq!(group.icon, None);
+    assert_eq!(window.tabs[0].group_id, Some(group.id));
+    assert_eq!(window.tabs[1].group_id, None);
+    // Nothing says these tabs were taken out of a group, so they may be filed under folders.
+    assert_eq!(window.tabs[0].stays_ungrouped, None);
+    assert_eq!(window.tabs[1].stays_ungrouped, None);
+    assert!(restored.tab_folders.is_empty());
+
+    // The upgraded database takes folder data from then on.
+    let upgraded = folder_test_state(
+        vec![folder_test_tab(1, "/srv/api", Some(group_id))],
+        vec![folder_group(group_id, "/srv/api")],
+        vec![TabFolder::new(PathBuf::from("/srv/api"))],
+    );
+    save_app_state(&mut conn, &upgraded).expect("app state should save after the upgrade");
+    let restored = read_sqlite_data(&mut conn, None, PersistedDataScope::Full)
+        .expect("app state should load")
+        .app_state
+        .expect("app state should be present for the full scope");
+    assert_eq!(restored.tab_folders, upgraded.tab_folders);
+    assert_eq!(
+        restored.windows[0].tab_groups[0].directory,
+        Some(PathBuf::from("/srv/api"))
+    );
+}
+
+/// What a crash or a manual edit could leave behind does not break a restore: two groups naming
+/// one directory become one, and a tab pointing at a group that is gone is simply ungrouped.
+#[test]
+fn test_sqlite_restore_tolerates_inconsistent_group_rows() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let first = TabGroupId::new();
+    let duplicate = TabGroupId::new();
+    let doomed = TabGroupId::new();
+    let app_state = folder_test_state(
+        vec![
+            folder_test_tab(1, "/srv/api", Some(first)),
+            folder_test_tab(2, "/srv/api", Some(duplicate)),
+            folder_test_tab(3, "/srv/gone", Some(doomed)),
+        ],
+        vec![
+            folder_group(first, "/srv/api"),
+            folder_group(duplicate, "/srv/api"),
+            folder_group(doomed, "/srv/gone"),
+        ],
+        vec![
+            TabFolder::new(PathBuf::from("/srv/api")),
+            TabFolder::new(PathBuf::from("/srv/api")),
+        ],
+    );
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+    conn.batch_execute(
+        "PRAGMA foreign_keys = OFF; DELETE FROM tab_groups WHERE directory = '/srv/gone';",
+    )
+    .expect("group row should be deleted");
+
+    let restored = read_sqlite_data(&mut conn, None, PersistedDataScope::Full)
+        .expect("app state should load")
+        .app_state
+        .expect("app state should be present for the full scope");
+
+    let window = &restored.windows[0];
+    assert_eq!(window.tab_groups.len(), 1);
+    let group_id = window.tab_groups[0].id;
+    assert_eq!(window.tabs.len(), 3);
+    assert_eq!(window.tabs[0].group_id, Some(group_id));
+    assert_eq!(window.tabs[1].group_id, Some(group_id));
+    assert_eq!(window.tabs[2].group_id, None);
 }
 
 fn assert_encode_then_decode_preserves_original_path(original_path: PathBuf) {
@@ -1035,6 +1333,7 @@ fn test_sqlite_drops_too_small_bounds_on_save() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
 
     save_app_state(&mut conn, &app_state).expect("app state should save");
@@ -1074,6 +1373,7 @@ fn test_sqlite_drops_too_small_bounds_on_read() {
         active_window_index: Some(0),
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
+        tab_folders: Vec::new(),
     };
     save_app_state(&mut conn, &app_state).expect("app state should save");
 

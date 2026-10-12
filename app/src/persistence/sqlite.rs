@@ -59,7 +59,7 @@ use super::model::{
     self, AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, ActiveMCPServer, CODE_PANE_KIND,
     CurrentUserInformation, ENV_VAR_COLLECTION_PANE_KIND, EXECUTION_PROFILE_EDITOR_PANE_KIND,
     MCP_SERVER_PANE_KIND, MCPEnvironmentVariables, NOTEBOOK_PANE_KIND, NewActiveMCPServer, NewApp,
-    NewCommand, NewServerExperiment, NewTab, NewTabGroup, NewTeam, NewWindow, NewWorkspace,
+    NewCommand, NewServerExperiment, NewTab, NewTabFolder, NewTabGroup, NewTeam, NewWindow, NewWorkspace,
     NewWorkspaceMetadata, NewWorkspaceTeam, Project, SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, Tab,
     TabGroup, WORKFLOW_PANE_KIND, Window, WorkspaceMetadata as WorkspaceMetadataModel,
 };
@@ -108,6 +108,7 @@ use crate::terminal::ShellLaunchData;
 use crate::terminal::history::PersistedCommand;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workflows::WorkflowId;
+use crate::workspace::tab_folders::{TabFolder, TabGroupIcon, format_hex_color, parse_hex_color};
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspaces::team::Team as TeamMetadata;
 use crate::workspaces::user_profiles::{UserProfileWithUID, user_profile_from_persistence};
@@ -905,6 +906,20 @@ fn deduplicate_events(events: Vec<ModelEvent>) -> Vec<ModelEvent> {
     }
 }
 
+/// Group colors are stored as YAML; the common unset case is stored as NULL.
+fn serialize_group_color(color: SelectedTabColor) -> Option<String> {
+    match color {
+        SelectedTabColor::Unset => None,
+        SelectedTabColor::Cleared | SelectedTabColor::Color(_) => serde_yaml::to_string(&color).ok(),
+    }
+}
+
+fn deserialize_group_color(color: Option<&str>) -> SelectedTabColor {
+    color
+        .and_then(|color| serde_yaml::from_str::<SelectedTabColor>(color).ok())
+        .unwrap_or_default()
+}
+
 // Used in the save_app_state function to help make the code more readable.
 struct SaveAppStateNodeTraversal<'a> {
     node: &'a PaneNodeSnapshot,
@@ -935,9 +950,28 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
         diesel::delete(schema::pane_nodes::dsl::pane_nodes).execute(conn)?;
         diesel::delete(schema::tabs::dsl::tabs).execute(conn)?;
         diesel::delete(schema::tab_groups::dsl::tab_groups).execute(conn)?;
+        diesel::delete(schema::tab_folders::dsl::tab_folders).execute(conn)?;
         diesel::delete(schema::windows::dsl::windows).execute(conn)?;
         diesel::delete(schema::active_mcp_servers::dsl::active_mcp_servers).execute(conn)?;
         diesel::delete(schema::panels::dsl::panels).execute(conn)?;
+
+        let new_tab_folders: Vec<NewTabFolder> = app_state
+            .tab_folders
+            .iter()
+            .map(|folder| NewTabFolder {
+                directory: folder.directory.to_string_lossy().into_owned(),
+                name: folder.name.clone(),
+                color: serialize_group_color(folder.color),
+                custom_color: folder.custom_color.map(format_hex_color),
+                icon: folder.icon.as_ref().map(TabGroupIcon::serialize),
+                collapsed: folder.collapsed,
+            })
+            .collect();
+        if !new_tab_folders.is_empty() {
+            diesel::insert_into(schema::tab_folders::dsl::tab_folders)
+                .values(new_tab_folders)
+                .execute(conn)?;
+        }
 
         let mut active_window_id = None;
 
@@ -1015,12 +1049,15 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                     .map(|group| NewTabGroup {
                         window_id,
                         name: group.name.clone(),
-                        color: match group.color {
-                            SelectedTabColor::Unset => None,
-                            _ => serde_yaml::to_string(&group.color).ok(),
-                        },
+                        color: serialize_group_color(group.color),
                         collapsed: group.collapsed,
                         pinned: group.pinned,
+                        directory: group
+                            .directory
+                            .as_ref()
+                            .map(|directory| directory.to_string_lossy().into_owned()),
+                        custom_color: group.custom_color.map(format_hex_color),
+                        icon: group.icon.as_ref().map(TabGroupIcon::serialize),
                     })
                     .collect();
                 diesel::insert_into(schema::tab_groups::dsl::tab_groups)
@@ -1056,6 +1093,9 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                         .group_id
                         .and_then(|group_id| tab_group_row_ids.get(&group_id).copied()),
                     pinned: tab.pinned,
+                    // Always written, so that a row from this build is told apart from one saved
+                    // before folders existed.
+                    stays_ungrouped: Some(tab.stays_ungrouped.unwrap_or(false)),
                 })
                 .collect();
 
@@ -2556,19 +2596,28 @@ fn read_sqlite_data(
                     let mut tab_group_id_by_row_id: HashMap<i32, TabGroupId> = HashMap::new();
                     let mut tab_groups_snapshots: Vec<TabGroupSnapshot> = Vec::new();
                     for group in tab_groups_for_window {
+                        let directory = group.directory.map(PathBuf::from);
+                        // A window shows a folder once. Should two rows ever name the same
+                        // directory, the tabs of the later one join the first.
+                        if let Some(existing) = directory.as_ref().and_then(|directory| {
+                            tab_groups_snapshots
+                                .iter()
+                                .find(|snapshot| snapshot.directory.as_ref() == Some(directory))
+                        }) {
+                            tab_group_id_by_row_id.insert(group.id, existing.id);
+                            continue;
+                        }
                         let tab_group_id = TabGroupId::new();
                         tab_group_id_by_row_id.insert(group.id, tab_group_id);
-                        let color = group
-                            .color
-                            .as_deref()
-                            .and_then(|s| serde_yaml::from_str::<SelectedTabColor>(s).ok())
-                            .unwrap_or_default();
                         tab_groups_snapshots.push(TabGroupSnapshot {
                             id: tab_group_id,
                             name: group.name,
-                            color,
+                            color: deserialize_group_color(group.color.as_deref()),
                             collapsed: group.collapsed,
                             pinned: group.pinned,
+                            directory,
+                            custom_color: group.custom_color.as_deref().and_then(parse_hex_color),
+                            icon: group.icon.as_deref().and_then(TabGroupIcon::deserialize),
                         });
                     }
                     let saved_tabs: Vec<_> = tabs_for_window
@@ -2610,6 +2659,7 @@ fn read_sqlite_data(
                                 right_panel,
                                 group_id,
                                 pinned: tab.pinned,
+                                stays_ungrouped: tab.stays_ungrouped,
                             })
                         })
                         .collect();
@@ -2715,11 +2765,26 @@ fn read_sqlite_data(
         // Load active MCP servers from database
         let running_mcp_servers = load_active_mcp_servers(conn)?;
 
+        let tab_folders = schema::tab_folders::dsl::tab_folders
+            .order_by(schema::tab_folders::columns::id.asc())
+            .load::<model::TabFolder>(conn)?
+            .into_iter()
+            .map(|folder| TabFolder {
+                directory: PathBuf::from(folder.directory),
+                name: folder.name,
+                color: deserialize_group_color(folder.color.as_deref()),
+                custom_color: folder.custom_color.as_deref().and_then(parse_hex_color),
+                icon: folder.icon.as_deref().and_then(TabGroupIcon::deserialize),
+                collapsed: folder.collapsed,
+            })
+            .collect();
+
         Some(AppState {
             windows: saved_windows,
             active_window_index,
             block_lists: Arc::new(restored_blocks),
             running_mcp_servers,
+            tab_folders,
         })
     } else {
         None

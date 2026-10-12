@@ -356,6 +356,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    tab_folders (id) {
+        id -> Integer,
+        directory -> Text,
+        name -> Nullable<Text>,
+        color -> Nullable<Text>,
+        custom_color -> Nullable<Text>,
+        icon -> Nullable<Text>,
+        collapsed -> Bool,
+    }
+}
+
+diesel::table! {
     tab_groups (id) {
         id -> Integer,
         window_id -> Integer,
@@ -363,6 +375,9 @@ diesel::table! {
         color -> Nullable<Text>,
         collapsed -> Bool,
         pinned -> Bool,
+        directory -> Nullable<Text>,
+        custom_color -> Nullable<Text>,
+        icon -> Nullable<Text>,
     }
 }
 
@@ -374,6 +389,7 @@ diesel::table! {
         color -> Nullable<Text>,
         tab_group_id -> Nullable<Integer>,
         pinned -> Bool,
+        stays_ungrouped -> Nullable<Bool>,
     }
 }
 

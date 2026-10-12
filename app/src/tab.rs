@@ -370,6 +370,9 @@ pub struct TabData {
     pub in_multi_selection: bool,
     /// True when this tab is pinned to the front of the tab list.
     pub pinned: bool,
+    /// True once the user has taken this tab out of its group, so that it is not filed under a
+    /// folder again when the session is restored.
+    pub stays_ungrouped: bool,
 }
 
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
@@ -390,6 +393,7 @@ impl TabData {
             group_id: None,
             in_multi_selection: false,
             pinned: false,
+            stays_ungrouped: false,
         }
     }
 

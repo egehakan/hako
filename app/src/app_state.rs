@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use serde::{Deserialize, Serialize};
 use warpui::platform::FullscreenState;
@@ -21,6 +22,7 @@ use crate::tab::SelectedTabColor;
 use crate::terminal::ShellLaunchData;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workspace::WorkspaceRegistry;
+use crate::workspace::tab_folders::{TabFolder, TabFolders, TabGroupIcon};
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::view::left_panel::ToolPanelView;
 
@@ -30,6 +32,8 @@ pub struct AppState {
     pub active_window_index: Option<usize>,
     pub block_lists: Arc<HashMap<PaneUuid, Vec<SerializedBlockListItem>>>,
     pub running_mcp_servers: Vec<uuid::Uuid>,
+    /// The folders every window shows in its tab list, in display order.
+    pub tab_folders: Vec<TabFolder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -58,8 +62,8 @@ pub struct WindowSnapshot {
     pub left_panel_width: Option<f32>,
     pub right_panel_width: Option<f32>,
     pub agent_management_filters: Option<PersistedAgentManagementFilters>,
-    /// Tab groups defined in this window. Group order is implicit from
-    /// member tabs' positions, so no explicit ordering is persisted.
+    /// Tab groups defined in this window, in display order. A group without tabs has no other
+    /// record of where it sits.
     pub tab_groups: Vec<TabGroupSnapshot>,
 }
 
@@ -70,6 +74,10 @@ pub struct TabGroupSnapshot {
     pub color: SelectedTabColor,
     pub collapsed: bool,
     pub pinned: bool,
+    /// The directory of a folder; `None` for a group that is not tied to one.
+    pub directory: Option<PathBuf>,
+    pub custom_color: Option<ColorU>,
+    pub icon: Option<TabGroupIcon>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +92,9 @@ pub struct TabSnapshot {
     pub group_id: Option<TabGroupId>,
     /// True when this tab is pinned to the front of the tab list.
     pub pinned: bool,
+    /// Whether the user took the tab out of its group, so it is not put in a folder again.
+    /// `None` for a tab saved before folders existed.
+    pub stays_ungrouped: Option<bool>,
 }
 
 impl TabSnapshot {
@@ -393,6 +404,7 @@ pub fn get_app_state(app: &AppContext) -> AppState {
         active_window_index,
         block_lists: Default::default(),
         running_mcp_servers: Vec::new(),
+        tab_folders: TabFolders::as_ref(app).folders().to_vec(),
     }
 }
 
