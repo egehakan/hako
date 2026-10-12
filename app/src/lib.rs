@@ -320,7 +320,7 @@ use crate::terminal::{AudibleBell, CustomSecretRegexUpdater, History};
 #[cfg(feature = "tui")]
 pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 use crate::undo_close::UndoCloseStack;
-use crate::user_config::WarpConfig;
+use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 use crate::util::bindings::is_binding_cross_platform;
 use crate::vim_registers::VimRegisters;
 use crate::warp_managed_paths_watcher::{WarpManagedPathsWatcher, ensure_warp_watch_roots_exist};
@@ -1527,6 +1527,16 @@ pub(crate) fn initialize_app(
 
     let user_defaults_on_startup = settings::init(startup_toml_parse_error, ctx);
     timer.mark_interval_end("READ_USER_DEFAULTS_AND_INITIALIZE_SETTINGS");
+
+    // A custom theme is applied from the copy loaded at startup, so an edit to the file of the
+    // active theme only shows once the theme is applied again.
+    ctx.subscribe_to_model(&WarpConfig::handle(ctx), |_, event, ctx| {
+        if let WarpConfigUpdateEvent::Themes = event {
+            AppearanceManager::handle(ctx).update(ctx, |appearance_manager, ctx| {
+                appearance_manager.refresh_theme_state(ctx);
+            });
+        }
+    });
 
     if FeatureFlag::UIZoom.is_enabled() {
         ctx.set_zoom_factor(WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor());
