@@ -222,6 +222,206 @@ fn selected_review_repo_is_cleared_when_pane_group_is_removed() {
     });
 }
 
+/// Creates `folder/repo` under a temp dir and returns the canonical paths of both, along with
+/// a sibling directory outside the folder.
+fn nested_repo_layout(temp_dir: &tempfile::TempDir) -> (PathBuf, PathBuf, PathBuf) {
+    let folder = temp_dir.path().join("folder");
+    let elsewhere = temp_dir.path().join("elsewhere");
+    fs::create_dir_all(folder.join("repo")).expect("create folder/repo");
+    fs::create_dir_all(&elsewhere).expect("create elsewhere");
+    let folder = dunce::canonicalize(&folder).expect("canonical folder");
+    let elsewhere = dunce::canonicalize(&elsewhere).expect("canonical elsewhere");
+    (folder.clone(), folder.join("repo"), elsewhere)
+}
+
+fn repositories(
+    model: &WorkingDirectoriesModel,
+    pane_group_id: EntityId,
+) -> Vec<LocalOrRemotePath> {
+    model
+        .most_recent_repositories_for_pane_group(pane_group_id)
+        .map(|repos| repos.collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn opened_nested_repo_survives_refresh_while_its_folder_is_a_directory() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let (folder, repo, _) = nested_repo_layout(&temp_dir);
+        let pane_group_id = EntityId::new();
+        let terminal = EntityId::new();
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+        working_directories_handle.update(&mut app, |model, ctx| {
+            let cwds = vec![(terminal, local(&folder))];
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                cwds.clone(),
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(model.is_non_repo_directory(pane_group_id, &folder));
+            assert!(repositories(model, pane_group_id).is_empty());
+
+            assert!(model.register_opened_nested_repo(pane_group_id, repo.clone(), ctx));
+            assert_eq!(repositories(model, pane_group_id), [local(&repo)]);
+
+            // A refresh recomputes the repositories from the terminals, none of which is in
+            // the opened repository.
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                cwds,
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert_eq!(repositories(model, pane_group_id), [local(&repo)]);
+            assert!(model.is_opened_nested_repo(pane_group_id, &repo));
+            assert_eq!(
+                model.get_terminal_id_for_root_path(pane_group_id, &local(&repo)),
+                Some(terminal),
+                "the repository should map to the terminal of the folder that contains it"
+            );
+            assert!(
+                model.is_non_repo_directory(pane_group_id, &folder),
+                "opening a nested repository must not turn its folder into a repository"
+            );
+        });
+    });
+}
+
+#[test]
+fn opened_nested_repo_is_forgotten_when_its_folder_is_left() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let (folder, repo, elsewhere) = nested_repo_layout(&temp_dir);
+        let pane_group_id = EntityId::new();
+        let terminal = EntityId::new();
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+        working_directories_handle.update(&mut app, |model, ctx| {
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&folder))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(model.register_opened_nested_repo(pane_group_id, repo.clone(), ctx));
+
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&elsewhere))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(repositories(model, pane_group_id).is_empty());
+            assert!(!model.is_opened_nested_repo(pane_group_id, &repo));
+            assert_eq!(
+                model.get_terminal_id_for_root_path(pane_group_id, &local(&repo)),
+                None
+            );
+
+            // Returning to the folder does not bring the repository back on its own.
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&folder))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(repositories(model, pane_group_id).is_empty());
+        });
+    });
+}
+
+#[test]
+fn nested_repo_is_only_registered_under_a_non_repo_directory_of_the_pane_group() {
+    App::test((), |mut app| async move {
+        let detected_repos_handle = app.add_singleton_model(|_| DetectedRepositories::default());
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let (folder, repo, elsewhere) = nested_repo_layout(&temp_dir);
+        let pane_group_id = EntityId::new();
+        let other_pane_group_id = EntityId::new();
+        let terminal = EntityId::new();
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+        working_directories_handle.update(&mut app, |model, ctx| {
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&folder))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+
+            assert!(
+                !model.register_opened_nested_repo(pane_group_id, elsewhere.join("repo"), ctx),
+                "a repository outside the pane group's directories must be rejected"
+            );
+            assert!(
+                !model.register_opened_nested_repo(other_pane_group_id, repo.clone(), ctx),
+                "a pane group that is not in the folder must be rejected"
+            );
+            assert!(repositories(model, pane_group_id).is_empty());
+            assert!(repositories(model, other_pane_group_id).is_empty());
+        });
+
+        // Once the folder itself is a repository, it no longer offers nested repositories.
+        detected_repos_handle.update(&mut app, |repos, _| {
+            let canonical =
+                warp_util::standardized_path::StandardizedPath::from_local_canonicalized(&folder)
+                    .expect("canonicalized path");
+            repos.insert_test_repo_root(canonical);
+        });
+        working_directories_handle.update(&mut app, |model, ctx| {
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&folder))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(!model.is_non_repo_directory(pane_group_id, &folder));
+            assert!(!model.register_opened_nested_repo(pane_group_id, repo.clone(), ctx));
+            assert_eq!(repositories(model, pane_group_id), [local(&folder)]);
+        });
+    });
+}
+
+#[test]
+fn opened_nested_repos_are_cleared_when_pane_group_is_removed() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let (folder, repo, _) = nested_repo_layout(&temp_dir);
+        let pane_group_id = EntityId::new();
+        let terminal = EntityId::new();
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+        working_directories_handle.update(&mut app, |model, ctx| {
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(terminal, local(&folder))],
+                vec![],
+                Some(terminal),
+                ctx,
+            );
+            assert!(model.register_opened_nested_repo(pane_group_id, repo.clone(), ctx));
+
+            model.remove_pane_group(pane_group_id, ctx);
+            assert!(!model.is_opened_nested_repo(pane_group_id, &repo));
+            assert!(repositories(model, pane_group_id).is_empty());
+            assert!(!model.is_non_repo_directory_of_any_pane_group(&folder));
+        });
+    });
+}
+
 // ── PaneGroupRepositoryRoots unit tests ──────────────────────────
 
 #[test]
