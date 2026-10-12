@@ -67,6 +67,8 @@ use pathfinder_geometry::rect::RectF;
 use repo_metadata::RemoteRepositoryIdentifier;
 #[cfg(feature = "local_fs")]
 use repo_metadata::repositories::DetectedRepositories;
+#[cfg(feature = "local_fs")]
+use repo_metadata::repositories::RepoDetectionSource;
 #[cfg(all(target_os = "macos", feature = "crash_reporting"))]
 use sentry::protocol::{Attachment, AttachmentType};
 use serde_json;
@@ -10077,8 +10079,54 @@ impl Workspace {
         revision: &str,
         ctx: &mut ViewContext<Self>,
     ) {
-        let repo = LocalOrRemotePath::Local(repo_root.to_path_buf());
+        // The panel only shows repositories the pane group is known to be in, which is learned
+        // from detection. A terminal triggers it for its directory; a file open in an editor
+        // does not, so it is done here for a repository no terminal has been in.
+        let detection = DetectedRepositories::handle(ctx).update(ctx, |repositories, ctx| {
+            repositories.detect_possible_local_git_repo(
+                &repo_root.to_string_lossy(),
+                RepoDetectionSource::CodeReviewInitialization,
+                ctx,
+            )
+        });
+        let revision = revision.to_string();
+        ctx.spawn(detection, move |me, detected_root, ctx| {
+            if let Some(repo_root) = detected_root {
+                me.open_code_review_at_revision(repo_root, revision, ctx);
+            }
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn open_code_review_at_revision(
+        &mut self,
+        repo_root: PathBuf,
+        revision: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let repo = LocalOrRemotePath::Local(repo_root);
         let pane_group = self.active_tab_pane_group().clone();
+        self.refresh_working_directories_for_pane_group(&pane_group, ctx);
+
+        // The panel reviews a repository through a terminal that is in it. Without one in this
+        // tab it would open on a review that never finishes loading.
+        let has_review_terminal = self
+            .working_directories_model
+            .as_ref(ctx)
+            .get_terminal_id_for_root_path(pane_group.id(), &repo)
+            .is_some();
+        if !has_review_terminal {
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::error(
+                    "Open a terminal in this repository, in this tab, to review the commit."
+                        .to_string(),
+                )
+                .with_object_id("review_commit_needs_terminal".to_string());
+                toast_stack.add_ephemeral_toast(toast, ctx);
+            });
+            return;
+        }
+
         let Some(diff_state_model) = self.working_directories_model.update(ctx, |model, ctx| {
             model.get_or_create_diff_state_model(repo.clone(), None, ctx)
         }) else {
@@ -10097,7 +10145,7 @@ impl Workspace {
         );
 
         let mode = DiffMode::Revision {
-            rev: revision.to_string(),
+            rev: revision,
             comparison: RevisionComparison::Direct,
         };
         let review_view = self
