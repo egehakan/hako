@@ -483,6 +483,17 @@ nom.opt-level = 3
 # Improve performance of core runtime components slightly.
 tokio.opt-level = 1
 rayon-core.opt-level = 1
+# Keep typing in large files responsive in debug builds: these crates do the work repeated on
+# every keystroke of the code editor (copying buffer text, converting offsets, highlighting,
+# building the scene and drawing its glyphs).
+warpui_core.opt-level = 3
+warpui.opt-level = 3
+warp_editor.opt-level = 3
+syntax_tree.opt-level = 3
+sum_tree.opt-level = 3
+string-offset.opt-level = 3
+rangemap.opt-level = 3
+arborium-tree-sitter.opt-level = 3
 # Improve performance of image processing for debug builds.
 fdeflate.opt-level = 3
 image.opt-level = 3
