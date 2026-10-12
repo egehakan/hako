@@ -377,6 +377,16 @@ impl Searcher {
 
     /// Builds text decorations to highlight search results.
     pub fn result_decorations(&self) -> Vec<Decoration> {
+        self.result_decorations_with_fills(*MATCH_FILL, *SELECTED_MATCH_FILL)
+    }
+
+    /// Builds text decorations to highlight search results, with `selected_match_fill` behind
+    /// the selected match and `match_fill` behind every other one.
+    pub fn result_decorations_with_fills(
+        &self,
+        match_fill: Fill,
+        selected_match_fill: Fill,
+    ) -> Vec<Decoration> {
         let matches = match &self.results {
             Some(results) => &results.matches,
             None => return Vec::new(),
@@ -389,9 +399,9 @@ impl Searcher {
             .enumerate()
             .map(|(index, m)| {
                 let fill = if Some(index) == selected_match {
-                    *SELECTED_MATCH_FILL
+                    selected_match_fill
                 } else {
-                    *MATCH_FILL
+                    match_fill
                 };
 
                 // TODO(CLD-558): This matches how we shift the selection by 1.

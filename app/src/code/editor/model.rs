@@ -1778,7 +1778,7 @@ impl CodeEditorModel {
         } else if selection_model.all_single_cursors() && self.show_current_line_highlights {
             // When diff is not expanded, the only source of line decoration is highlights
             // from the active cursor, e.g. the current line highlight.
-            let overlay = Appearance::as_ref(ctx).theme().surface_2();
+            let overlay = Appearance::as_ref(ctx).theme().editor_current_line();
             Some(
                 selection_model
                     .selected_lines(ctx)

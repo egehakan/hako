@@ -50,6 +50,9 @@ pub(crate) fn replace_color(appearance: &Appearance) -> ColorU {
 
 /// Get the theme-appropriate remove overlay color
 pub(crate) fn remove_overlay_color(appearance: &Appearance) -> ColorU {
+    if let Some(color) = appearance.theme().editor_diff_removed_line() {
+        return color;
+    }
     let ansi_color =
         AnsiColorIdentifier::Red.to_ansi_color(&appearance.theme().terminal_colors().normal);
     let mut color: ColorU = ansi_color.into();
@@ -59,6 +62,9 @@ pub(crate) fn remove_overlay_color(appearance: &Appearance) -> ColorU {
 
 /// Get the theme-appropriate add overlay color
 pub(crate) fn add_overlay_color(appearance: &Appearance) -> ColorU {
+    if let Some(color) = appearance.theme().editor_diff_added_line() {
+        return color;
+    }
     let ansi_color =
         AnsiColorIdentifier::Green.to_ansi_color(&appearance.theme().terminal_colors().normal);
     let mut color: ColorU = ansi_color.into();
@@ -68,6 +74,9 @@ pub(crate) fn add_overlay_color(appearance: &Appearance) -> ColorU {
 
 /// Get the theme-appropriate add inline overlay color
 pub(crate) fn add_inline_overlay_color(appearance: &Appearance) -> ColorU {
+    if let Some(color) = appearance.theme().editor_diff_added_text() {
+        return color;
+    }
     let ansi_color =
         AnsiColorIdentifier::Green.to_ansi_color(&appearance.theme().terminal_colors().normal);
     let mut color: ColorU = ansi_color.into();
@@ -77,6 +86,9 @@ pub(crate) fn add_inline_overlay_color(appearance: &Appearance) -> ColorU {
 
 /// Get the theme-appropriate remove inline overlay color
 pub(crate) fn remove_inline_overlay_color(appearance: &Appearance) -> ColorU {
+    if let Some(color) = appearance.theme().editor_diff_removed_text() {
+        return color;
+    }
     let ansi_color =
         AnsiColorIdentifier::Red.to_ansi_color(&appearance.theme().terminal_colors().normal);
     let mut color: ColorU = ansi_color.into();
@@ -191,17 +203,18 @@ impl DiffStatus {
         appearance: &Appearance,
     ) -> Option<DiffHunkDisplay> {
         let line_num = line_num.as_usize();
+        let theme = appearance.theme();
         if self.deletion_mapping.contains_key(&line_num) {
-            return Some(DiffHunkDisplay::Remove(remove_color(appearance)));
+            return Some(DiffHunkDisplay::Remove(theme.editor_diff_removed()));
         }
 
         match self.change_mapping.get(&line_num) {
             Some(ChangeType::Replacement { .. }) => Some(DiffHunkDisplay::Replacement {
-                collapsed_color: replace_color(appearance),
-                add_color: add_color(appearance),
-                remove_color: remove_color(appearance),
+                collapsed_color: theme.editor_diff_modified(),
+                add_color: theme.editor_diff_added(),
+                remove_color: theme.editor_diff_removed(),
             }),
-            Some(ChangeType::Addition) => Some(DiffHunkDisplay::Add(add_color(appearance))),
+            Some(ChangeType::Addition) => Some(DiffHunkDisplay::Add(theme.editor_diff_added())),
             None => None,
         }
     }

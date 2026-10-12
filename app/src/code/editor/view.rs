@@ -78,6 +78,7 @@ use crate::editor::InteractionState;
 use crate::features::FeatureFlag;
 use crate::notebooks::editor::rich_text_styles;
 use crate::settings::{AppEditorSettings, CodeEditorLineNumberMode, FontSettings};
+use crate::themes::theme::Fill as ThemeFill;
 use crate::view_components::find::FindDirection;
 
 mod actions;
@@ -727,7 +728,12 @@ impl CodeEditorView {
     fn update_decorations_and_position(&self, ctx: &mut ViewContext<Self>) {
         // Updating search decorations based on matches
         let search_decorations = match self.find_bar_open(ctx) {
-            true => self.searcher.as_ref(ctx).result_decorations(),
+            true => {
+                let (match_fill, selected_match_fill) = find_match_fills(Appearance::as_ref(ctx));
+                self.searcher
+                    .as_ref(ctx)
+                    .result_decorations_with_fills(match_fill, selected_match_fill)
+            }
             false => Vec::new(),
         };
         self.model.update(ctx, |model, ctx| {
@@ -799,14 +805,15 @@ impl CodeEditorView {
         selected_range_index: Option<usize>,
         ctx: &mut ViewContext<Self>,
     ) {
+        let (match_fill, selected_match_fill) = find_match_fills(Appearance::as_ref(ctx));
         let decorations: Vec<Decoration> = ranges
             .into_iter()
             .enumerate()
             .map(|(index, range)| {
                 let fill = if Some(index) == selected_range_index {
-                    *SELECTED_MATCH_FILL
+                    selected_match_fill
                 } else {
-                    *MATCH_FILL
+                    match_fill
                 };
                 Decoration::new(range.start, range.end).with_background(fill)
             })
@@ -1241,8 +1248,8 @@ impl CodeEditorView {
             Some(LineNumberConfig {
                 font_family: appearance.monospace_font_family(),
                 font_size: appearance.monospace_font_size(),
-                text_color: theme.sub_text_color(theme.background()).into(),
-                highlight_text_color: theme.main_text_color(theme.background()).into(),
+                text_color: theme.editor_line_number(),
+                highlight_text_color: theme.editor_active_line_number(),
                 starting_line_number: self.display_options.starting_line_number,
                 mode: *editor_settings.code_editor_line_number_mode.value(),
                 active_line_number: self.active_cursor_line_for_line_numbers(ctx),
@@ -2459,6 +2466,17 @@ impl View for CodeEditorView {
     }
 }
 
+/// Backgrounds of the search matches and of the selected match, in that order.
+fn find_match_fills(appearance: &Appearance) -> (ThemeFill, ThemeFill) {
+    let theme = appearance.theme();
+    (
+        theme.editor_find_match().unwrap_or(*MATCH_FILL),
+        theme
+            .editor_selected_find_match()
+            .unwrap_or(*SELECTED_MATCH_FILL),
+    )
+}
+
 pub fn code_text_styles(
     appearance: &Appearance,
     font_settings: &FontSettings,
@@ -2471,10 +2489,16 @@ pub fn code_text_styles(
         line_height_ratio: line_height_override.unwrap_or(appearance.line_height_ratio()),
         font_family: appearance.monospace_font_family(),
         font_weight: Default::default(),
-        text_color: theme.main_text_color(theme.background()).into_solid(),
+        text_color: theme.editor_foreground(),
         baseline_ratio: 0.8,
         fixed_width_tab_size: Some(4),
     };
+    styling.selection_fill = theme.editor_selection().into();
+    // A cursor color the theme sets for the editor is used as written, without the contrast
+    // adjustment applied to the terminal cursor color.
+    if let Some(cursor) = theme.editor_cursor() {
+        styling.cursor_fill = cursor.into();
+    }
     styling.block_spacings.text = BlockSpacing {
         margin: Margin::uniform(0.).with_left(1.),
         padding: Padding::uniform(0.),
