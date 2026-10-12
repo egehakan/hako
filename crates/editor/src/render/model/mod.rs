@@ -2988,12 +2988,18 @@ impl RenderState {
         loop {
             let item = cursor.positioned_item();
             if let Some(positioned_item) = item {
-                // Stop if we've gone past the viewport
+                let item_start = positioned_item.start_char_offset;
+
+                // Stop if we've gone past the viewport, ending the open range where the viewport
+                // ends rather than at the end of the content.
                 if positioned_item.start_y_offset > viewport_end_height {
+                    if let Some(range_start) = current_range_start.take()
+                        && range_start < item_start
+                    {
+                        range_set.insert(range_start..item_start);
+                    }
                     break;
                 }
-
-                let item_start = positioned_item.start_char_offset;
 
                 if positioned_item.item.is_hidden() {
                     // This is a hidden item and we're not including hidden items

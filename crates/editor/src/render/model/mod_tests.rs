@@ -76,6 +76,22 @@ fn test_height() {
 }
 
 #[test]
+fn test_viewport_charoffset_range_ends_with_the_viewport() {
+    let mut render_state =
+        RenderState::new_for_test(TEST_STYLES, 10.0.into_pixels(), 40.0.into_pixels());
+    let mut content = SumTree::new();
+    for _ in 0..5 {
+        content.push(mock_paragraph(24., 1., 3));
+    }
+    render_state.set_content(content);
+
+    // The viewport shows the first paragraph and part of the second, and the third starts below
+    // it, so the range stops there instead of running on to the end of the content.
+    let ranges: Vec<_> = render_state.viewport_charoffset_range().into_iter().collect();
+    assert_eq!(ranges, [CharOffset::from(0)..CharOffset::from(6)]);
+}
+
+#[test]
 fn test_is_entire_range_of_type_matches_exact_block_ranges() {
     let mut model = RenderState::new_for_test(
         TEST_STYLES.clone(),
