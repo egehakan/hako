@@ -408,6 +408,17 @@ fn test_programming_language_to_extension() {
         ("containerfile", "dockerfile"),
         ("markdown", "md"),
         ("md", "md"),
+        // Dialects and variants that reuse another language's grammar.
+        ("mjs", "js"),
+        ("mts", "ts"),
+        ("jsonc", "json"),
+        ("plpgsql", "sql"),
+        ("postgresql", "sql"),
+        ("handlebars", "html"),
+        ("blade", "html"),
+        ("svg", "xml"),
+        ("mdx", "md"),
+        ("dotenv", "env"),
     ];
     for (token, expected_extension) in cases {
         let language = ProgrammingLanguage::from((*token).to_string());

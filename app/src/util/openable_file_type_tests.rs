@@ -201,6 +201,10 @@ fn test_code_files() {
         is_file_openable_in_warp(Path::new("config.json")),
         Some(OpenableFileType::Code)
     );
+    assert_eq!(
+        is_file_openable_in_warp(Path::new("file.svg")),
+        Some(OpenableFileType::Code)
+    );
 }
 
 #[test]
@@ -222,6 +226,10 @@ fn test_code_files() {
         is_file_openable_in_warp(Path::new("config.json")),
         Some(OpenableFileType::Text)
     );
+    assert_eq!(
+        is_file_openable_in_warp(Path::new("file.svg")),
+        Some(OpenableFileType::Text)
+    );
 }
 
 #[test]
@@ -233,10 +241,6 @@ fn test_text_files() {
     );
     assert_eq!(
         is_file_openable_in_warp(Path::new("data.csv")),
-        Some(OpenableFileType::Text)
-    );
-    assert_eq!(
-        is_file_openable_in_warp(Path::new("file.svg")),
         Some(OpenableFileType::Text)
     );
 }

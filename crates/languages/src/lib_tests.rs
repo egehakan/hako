@@ -2,7 +2,36 @@ use std::path::Path;
 
 use warp_util::standardized_path::StandardizedPath;
 
-use crate::{SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename, load_language};
+use crate::{
+    SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename,
+    language_name_for_filename_parts, load_language,
+};
+
+/// Resolves a bare filename to its internal language name without loading the grammar.
+fn language_name(filename: &str) -> Option<&'static str> {
+    let path = Path::new(filename);
+    let name = language_name_for_filename_parts(
+        path.file_name().and_then(|name| name.to_str()),
+        path.extension().and_then(|extension| extension.to_str()),
+    );
+    if let Some(name) = name {
+        assert!(
+            SUPPORTED_LANGUAGES.contains(&name),
+            "{filename} resolved to {name}, which is not a supported language",
+        );
+    }
+    name
+}
+
+fn assert_language_names(cases: &[(&str, &str)]) {
+    for (filename, expected) in cases {
+        assert_eq!(
+            language_name(filename),
+            Some(*expected),
+            "{filename} should resolve to {expected}",
+        );
+    }
+}
 
 /// Validate that every supported language can be loaded successfully.
 /// This catches invalid node types, syntax errors, and other issues in .scm query files
@@ -93,5 +122,133 @@ fn markdown_extensions_resolve_to_markdown() {
             "Markdown",
             "{filename} should resolve to Markdown",
         );
+    }
+}
+
+#[test]
+fn script_module_and_declaration_extensions_resolve_to_their_base_language() {
+    assert_language_names(&[
+        ("vite.config.mjs", "javascript"),
+        ("legacy.cjs", "javascript"),
+        ("worker.mts", "typescript"),
+        ("config.cts", "typescript"),
+        ("globals.d.ts", "typescript"),
+        ("env.d.mts", "typescript"),
+        ("page.test.tsx", "tsx"),
+        ("stubs.pyi", "python"),
+    ]);
+}
+
+#[test]
+fn config_and_data_variants_resolve_to_their_base_language() {
+    assert_language_names(&[
+        ("wrangler.jsonc", "json"),
+        ("events.jsonl", "json"),
+        ("composer.lock", "json"),
+        ("bun.lock", "json"),
+        ("uv.lock", "toml"),
+        ("Cargo.lock", "toml"),
+        ("docker-compose.yml", "yaml"),
+        (".prettierrc", "yaml"),
+        ("main.tf", "hcl"),
+        ("prod.tfvars", "hcl"),
+        (".terraform.lock.hcl", "hcl"),
+        ("icon.svg", "xml"),
+        ("Info.plist", "xml"),
+    ]);
+}
+
+#[test]
+fn dotenv_and_shell_startup_files_resolve_to_shell() {
+    assert_language_names(&[
+        (".env", "shell"),
+        (".env.local", "shell"),
+        (".env.example", "shell"),
+        (".env.production.local", "shell"),
+        ("staging.env", "shell"),
+        (".envrc", "shell"),
+        (".dev.vars", "shell"),
+        (".zshenv", "shell"),
+        (".profile", "shell"),
+        ("deploy.zsh", "shell"),
+        ("install.bash", "shell"),
+    ]);
+}
+
+#[test]
+fn dockerfile_variants_resolve_to_dockerfile() {
+    assert_language_names(&[
+        ("Dockerfile", "dockerfile"),
+        ("Dockerfile.dev", "dockerfile"),
+        ("Containerfile.prod", "dockerfile"),
+        ("api.Dockerfile", "dockerfile"),
+        ("web.dockerfile", "dockerfile"),
+    ]);
+}
+
+#[test]
+fn template_dialects_fall_back_to_their_host_language() {
+    assert_language_names(&[
+        ("welcome.blade.php", "html"),
+        ("Welcome.Blade.PHP", "html"),
+        ("index.php", "php"),
+        ("invite.hbs", "html"),
+        ("post.mdx", "markdown"),
+        ("project.mdc", "markdown"),
+    ]);
+}
+
+#[test]
+fn postgres_extensions_resolve_to_sql() {
+    assert_language_names(&[
+        ("20240101_init.sql", "sql"),
+        ("functions.pgsql", "sql"),
+        ("seed.psql", "sql"),
+        ("triggers.plpgsql", "sql"),
+    ]);
+}
+
+#[test]
+fn ruby_project_files_resolve_to_ruby() {
+    assert_language_names(&[
+        ("Gemfile", "ruby"),
+        ("Podfile", "ruby"),
+        ("tasks.rake", "ruby"),
+    ]);
+}
+
+#[test]
+fn extensions_resolve_case_insensitively() {
+    assert_language_names(&[
+        ("README.MD", "markdown"),
+        ("DATA.JSON", "json"),
+        ("legacy.H", "cpp"),
+    ]);
+}
+
+#[test]
+fn unmapped_files_resolve_to_no_language() {
+    for filename in ["notes.txt", "data.csv", ".gitignore", "environment", "env"] {
+        assert_eq!(
+            language_name(filename),
+            None,
+            "{filename} should not resolve to a language",
+        );
+    }
+}
+
+/// Filename-only matches must work through both public lookups, which split paths differently.
+#[test]
+fn filename_matches_resolve_through_both_lookups() {
+    for (filename, expected) in [(".env.local", "Shell"), ("welcome.blade.php", "HTML")] {
+        let path = StandardizedPath::try_new(&format!("/tmp/{filename}"))
+            .expect("test path should be absolute");
+        let language = language_by_filename(&path)
+            .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
+        assert_eq!(language.display_name(), expected);
+
+        let language = language_by_local_filename(Path::new(filename))
+            .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
+        assert_eq!(language.display_name(), expected);
     }
 }

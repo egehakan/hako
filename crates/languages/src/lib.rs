@@ -105,10 +105,10 @@ pub fn language_by_local_filename(path: &Path) -> Option<Arc<Language>> {
 fn normalize_language_name(name: &str) -> &str {
     match name {
         "go" => "golang",
-        "bash" | "sh" | "zsh" => "shell",
-        "js" => "javascript",
-        "ts" => "typescript",
-        "py" => "python",
+        "bash" | "sh" | "zsh" | "dotenv" | "env" => "shell",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "mts" | "cts" => "typescript",
+        "py" | "python3" => "python",
         "rb" => "ruby",
         "rs" => "rust",
         "cs" | "c#" => "csharp",
@@ -117,7 +117,12 @@ fn normalize_language_name(name: &str) -> &str {
         "terraform" | "tf" => "hcl",
         "kt" => "kotlin",
         "docker" | "containerfile" => "dockerfile",
-        "md" => "markdown",
+        "md" | "mdx" => "markdown",
+        "yml" => "yaml",
+        "jsonc" | "jsonl" => "json",
+        "postgres" | "postgresql" | "pgsql" | "plpgsql" | "psql" => "sql",
+        "handlebars" | "hbs" | "blade" => "html",
+        "svg" | "plist" => "xml",
         other => other,
     }
 }
@@ -131,73 +136,98 @@ fn language_by_filename_parts(
     filename: Option<&str>,
     extension: Option<&str>,
 ) -> Option<Arc<Language>> {
-    // First check for specific filenames that don't use extensions.
-    if let Some(filename) = filename {
-        match filename {
-            // Bash config files
-            ".bashrc" | ".bash_profile" => {
-                return language_by_name("shell");
-            }
-            // ZSH config files
-            ".zshrc" | ".zsh_profile" | ".zprofile" => {
-                return language_by_name("shell");
-            }
-            // Bazel build files
-            "BUILD" | "WORKSPACE" => {
-                return language_by_name("starlark");
-            }
-            // Dockerfiles
-            "Dockerfile" | "Containerfile" | "dockerfile" | "containerfile" => {
-                return language_by_name("dockerfile");
-            }
-            _ => {
-                // Also match Dockerfile variants like Dockerfile.dev, Dockerfile.prod
-                if filename.starts_with("Dockerfile.") || filename.starts_with("Containerfile.") {
-                    return language_by_name("dockerfile");
-                }
+    language_by_name(language_name_for_filename_parts(filename, extension)?)
+}
+
+/// Resolves a file to an internal language name. Whole filenames take precedence over
+/// extensions, which are retried in lowercase so `README.MD` and `api.Dockerfile` resolve.
+fn language_name_for_filename_parts(
+    filename: Option<&str>,
+    extension: Option<&str>,
+) -> Option<&'static str> {
+    filename.and_then(language_name_for_filename).or_else(|| {
+        let extension = extension?;
+        language_name_for_extension(extension)
+            .or_else(|| language_name_for_extension(&extension.to_ascii_lowercase()))
+    })
+}
+
+/// Resolves files that are identified by their whole name, a name prefix, or a compound
+/// extension rather than by their final extension.
+fn language_name_for_filename(filename: &str) -> Option<&'static str> {
+    let name = match filename {
+        ".bashrc" | ".bash_profile" | ".bash_aliases" | ".bash_login" | ".bash_logout"
+        | ".profile" => "shell",
+        ".zshrc" | ".zsh_profile" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" => "shell",
+        // Dotenv-style files are `KEY=value` lines with `#` comments, which is valid shell.
+        ".envrc" | ".dev.vars" | ".flaskenv" => "shell",
+        "BUILD" | "WORKSPACE" => "starlark",
+        "Dockerfile" | "Containerfile" | "dockerfile" | "containerfile" => "dockerfile",
+        "Gemfile" | "Rakefile" | "Podfile" | "Fastfile" | "Brewfile" | "Vagrantfile" => "ruby",
+        "Cargo.lock" | "poetry.lock" | "uv.lock" | "Pipfile" => "toml",
+        "composer.lock" | "bun.lock" | "flake.lock" | "Pipfile.lock" | ".babelrc" | ".swcrc" => {
+            "json"
+        }
+        // These rc files may hold either JSON or YAML; YAML is a superset, so it covers both.
+        ".prettierrc" | ".eslintrc" | ".stylelintrc" | ".clang-format" | ".yamllint" => "yaml",
+        _ => {
+            if filename.starts_with("Dockerfile.") || filename.starts_with("Containerfile.") {
+                "dockerfile"
+            } else if filename == ".env" || filename.starts_with(".env.") {
+                "shell"
+            } else if filename.to_ascii_lowercase().ends_with(".blade.php") {
+                // Blade templates are mostly markup, and the PHP grammar leaves everything
+                // outside `<?php` tags unhighlighted.
+                "html"
+            } else {
+                return None;
             }
         }
-    }
+    };
+    Some(name)
+}
 
-    let extension = extension?;
-    match extension {
-        "rs" => language_by_name("rust"),
-        "go" => language_by_name("golang"),
-        "yml" | "yaml" => language_by_name("yaml"),
-        "py" | "py3" | "pyw" | "pyi" => language_by_name("python"),
-        "js" | "cjs" | "mjs" => language_by_name("javascript"),
-        "jsx" => language_by_name("jsx"),
-        "tsx" => language_by_name("tsx"),
-        "ts" | "cts" | "mts" => language_by_name("typescript"),
-        "java" | "groovy" | "gvy" | "gy" | "gsh" => language_by_name("java"),
-        "cpp" | "cxx" | "cc" | "h" | "hh" | "hpp" | "hxx" | "H" | "h++" => language_by_name("cpp"),
-        "sh" | "zsh" | "bash" | "command" => language_by_name("shell"),
-        "cs" => language_by_name("csharp"),
-        "html" | "htm" => language_by_name("html"),
-        "css" => language_by_name("css"),
-        "c" => language_by_name("c"),
-        "json" => language_by_name("json"),
-        "jq" => language_by_name("jq"),
-        "tf" | "hcl" | "tfvars" => language_by_name("hcl"),
-        "lua" => language_by_name("lua"),
-        "nix" => language_by_name("nix"),
-        "rb" => language_by_name("ruby"),
-        "php" | "phtml" => language_by_name("php"),
-        "toml" => language_by_name("toml"),
-        "swift" => language_by_name("swift"),
-        "kt" | "kts" => language_by_name("kotlin"),
-        "scala" | "sbt" | "sc" => language_by_name("scala"),
-        "ps1" | "pwsh" => language_by_name("powershell"),
-        "ex" | "exs" => language_by_name("elixir"),
-        "sql" => language_by_name("sql"),
-        "bzl" | "bazel" => language_by_name("starlark"),
-        "m" | "mm" => language_by_name("objective-c"),
-        "xml" => language_by_name("xml"),
-        "vue" => language_by_name("vue"),
-        "dockerfile" => language_by_name("dockerfile"),
-        "md" | "markdown" => language_by_name("markdown"),
-        _ => None,
-    }
+fn language_name_for_extension(extension: &str) -> Option<&'static str> {
+    let name = match extension {
+        "rs" => "rust",
+        "go" => "golang",
+        "yml" | "yaml" => "yaml",
+        "py" | "py3" | "pyw" | "pyi" => "python",
+        "js" | "cjs" | "mjs" => "javascript",
+        "jsx" => "jsx",
+        "tsx" => "tsx",
+        "ts" | "cts" | "mts" => "typescript",
+        "java" | "groovy" | "gvy" | "gy" | "gsh" => "java",
+        "cpp" | "cxx" | "cc" | "h" | "hh" | "hpp" | "hxx" | "H" | "h++" => "cpp",
+        "sh" | "zsh" | "bash" | "command" | "env" => "shell",
+        "cs" => "csharp",
+        // Handlebars and Mustache templates are markup with `{{ }}` placeholders.
+        "html" | "htm" | "hbs" | "handlebars" | "mustache" => "html",
+        "css" => "css",
+        "c" => "c",
+        "json" | "jsonc" | "jsonl" => "json",
+        "jq" => "jq",
+        "tf" | "hcl" | "tfvars" => "hcl",
+        "lua" => "lua",
+        "nix" => "nix",
+        "rb" | "rake" | "gemspec" | "podspec" => "ruby",
+        "php" | "phtml" => "php",
+        "toml" => "toml",
+        "swift" => "swift",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sbt" | "sc" => "scala",
+        "ps1" | "pwsh" => "powershell",
+        "ex" | "exs" => "elixir",
+        "sql" | "psql" | "pgsql" | "plpgsql" | "postgres" => "sql",
+        "bzl" | "bazel" => "starlark",
+        "m" | "mm" => "objective-c",
+        "xml" | "svg" | "plist" | "xsd" | "xsl" | "drawio" => "xml",
+        "vue" => "vue",
+        "dockerfile" => "dockerfile",
+        "md" | "markdown" | "mdx" | "mdc" => "markdown",
+        _ => return None,
+    };
+    Some(name)
 }
 
 /// Captures the language-specific parser grammar and queries for syntax features like highlighting and

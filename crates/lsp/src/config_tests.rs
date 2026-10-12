@@ -2,7 +2,27 @@ use std::path::PathBuf;
 
 use lsp_types::Uri;
 
+use crate::LanguageId;
 use crate::config::{lsp_uri_to_path, path_to_lsp_uri};
+
+#[test]
+fn module_and_stub_extensions_resolve_to_a_language_id() {
+    let cases = [
+        ("worker.mts", LanguageId::TypeScript),
+        ("config.cts", LanguageId::TypeScript),
+        ("globals.d.ts", LanguageId::TypeScript),
+        ("vite.config.mjs", LanguageId::JavaScript),
+        ("legacy.cjs", LanguageId::JavaScript),
+        ("stubs.pyi", LanguageId::Python),
+    ];
+    for (filename, expected) in cases {
+        assert_eq!(
+            LanguageId::from_path(&PathBuf::from(filename)),
+            Some(expected),
+            "{filename} should resolve to {expected:?}",
+        );
+    }
+}
 
 // Unix-specific tests use Unix paths
 #[cfg(not(windows))]

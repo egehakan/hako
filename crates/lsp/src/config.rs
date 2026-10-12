@@ -40,8 +40,8 @@ impl LanguageId {
         match extn.to_str()? {
             "rs" => Some(Self::Rust),
             "go" => Some(Self::Go),
-            "py" => Some(Self::Python),
-            "ts" => Some(Self::TypeScript),
+            "py" | "pyi" => Some(Self::Python),
+            "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "tsx" => Some(Self::TypeScriptReact),
             "js" | "mjs" | "cjs" => Some(Self::JavaScript),
             "jsx" => Some(Self::JavaScriptReact),
