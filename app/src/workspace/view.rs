@@ -827,6 +827,26 @@ fn exclusive_side_panels(tools_open: bool, code_review_open: bool) -> (bool, boo
     (tools_open, code_review_open && !tools_open)
 }
 
+/// The tools panel view to show for a restored tab: the saved one while the panel still offers
+/// it, and otherwise the Project Explorer, or failing that the first view on offer.
+fn tool_panel_view_to_restore(
+    saved: ToolPanelView,
+    available: &[ToolPanelView],
+) -> Option<ToolPanelView> {
+    let is_offered = |view: ToolPanelView| {
+        available
+            .iter()
+            .any(|offered| std::mem::discriminant(offered) == std::mem::discriminant(&view))
+    };
+    if is_offered(saved) {
+        Some(saved)
+    } else if is_offered(ToolPanelView::ProjectExplorer) {
+        Some(ToolPanelView::ProjectExplorer)
+    } else {
+        available.first().copied()
+    }
+}
+
 /// Side of the pane group on which a file gets its split pane, so that it opens next to the
 /// side panel it was picked in: `origin_panel` when the caller names where that panel sits, the
 /// tools panel for a file from the Project Explorer or global search, and otherwise the right.
@@ -4439,16 +4459,9 @@ impl Workspace {
         };
         let active_view = tool_panel_view_to_restore(saved_view, &self.left_panel_views);
         self.left_panel_view.update(ctx, |lp, ctx| {
-            // Restore which panel tab was active
-            let active_view = match left_panel_snapshot.left_panel_displayed_tab {
-                LeftPanelDisplayedTab::FileTree => ToolPanelView::ProjectExplorer,
-                LeftPanelDisplayedTab::GlobalSearch => ToolPanelView::GlobalSearch {
-                    entry_focus: GlobalSearchEntryFocus::Results,
-                },
-                LeftPanelDisplayedTab::WarpDrive => ToolPanelView::WarpDrive,
-                LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
-            };
-            lp.restore_active_view_from_snapshot(active_view, ctx);
+            if let Some(active_view) = active_view {
+                lp.restore_active_view_from_snapshot(active_view, ctx);
+            }
             lp.set_active_pane_group(pane_group.clone(), &self.working_directories_model, ctx);
         });
 
@@ -9948,10 +9961,16 @@ impl Workspace {
         let should_open = panel_update_params.target_open_state;
         let should_close = !panel_update_params.target_open_state;
 
-        let new_is_maximized = panel_update_params.pane_group.update(ctx, |pane_group, _| {
-            pane_group.right_panel_open = should_open;
-            pane_group.is_right_panel_maximized
-        });
+        let new_is_maximized = panel_update_params
+            .pane_group
+            .update(ctx, |pane_group, ctx| {
+                if should_open {
+                    // The tools panel and the code review panel are never shown together.
+                    pane_group.set_left_panel_open(false, ctx);
+                }
+                pane_group.right_panel_open = should_open;
+                pane_group.is_right_panel_maximized
+            });
 
         self.right_panel_view.update(ctx, |view, ctx| {
             view.set_maximized(new_is_maximized, ctx);
