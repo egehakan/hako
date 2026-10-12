@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ai::diff_validation::DiffType;
@@ -91,6 +91,10 @@ const HOVER_DEBOUNCE_PERIOD: Duration = Duration::from_millis(500);
 
 /// How long the cursor has to rest on a line before the blame of that line is shown.
 const INLINE_BLAME_DEBOUNCE_PERIOD: Duration = Duration::from_millis(250);
+
+/// How often, at most, `HEAD` is read again while the cursor moves in a file whose repository
+/// has no watcher to report a commit.
+const UNWATCHED_HEAD_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long to wait after the user stops typing before triggering a debounced
 /// auto-save. Mirrors VS Code's default `files.autoSaveDelay` of 1000ms.
@@ -323,11 +327,14 @@ pub(super) struct InlineBlame {
     pub(super) card_handles: BlameCardHandles,
     /// A card was asked for from the keyboard before the blame of its line was known.
     pub(super) card_requested: bool,
-    /// The repository whose changes are being followed, once the file has been located.
+    /// The repository the file was found in.
     watched_repo: Option<PathBuf>,
-    /// Kept so that the repository stays watched for as long as the file is open.
+    /// Reports changes to that repository. `None` when Warp is not watching it, in which case
+    /// `HEAD` is read again from time to time instead. Kept so that the repository stays
+    /// watched for as long as the file is open.
     #[cfg(feature = "local_fs")]
     git_status: Option<ModelHandle<GitRepoStatusModel>>,
+    last_unwatched_head_check: Option<Instant>,
 }
 
 pub(super) const HOVER_TOOLTIP_MAX_WIDTH: f32 = 400.;
@@ -1345,6 +1352,10 @@ impl LocalCodeEditorView {
         if was_window_focused && !is_window_focused {
             self.auto_save_on_focus_change(ctx);
         }
+        // Coming back from another application is when a commit made there gets noticed.
+        if !was_window_focused && is_window_focused {
+            self.refresh_blame_repo(ctx);
+        }
     }
 
     /// Marks the next save as an auto-save so the resulting `FileSaved` event
@@ -1382,6 +1393,7 @@ impl LocalCodeEditorView {
             watched_repo: None,
             #[cfg(feature = "local_fs")]
             git_status: None,
+            last_unwatched_head_check: None,
         });
     }
 
@@ -1441,6 +1453,7 @@ impl LocalCodeEditorView {
     }
 
     fn update_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
+        self.check_unwatched_blame_repo(ctx);
         let annotation = self.inline_blame_annotation(ctx);
         let version = self.editor.as_ref(ctx).version(ctx);
         if let Some(inline_blame) = &mut self.inline_blame {
@@ -1537,8 +1550,29 @@ impl LocalCodeEditorView {
         BlameModel::handle(ctx).update(ctx, |model, ctx| model.refresh_repo(&repo_root, ctx));
     }
 
+    /// Reads `HEAD` again if the file's repository is one nothing reports changes for and it has
+    /// not been read for a while. This is what notices a commit made in such a repository.
+    fn check_unwatched_blame_repo(&mut self, ctx: &mut ViewContext<Self>) {
+        self.watch_blame_repo(ctx);
+        let Some(inline_blame) = &mut self.inline_blame else {
+            return;
+        };
+        #[cfg(feature = "local_fs")]
+        if inline_blame.git_status.is_some() {
+            return;
+        }
+        let checked_recently = inline_blame
+            .last_unwatched_head_check
+            .is_some_and(|checked| checked.elapsed() < UNWATCHED_HEAD_CHECK_INTERVAL);
+        if inline_blame.activated && !checked_recently {
+            inline_blame.last_unwatched_head_check = Some(Instant::now());
+            self.refresh_blame_repo(ctx);
+        }
+    }
+
     /// Follows the repository this file was found in, so that a commit, a checkout or a pull is
-    /// noticed. This joins the watcher the repository already has rather than adding one.
+    /// noticed. This joins the watcher the repository already has rather than adding one, and is
+    /// tried again for as long as the repository is not being watched.
     fn watch_blame_repo(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(inline_blame) = &self.inline_blame else {
             return;
@@ -1552,7 +1586,12 @@ impl LocalCodeEditorView {
         else {
             return;
         };
-        if inline_blame.watched_repo.as_ref() == Some(&repo_root) {
+        let is_same_repo = inline_blame.watched_repo.as_ref() == Some(&repo_root);
+        #[cfg(feature = "local_fs")]
+        let is_settled = is_same_repo && inline_blame.git_status.is_some();
+        #[cfg(not(feature = "local_fs"))]
+        let is_settled = is_same_repo;
+        if is_settled {
             return;
         }
 
