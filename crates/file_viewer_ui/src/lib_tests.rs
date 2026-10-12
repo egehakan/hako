@@ -31,3 +31,26 @@ fn rectangles_convert_to_the_renderer_type() {
     assert_eq!(rect.origin(), vec2f(1., 2.));
     assert_eq!(rect.size(), vec2f(30., 40.));
 }
+
+#[test]
+fn every_key_binding_is_a_valid_keystroke() {
+    // Building a binding panics on a keystroke the keymap cannot parse.
+    let (editable, fixed) = bindings();
+    assert_eq!(editable.len(), 5);
+    // Ten digits, enter and escape.
+    assert_eq!(fixed.len(), 12);
+}
+
+#[test]
+fn the_busy_dots_sit_centred_under_the_message() {
+    let dots = busy_dots(Size::new(400., 300.));
+    assert_eq!(dots.len(), BUSY_DOTS);
+    let left = dots[0].x;
+    let right = dots[BUSY_DOTS - 1].right();
+    assert_eq!(left, 400. - right);
+    assert!(
+        dots.iter()
+            .all(|dot| dot.y == 178. && dot.height == BUSY_DOT_SIZE)
+    );
+    assert_eq!(dots[1].x - dots[0].x, BUSY_DOT_SIZE + BUSY_DOT_GAP);
+}

@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use file_viewers::cache::ByteBudgetCache;
 use file_viewers::csv::{self, GridScroll, Table};
@@ -66,6 +66,13 @@ const BACKDROP_TILE: f32 = 256.;
 const BACKDROP_CELL_PIXELS: u32 = 16;
 const BACKDROP_CELLS: u32 = 32;
 
+/// The busy indicator: a row of dots lit one after the other.
+const BUSY_DOTS: usize = 3;
+const BUSY_DOT_SIZE: f32 = 6.;
+const BUSY_DOT_GAP: f32 = 8.;
+const BUSY_DOTS_BELOW_CENTRE: f32 = 28.;
+const BUSY_STEP: Duration = Duration::from_millis(280);
+
 const HEADER_ROW_HEIGHT: f32 = 28.;
 const TABLE_ROW_HEIGHT: f32 = 24.;
 const TABLE_CELL_PADDING: f32 = 8.;
@@ -80,8 +87,14 @@ const TABLE_MAX_CELL_CHARS: usize = 160;
 const MONOSPACE_ADVANCE: f32 = 0.62;
 
 pub fn init(app: &mut AppContext) {
+    let (editable, fixed) = bindings();
+    app.register_editable_bindings(editable);
+    app.register_fixed_bindings(fixed);
+}
+
+fn bindings() -> (Vec<EditableBinding>, Vec<FixedBinding>) {
     let viewer = id!(FileViewerView::ui_name());
-    app.register_editable_bindings([
+    let editable = vec![
         EditableBinding::new(
             "file_viewer:zoom_in",
             "Zoom in on the viewed file",
@@ -117,7 +130,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(viewer.clone())
         .with_key_binding("pageup"),
-    ]);
+    ];
 
     // Typing a page number and pressing enter goes to that page.
     let mut page_entry: Vec<FixedBinding> = (0..=9u8)
@@ -139,7 +152,7 @@ pub fn init(app: &mut AppContext) {
         FileViewerAction::CancelPageEntry,
         viewer,
     ));
-    app.register_fixed_bindings(page_entry);
+    (editable, page_entry)
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +271,10 @@ pub struct FileViewerView {
     path: PathBuf,
     kind: ViewerKind,
     file_size: Option<u64>,
+    /// When the file was last written as of the load that produced `body`.
+    loaded_modified: Option<SystemTime>,
+    /// When the current load started, which is what the busy indicator counts from.
+    loading_since: Instant,
     body: Body,
     transform: ViewTransform,
     canvas: CanvasHandle,
@@ -290,6 +307,8 @@ impl FileViewerView {
             path,
             kind,
             file_size: None,
+            loaded_modified: None,
+            loading_since: Instant::now(),
             body: Body::Loading("Loading…"),
             transform: ViewTransform::new(default_zoom_mode(kind)),
             canvas: CanvasHandle::default(),
@@ -307,8 +326,26 @@ impl FileViewerView {
         self.kind
     }
 
-    pub fn focus(&self, ctx: &mut ViewContext<Self>) {
+    pub fn focus(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.focus_self();
+        self.reload_if_changed(ctx);
+    }
+
+    /// Loads the file again if it was written since it was loaded. Coming back to the viewer
+    /// is when a stale picture would be noticed, so that is when this is checked. Kinds
+    /// rendered from text follow their editor's buffer instead.
+    fn reload_if_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.kind.is_text_backed() {
+            return;
+        }
+        let Ok(metadata) = fs::metadata(&self.path) else {
+            return;
+        };
+        let changed = Some(metadata.len()) != self.file_size
+            || metadata.modified().ok() != self.loaded_modified;
+        if changed {
+            self.load(None, ctx);
+        }
     }
 
     /// Points the viewer at the file's new location after a rename.
@@ -332,7 +369,10 @@ impl FileViewerView {
     fn load(&mut self, text: Option<Arc<str>>, ctx: &mut ViewContext<Self>) {
         self.generation += 1;
         let generation = self.generation;
-        self.file_size = fs::metadata(&self.path).ok().map(|metadata| metadata.len());
+        let metadata = fs::metadata(&self.path).ok();
+        self.file_size = metadata.as_ref().map(|metadata| metadata.len());
+        self.loaded_modified = metadata.and_then(|metadata| metadata.modified().ok());
+        self.loading_since = Instant::now();
         self.notes.clear();
         let path = self.path.clone();
 
@@ -952,8 +992,17 @@ impl FileViewerView {
         .finish()
     }
 
-    fn render_message(&self, message: &str, appearance: &Appearance) -> Box<dyn Element> {
+    /// Shows `message` in the middle of the viewer, over a busy indicator when `busy` is set.
+    fn render_message(
+        &self,
+        message: &str,
+        busy: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
         let theme = appearance.theme();
+        let dot_color = blended_colors::text_sub(theme, theme.background());
+        let active_dot_color = blended_colors::text_main(theme, theme.background());
+        let since = self.loading_since;
         let text = Text::new(
             message.to_string(),
             appearance.ui_font_family(),
@@ -962,8 +1011,32 @@ impl FileViewerView {
         .with_color(blended_colors::text_sub(theme, theme.background()))
         .finish();
         let centred = Align::new(ConstrainedBox::new(text).with_max_width(480.).finish()).finish();
-        ViewerCanvas::new(self.canvas.clone(), theme.background().into_solid())
-            .with_child(centred)
+        let canvas = ViewerCanvas::new(self.canvas.clone(), theme.background().into_solid())
+            .with_child(centred);
+        if !busy {
+            return canvas.finish();
+        }
+        canvas
+            .with_painter(move |viewport| {
+                let step = since.elapsed().as_millis() / BUSY_STEP.as_millis();
+                let active = (step % BUSY_DOTS as u128) as usize;
+                let shapes = busy_dots(viewport.size)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, rect)| Shape::Fill {
+                        rect: to_rect_f(rect),
+                        color: if index == active {
+                            active_dot_color
+                        } else {
+                            dot_color
+                        },
+                    })
+                    .collect();
+                Frame {
+                    shapes,
+                    repaint_after: Some(BUSY_STEP),
+                }
+            })
             .finish()
     }
 
@@ -1127,6 +1200,18 @@ impl FileViewerView {
     }
 }
 
+/// Where the dots of the busy indicator go in a viewer of size `viewport`: in a row under the
+/// message in its middle.
+fn busy_dots(viewport: Size) -> Vec<Rect> {
+    let pitch = BUSY_DOT_SIZE + BUSY_DOT_GAP;
+    let width = BUSY_DOTS as f32 * pitch - BUSY_DOT_GAP;
+    let left = (viewport.width - width) / 2.;
+    let top = viewport.height / 2. + BUSY_DOTS_BELOW_CENTRE;
+    (0..BUSY_DOTS)
+        .map(|dot| Rect::new(left + dot as f32 * pitch, top, BUSY_DOT_SIZE, BUSY_DOT_SIZE))
+        .collect()
+}
+
 fn default_zoom_mode(kind: ViewerKind) -> ZoomMode {
     match kind {
         ViewerKind::Pdf | ViewerKind::Office => ZoomMode::FitWidth,
@@ -1213,8 +1298,8 @@ impl View for FileViewerView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let body = match &self.body {
-            Body::Loading(message) => self.render_message(message, appearance),
-            Body::Message(message) => self.render_message(message, appearance),
+            Body::Loading(message) => self.render_message(message, true, appearance),
+            Body::Message(message) => self.render_message(message, false, appearance),
             Body::Image(image) => self.render_image(image, appearance),
             Body::Pdf(pdf) => self.render_pdf(pdf, appearance),
             Body::Table(table) => self.render_table(table, appearance),
@@ -1298,6 +1383,7 @@ impl TypedActionView for FileViewerView {
             } => {
                 ctx.focus_self();
                 ctx.emit(FileViewerEvent::Focused);
+                self.reload_if_changed(ctx);
                 // A double click switches between the fitted view and the natural size.
                 if *click_count == 2
                     && let Some(content) = self.content_size()
