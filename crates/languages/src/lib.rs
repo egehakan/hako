@@ -394,7 +394,7 @@ fn get_arborium_highlight_query(lang: &str) -> Option<&'static str> {
 /// applies captures in pattern order.
 fn highlight_query_source(lang: &str) -> Option<Cow<'static, str>> {
     let bundled = get_arborium_highlight_query(lang);
-    let local = load_text(&[lang, "highlights.scm"].join("\\"));
+    let local = local_highlight_query(lang);
     match (bundled, local) {
         (Some(bundled), Some(local)) => Some(Cow::Owned(format!("{bundled}\n{local}"))),
         (Some(bundled), None) => Some(Cow::Borrowed(bundled)),
@@ -445,6 +445,34 @@ fn query_capture_names(query: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// Opens the first line of a `highlights.scm` that builds on other grammar directories, followed
+/// by their comma-separated names.
+const INHERITS_DIRECTIVE: &str = "; inherits:";
+
+/// Returns the `highlights.scm` in a grammar directory, preceded by the `highlights.scm` of each
+/// directory its first line inherits from, so its own patterns take precedence over theirs.
+fn local_highlight_query(dir: &str) -> Option<Cow<'static, str>> {
+    let own = load_text(&[dir, "highlights.scm"].join("\\"))?;
+    let Some(inherited) = own
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix(INHERITS_DIRECTIVE))
+    else {
+        return Some(own);
+    };
+
+    let mut query = String::new();
+    for parent in inherited.split(',').map(str::trim) {
+        let parent_query = local_highlight_query(parent).unwrap_or_else(|| {
+            panic!("{dir}/highlights.scm inherits from {parent}, which has no highlights.scm")
+        });
+        query.push_str(&parent_query);
+        query.push('\n');
+    }
+    query.push_str(&own);
+    Some(Cow::Owned(query))
 }
 
 /// Returns the tree-sitter grammar for a language, from a standalone grammar crate for the few

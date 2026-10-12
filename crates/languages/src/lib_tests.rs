@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use arborium::tree_sitter::{Parser, QueryCursor, StreamingIterator};
+use rust_embed::RustEmbed;
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
-    SUPPORTED_LANGUAGES, is_highlight_capture, language_by_filename, language_by_local_filename,
-    language_by_name, language_name_for_filename_parts, load_language, query_capture_names,
+    Grammars, INHERITS_DIRECTIVE, SUPPORTED_LANGUAGES, is_highlight_capture, language_by_filename,
+    language_by_local_filename, language_by_name, language_name_for_filename_parts, load_language,
+    load_text, local_highlight_query, query_capture_names,
 };
 
 /// Resolves a bare filename to its internal language name without loading the grammar.
@@ -606,6 +608,55 @@ fn filename_matches_resolve_through_both_lookups() {
     }
 }
 
+/// Returns, for each byte of `source`, the name of the capture that would style it: the last
+/// capture covering the byte in the order the highlight query yields them, which is how the
+/// editor applies captures. Captures that only serve a query's predicates are skipped.
+fn painted_captures(language_name: &str, source: &str) -> Vec<Option<String>> {
+    let language = language_by_name(language_name)
+        .unwrap_or_else(|| panic!("{language_name} should be a supported language"));
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language.grammar)
+        .expect("grammar should be compatible with the parser");
+    let tree = parser.parse(source, None).expect("source should parse");
+
+    let capture_names = language.highlight_query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(
+        &language.highlight_query,
+        tree.root_node(),
+        source.as_bytes(),
+    );
+    let mut painted = vec![None; source.len()];
+    while let Some((query_match, capture_index)) = captures.next() {
+        let capture = query_match.captures[*capture_index];
+        let name = capture_names[capture.index as usize];
+        if name.starts_with('_') {
+            continue;
+        }
+        painted[capture.node.byte_range()].fill(Some(name.to_string()));
+    }
+    painted
+}
+
+/// Asserts which capture styles the first occurrence of each `text` in `source`, as
+/// `(capture name, text)` pairs.
+fn assert_painted(language_name: &str, source: &str, expected: &[(&str, &str)]) {
+    let painted = painted_captures(language_name, source);
+    for (name, text) in expected {
+        let start = source
+            .find(text)
+            .unwrap_or_else(|| panic!("{text:?} should occur in the {language_name} source"));
+        let actual = &painted[start..start + text.len()];
+        assert!(
+            actual
+                .iter()
+                .all(|capture| capture.as_deref() == Some(*name)),
+            "expected {text:?} to be styled as {name} in {language_name}, got {actual:?}",
+        );
+    }
+}
+
 #[test]
 fn languages_know_the_name_they_are_registered_under() {
     for name in ["typescript", "shell", "objective-c"] {
@@ -651,4 +702,461 @@ fn highlight_captures_include_enclosing_names() {
     ] {
         assert!(!is_highlight_capture(name), "{name} should be unknown");
     }
+}
+
+/// Every `highlights.scm` must reach a supported language, either as that language's own file
+/// or through an `; inherits:` line, so that loading the languages compiles all of them.
+#[test]
+fn every_local_highlight_query_is_loaded_by_a_supported_language() {
+    fn collect_loaded(dir: &str, loaded: &mut Vec<String>) {
+        let Some(own) = load_text(&[dir, "highlights.scm"].join("\\")) else {
+            return;
+        };
+        loaded.push(dir.to_string());
+        let inherited = own
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix(INHERITS_DIRECTIVE));
+        for parent in inherited.into_iter().flat_map(|parents| parents.split(',')) {
+            collect_loaded(parent.trim(), loaded);
+        }
+    }
+
+    let mut loaded = Vec::new();
+    for lang in SUPPORTED_LANGUAGES {
+        collect_loaded(lang, &mut loaded);
+        assert!(
+            load_language(lang).is_some(),
+            "{lang} should load with its highlight query",
+        );
+    }
+
+    let unused: Vec<_> = <Grammars as RustEmbed>::iter()
+        .filter_map(|path| {
+            path.strip_suffix("/highlights.scm")
+                .map(|dir| dir.to_string())
+        })
+        .filter(|dir| !loaded.contains(dir))
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "no supported language loads the highlights.scm in: {unused:?}",
+    );
+}
+
+#[test]
+fn inherited_highlight_queries_precede_the_inheriting_file() {
+    let shared = local_highlight_query("_ecma").expect("shared query should exist");
+    let javascript = local_highlight_query("javascript").expect("javascript query should exist");
+    let jsx = local_highlight_query("jsx").expect("jsx query should exist");
+
+    let own = load_text("javascript\\highlights.scm").expect("javascript query should exist");
+
+    assert!(javascript.starts_with(&*shared));
+    assert!(javascript.contains("(jsx_text) @none"));
+    assert!(javascript.ends_with(&*own));
+    // A file that only inherits contributes its parent's query.
+    assert!(jsx.starts_with(&*javascript));
+}
+
+#[test]
+fn typescript_distinguishes_declarations_calls_types_and_members() {
+    let source = "\
+@sealed
+class Widget<T> implements Shape {
+  private size: number = 1;
+  render(target: Canvas): void {
+    const label = `size ${this.size}`;
+    draw(label);
+    target.fill(label.length);
+    queue.forEach((item) => parseInt(item));
+    new Brush();
+  }
+}
+function build() {}
+interface Outline { area?: number }
+enum Mode { Fast }
+let total = count > 0 ? count : 0;
+total += 1;
+const pattern = /ab+/gi;
+";
+    for language in ["typescript", "tsx"] {
+        assert_painted(
+            language,
+            source,
+            &[
+                ("function.decorator", "sealed"),
+                ("type.class", "Widget"),
+                ("type.parameter", "T"),
+                ("type", "Shape"),
+                ("property", "size"),
+                ("type.builtin", "number"),
+                ("function.method", "render"),
+                ("variable.parameter", "target"),
+                ("type", "Canvas"),
+                ("type.builtin", "void"),
+                ("variable.constant", "label"),
+                ("string", "`size "),
+                ("punctuation.special", "${"),
+                ("variable.builtin", "this"),
+                ("function.call", "draw"),
+                ("function.method.call", "fill"),
+                ("property", "length"),
+                ("variable.object", "queue"),
+                ("function.method.builtin", "forEach"),
+                ("keyword.function", "=>"),
+                ("function.builtin", "parseInt"),
+                ("constructor", "Brush"),
+                ("function", "build"),
+                ("type.interface", "Outline"),
+                ("keyword.operator", "?"),
+                ("type.enum", "Mode"),
+                ("constant.enum", "Fast"),
+                ("variable", "total"),
+                ("operator", "="),
+                ("punctuation.bracket", "<"),
+                ("operator.assignment.compound", "+="),
+                ("string.special", "ab+"),
+                ("keyword", "gi"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn tsx_and_javascript_distinguish_jsx_tags_components_and_attributes() {
+    let source = "\
+import React from \"react\";
+export const App = () => (
+  <main className=\"app\">
+    <Panel.Header title={name} />
+    plain
+  </main>
+);
+";
+    for language in ["tsx", "javascript", "jsx"] {
+        assert_painted(
+            language,
+            source,
+            &[
+                ("keyword", "import"),
+                ("variable", "React"),
+                ("function", "App"),
+                ("tag", "main"),
+                ("attribute", "className"),
+                ("string", "\"app\""),
+                ("constructor", "Panel.Header"),
+                ("attribute", "title"),
+                ("punctuation.special", "{"),
+                ("variable", "name"),
+                ("none", "plain"),
+                ("punctuation.bracket", "/>"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn javascript_distinguishes_classes_parameters_and_bindings() {
+    let source = "\
+class Animal extends Base {
+  speak(times) { return this.sound; }
+}
+const view = <li id=\"a\">text<Item /></li>;
+const { first } = options;
+";
+    for language in ["javascript", "jsx"] {
+        assert_painted(
+            language,
+            source,
+            &[
+                ("type.class", "Animal"),
+                ("type", "Base"),
+                ("function.method", "speak"),
+                ("variable.parameter", "times"),
+                ("variable.builtin", "this"),
+                ("property", "sound"),
+                ("variable.constant", "view"),
+                ("tag", "li"),
+                ("attribute", "id"),
+                ("none", "text"),
+                ("constructor", "Item"),
+                ("variable.constant", "first"),
+                ("variable", "options"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn json_distinguishes_keys_from_strings() {
+    let source = "{ \"name\": \"x\\n\", \"flags\": [true, null], \"on\": false }\n";
+    assert_painted(
+        "json",
+        source,
+        &[
+            ("string.special.key", "\"name\""),
+            ("string", "\"x"),
+            ("escape", "\\n"),
+            ("constant.builtin.array", "true"),
+            ("constant.builtin.array", "null"),
+            ("constant.builtin", "false"),
+        ],
+    );
+}
+
+#[test]
+fn markdown_distinguishes_heading_list_and_quote_markers() {
+    let source = "# Title\n\n- item\n1. first\n\n> quoted\n\n```sh\nls\n```\n\n---\n";
+    assert_painted(
+        "markdown",
+        source,
+        &[
+            ("punctuation.special.heading", "#"),
+            ("text.title", "Title"),
+            ("punctuation.special.list", "- "),
+            ("punctuation.special.list", "1. "),
+            ("markup.quote", "> quoted"),
+            ("punctuation.delimiter", "```"),
+            ("none", "sh"),
+            ("none", "ls"),
+            ("punctuation.delimiter", "---"),
+        ],
+    );
+}
+
+#[test]
+fn python_distinguishes_parameters_calls_and_builtins() {
+    let source = "\
+@cache
+class Shape(Base):
+    def area(self, scale: int, *rest) -> float:
+        if scale not in rest and scale:
+            raise ValueError(f\"bad {scale!r}\")
+        return self.compute(scale, exact=True)
+";
+    assert_painted(
+        "python",
+        source,
+        &[
+            ("function.decorator", "@cache"),
+            ("type.class", "Shape"),
+            ("type.class", "Base"),
+            ("function", "area"),
+            ("variable.builtin", "self"),
+            ("variable.parameter", "scale"),
+            ("type.builtin", "int"),
+            ("variable.parameter", "rest"),
+            ("punctuation.delimiter", "->"),
+            ("type.builtin", "float"),
+            ("keyword.operator", "not"),
+            ("keyword.operator", "and"),
+            ("type.exception", "ValueError"),
+            ("punctuation.special", "{"),
+            ("keyword.directive", "!r"),
+            ("function.method.call", "compute"),
+            ("variable.argument", "exact"),
+            ("constant.builtin", "True"),
+        ],
+    );
+}
+
+#[test]
+fn sql_distinguishes_qualified_names_and_arithmetic() {
+    let source = "select u.id, total * 2 from public.users u where u.age > 18;\n";
+    assert_painted(
+        "sql",
+        source,
+        &[
+            ("keyword", "select"),
+            ("variable.qualified", "u"),
+            ("variable.qualified", "id"),
+            ("field", "total"),
+            ("operator.arithmetic", "*"),
+            ("number", "2"),
+            ("variable.qualified", "public"),
+            ("variable.qualified", "users"),
+            ("operator", ">"),
+        ],
+    );
+}
+
+#[test]
+fn php_distinguishes_variables_types_and_builtin_functions() {
+    let source = "\
+<?php
+namespace App\\Http;
+class Greeter extends Base {
+    public function __construct(private string $name) {}
+    public function greet(): string { echo strlen($this->name); return helper($x) . \"!\"; }
+}
+";
+    assert_painted(
+        "php",
+        source,
+        &[
+            ("tag", "<?php"),
+            ("module", "App\\Http"),
+            ("type.class", "Greeter"),
+            ("type", "Base"),
+            ("function.builtin", "__construct"),
+            ("type.builtin", "string"),
+            ("variable", "$name"),
+            ("function.method", "greet"),
+            ("function.builtin", "echo"),
+            ("function.builtin", "strlen"),
+            ("variable.builtin", "$this"),
+            ("function", "helper"),
+            ("variable", "$x"),
+        ],
+    );
+}
+
+#[test]
+fn css_distinguishes_selectors_values_and_custom_properties() {
+    let source = ".card > #main:hover::before, li[href] { --gap: 4px; color: red; \
+                  margin: var(--gap) 2em; -webkit-box-flex: 1; }\n";
+    assert_painted(
+        "css",
+        source,
+        &[
+            ("attribute.class", ".card"),
+            ("punctuation.delimiter", ">"),
+            ("attribute.id", "#main"),
+            ("attribute.pseudo", ":hover"),
+            ("attribute.pseudo", "::before"),
+            ("tag", "li"),
+            ("punctuation.special", "["),
+            ("attribute", "href"),
+            ("variable", "--gap"),
+            ("type", "px"),
+            ("property", "color"),
+            ("constant", "red"),
+            ("function", "var"),
+            ("property.vendored", "-webkit-box-flex"),
+        ],
+    );
+}
+
+#[test]
+fn scss_distinguishes_mixins_functions_and_selectors() {
+    let source = "\
+@mixin rounded($r) { border-radius: $r; }
+.card { @include rounded(2px); &:hover { color: darken($c, 10%); } @if $a == 1 { top: 0; } }
+%base { width: 1px; }
+";
+    assert_painted(
+        "scss",
+        source,
+        &[
+            ("keyword", "@mixin"),
+            ("function.mixin", "rounded"),
+            ("variable", "$r"),
+            ("property", "border-radius"),
+            ("attribute.class", ".card"),
+            ("keyword.import", "@include"),
+            ("tag", "&"),
+            ("attribute.pseudo", ":hover"),
+            ("function", "darken"),
+            ("keyword.conditional", "@if"),
+            ("operator", "=="),
+            ("attribute.class", "%base"),
+        ],
+    );
+}
+
+#[test]
+fn html_distinguishes_doctype_attribute_values_and_entities() {
+    let source = "<!DOCTYPE html>\n<a href=\"x\" hidden>A &amp; B</a>\n";
+    assert_painted(
+        "html",
+        source,
+        &[
+            ("punctuation.bracket", "<!"),
+            ("tag", "DOCTYPE"),
+            ("constant", "html"),
+            ("tag", "a"),
+            ("attribute", "href"),
+            ("string", "\"x\""),
+            ("attribute", "hidden"),
+            ("constant.character.entity", "&amp;"),
+        ],
+    );
+}
+
+#[test]
+fn yaml_distinguishes_escapes_block_scalars_and_document_markers() {
+    let source = "---\nname: \"a\\n\"\nbody: |\n  text\nref: &anchor\n  key: !!str 1\n";
+    assert_painted(
+        "yaml",
+        source,
+        &[
+            ("punctuation.delimiter", "---"),
+            ("property", "name"),
+            ("string.escape", "\\n"),
+            ("keyword.operator", "|"),
+            ("string", "text"),
+            ("punctuation.special", "&"),
+            ("label", "anchor"),
+            ("type", "!!str"),
+            ("number", "1"),
+        ],
+    );
+}
+
+#[test]
+fn shell_distinguishes_variables_builtins_arguments_and_separators() {
+    let source = "\
+NAME=world
+export DIR=\"$HOME/${NAME}\"
+echo -n hello | grep -v foo > out.txt
+if [[ -f \"$1\" && $n -gt 1 ]]; then return 1; fi
+";
+    assert_painted(
+        "shell",
+        source,
+        &[
+            ("property", "NAME"),
+            ("operator", "="),
+            ("string", "world"),
+            ("keyword", "export"),
+            ("property", "$HOME"),
+            ("string", "${"),
+            ("function.builtin", "echo"),
+            ("constant", "-n"),
+            ("string", "hello"),
+            ("punctuation.delimiter", "|"),
+            ("function", "grep"),
+            ("punctuation.delimiter", ">"),
+            ("string", "out.txt"),
+            ("operator", "-f"),
+            ("property", "$1"),
+            ("operator", "&&"),
+            ("operator", "-gt"),
+            ("keyword", "return"),
+        ],
+    );
+}
+
+#[test]
+fn hcl_keeps_specific_identifier_captures() {
+    let source = "\
+resource \"kind\" \"name\" {
+  count = length(var.zones)
+  tags = { Name = \"x\" }
+}
+";
+    assert_painted(
+        "hcl",
+        source,
+        &[
+            ("type", "resource"),
+            ("string", "\"kind\""),
+            ("property", "count"),
+            ("function.call", "length"),
+            ("variable", "var"),
+            ("property", "zones"),
+            ("property", "Name"),
+        ],
+    );
 }

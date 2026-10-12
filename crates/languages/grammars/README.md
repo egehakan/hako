@@ -12,7 +12,11 @@ Another place to look is at Zed's config.toml files, e.g.: https://github.com/ze
 ## highlights.scm
 Highlighting comes from arborium's bundled queries, so most languages have no `highlights.scm`.
 
-Add one only to correct or extend the bundled query. Its patterns are appended after arborium's and therefore win when both capture the same node. Languages whose grammar comes from a standalone crate rather than arborium have no bundled query, so their `highlights.scm` is the whole query. Use capture names the editor colors: `keyword`, `function`, `string`, `type`, `number`, `comment`, `property`, `tag` and `punctuation` (optionally dot-suffixed), plus `text.title`, `text.literal`, `text.uri` and `text.reference`.
+Add one only to correct or extend the bundled query. Its patterns are appended after arborium's and therefore win when both capture the same node. Languages whose grammar comes from a standalone crate rather than arborium have no bundled query, so their `highlights.scm` is the whole query.
+
+Without a theme of its own, the editor colors the captures `keyword`, `function`, `string`, `type`, `number`, `comment`, `property`, `tag` and `punctuation` (optionally dot-suffixed), plus `text.title`, `text.literal`, `text.uri` and `text.reference`. A theme with a `syntax` section can style any capture name, and an entry also covers the names nested under it, so `function` styles `function.method.call` unless `function.method` or `function.method.call` has an entry. Prefer a nested name such as `variable.parameter` over a new top-level one, so that themes which do not distinguish it still color it.
+
+Several languages can share patterns: a `highlights.scm` whose first line is `; inherits: <directory>[,<directory>...]` is preceded by the `highlights.scm` of each named directory, in order. Directories that only hold shared patterns start with an underscore (`_ecma`, `_jsx`, `_typescript`). A shared file can only name nodes that exist in every grammar it is loaded for.
 
 ## indents.scm
 This controls how we know when a cursor should be indented relative to the previous line.
