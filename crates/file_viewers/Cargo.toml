@@ -1,0 +1,24 @@
+[package]
+name = "file_viewers"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+description = "Decoding, layout and conversion logic behind the in-app file viewers"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+futures.workspace = true
+image = { workspace = true, features = ["bmp", "ico", "tiff"] }
+instant.workspace = true
+log.workspace = true
+resvg.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+command.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

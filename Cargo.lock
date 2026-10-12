@@ -5116,6 +5116,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "file_viewers"
+version = "0.1.0"
+dependencies = [
+ "command",
+ "futures",
+ "image",
+ "instant",
+ "log",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "resvg",
+ "tempfile",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
