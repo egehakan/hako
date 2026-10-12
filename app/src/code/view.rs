@@ -1677,12 +1677,15 @@ impl CodeView {
         ctx.notify();
     }
 
-    /// Close all tabs with the specified file path.
-    /// Used when a file is renamed to prevent saving to the old path.
+    /// Close all tabs with the specified file path, or with a path inside it when it is a
+    /// folder's. Used when a file or folder is deleted to prevent saving to the old path.
     pub fn close_tabs_with_path(&mut self, file_path: &Path, ctx: &mut ViewContext<Self>) {
         let mut indices_to_remove = Vec::new();
         for (tab_idx, tab) in self.tab_group.iter().enumerate() {
-            if tab.local_path().is_some_and(|path| path == file_path) {
+            if tab
+                .local_path()
+                .is_some_and(|path| path.starts_with(file_path))
+            {
                 indices_to_remove.push(tab_idx);
             }
         }
@@ -1693,7 +1696,8 @@ impl CodeView {
     }
 
     /// Update any tabs opened to `old_path` so they now point to `new_path`,
-    /// preserving any unsaved edits.
+    /// preserving any unsaved edits. When the paths are a folder's, the tabs opened to the files
+    /// inside it follow it.
     pub fn rename_tabs_with_path(
         &mut self,
         old_path: &Path,
@@ -1701,7 +1705,15 @@ impl CodeView {
         ctx: &mut ViewContext<Self>,
     ) {
         for tab in self.tab_group.iter_mut() {
-            if tab.local_path().is_some_and(|path| path == old_path) {
+            let renamed_path = tab.local_path().and_then(|path| {
+                path.strip_prefix(old_path)
+                    .ok()
+                    .map(|inside| match inside.as_os_str().is_empty() {
+                        true => new_path.to_path_buf(),
+                        false => new_path.join(inside),
+                    })
+            });
+            if let Some(new_path) = renamed_path.as_deref() {
                 tab.location = Some(LocalOrRemotePath::Local(new_path.to_path_buf()));
                 tab.editor_view.update(ctx, |editor, ctx| {
                     let was_unsaved = editor.has_unsaved_changes(ctx);
