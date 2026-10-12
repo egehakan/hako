@@ -4,8 +4,8 @@ use arborium::tree_sitter::{Parser, QueryCursor, StreamingIterator};
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
-    SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename, language_by_name,
-    language_name_for_filename_parts, load_language,
+    SUPPORTED_LANGUAGES, is_highlight_capture, language_by_filename, language_by_local_filename,
+    language_by_name, language_name_for_filename_parts, load_language, query_capture_names,
 };
 
 /// Resolves a bare filename to its internal language name without loading the grammar.
@@ -603,5 +603,52 @@ fn filename_matches_resolve_through_both_lookups() {
         let language = language_by_local_filename(Path::new(filename))
             .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
         assert_eq!(language.display_name(), expected);
+    }
+}
+
+#[test]
+fn languages_know_the_name_they_are_registered_under() {
+    for name in ["typescript", "shell", "objective-c"] {
+        let language = language_by_name(name).expect("language should be supported");
+        assert_eq!(language.name, name);
+    }
+    // An alias resolves to the language's registered name.
+    assert_eq!(language_by_name("bash").expect("alias").name, "shell");
+}
+
+#[test]
+fn query_capture_names_skip_strings_comments_and_private_captures() {
+    let query = r#"
+; a comment naming @ignored
+(identifier) @variable
+("@media" @keyword.directive)
+((call (identifier) @_callee @function.call)
+  (#match? @_callee "^@not_a_capture \" @still_not$"))
+"#;
+    assert_eq!(
+        query_capture_names(query),
+        ["variable", "keyword.directive", "function.call"],
+    );
+}
+
+#[test]
+fn highlight_captures_include_enclosing_names() {
+    for name in [
+        "keyword",
+        "function",
+        "function.method",
+        "string.special",
+        "string.special.key",
+    ] {
+        assert!(is_highlight_capture(name), "{name} should be known");
+    }
+    for name in [
+        "",
+        "nonsense",
+        "function.nonsense",
+        "method.function",
+        "_object",
+    ] {
+        assert!(!is_highlight_capture(name), "{name} should be unknown");
     }
 }

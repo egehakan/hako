@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::iter;
 use std::ops::Range;
+use std::sync::Arc;
 
 use arborium::tree_sitter::{Node, Query, QueryCursor, TextProvider, Tree};
+use languages::{SUPPORTED_LANGUAGES, is_highlight_capture};
 use rangemap::RangeMap;
 use streaming_iterator::StreamingIterator;
 use string_offset::{ByteOffset, CharOffset};
@@ -22,31 +25,166 @@ pub struct ColorMap {
     pub tag_color: ColorU,
 }
 
+/// Style a theme gives the code covered by one highlight capture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureStyle {
+    /// Left unset to keep the color the capture has in the [`ColorMap`].
+    pub color: Option<ColorU>,
+    /// Underlines the code in its color, so it has no effect on a capture left without one.
+    pub underline: bool,
+}
+
+/// Capture styles of a theme, keyed by capture name.
+#[derive(Debug)]
+pub struct CaptureStyles {
+    /// Styles that apply in every language.
+    global: HashMap<String, CaptureStyle>,
+    /// Styles that apply in one language each, keyed by language name.
+    languages: HashMap<String, HashMap<String, CaptureStyle>>,
+}
+
+impl CaptureStyles {
+    /// Builds the styles from `(capture name, style)` pairs, `global` for every language and
+    /// `languages` for one language each. Capture names no highlight query produces and
+    /// unsupported languages are dropped.
+    pub fn new<G, L, S>(global: G, languages: L) -> Self
+    where
+        G: IntoIterator<Item = (String, CaptureStyle)>,
+        L: IntoIterator<Item = (String, S)>,
+        S: IntoIterator<Item = (String, CaptureStyle)>,
+    {
+        Self {
+            global: known_captures(global),
+            languages: languages
+                .into_iter()
+                .filter_map(|(language, styles)| {
+                    if SUPPORTED_LANGUAGES.contains(&language.as_str()) {
+                        Some((language, known_captures(styles)))
+                    } else {
+                        log::debug!("Ignoring syntax styles for unsupported language {language}");
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Returns the style of the most specific entry for `capture`: the capture itself, or else
+    /// the nearest enclosing name, so `function.method.call` falls back to `function.method` and
+    /// then `function`. An entry for `language` wins over an equally specific global one.
+    fn resolve(&self, language: &str, capture: &str) -> Option<CaptureStyle> {
+        let language_styles = self.languages.get(language);
+        let mut name = capture;
+        loop {
+            let style = language_styles
+                .and_then(|styles| styles.get(name))
+                .or_else(|| self.global.get(name));
+            if let Some(style) = style {
+                return Some(*style);
+            }
+            name = &name[..name.rfind('.')?];
+        }
+    }
+}
+
+fn known_captures(
+    styles: impl IntoIterator<Item = (String, CaptureStyle)>,
+) -> HashMap<String, CaptureStyle> {
+    styles
+        .into_iter()
+        .filter(|(capture, _)| {
+            let known = is_highlight_capture(capture);
+            if !known {
+                log::debug!("Ignoring syntax style for unknown highlight capture {capture}");
+            }
+            known
+        })
+        .collect()
+}
+
+/// Colors for syntax highlighting: a theme's own capture styles where it has them, and
+/// otherwise the color map.
+#[derive(Clone)]
+pub struct HighlightPalette {
+    pub fallback: ColorMap,
+    pub styles: Option<Arc<CaptureStyles>>,
+}
+
+impl HighlightPalette {
+    fn highlight(&self, language: &str, capture: &str) -> Option<Highlight> {
+        let style = self
+            .styles
+            .as_ref()
+            .and_then(|styles| styles.resolve(language, capture))
+            .unwrap_or_default();
+        let color = style
+            .color
+            .or_else(|| convert_capture_name_to_color(capture, &self.fallback))?;
+        Some(Highlight {
+            color,
+            underline: style.underline,
+        })
+    }
+}
+
+/// How one capture is painted.
+#[derive(Clone, Copy)]
+struct Highlight {
+    color: ColorU,
+    underline: bool,
+}
+
+/// Highlighting of a range of text, as ranges of uniform style.
+#[derive(Default)]
+pub struct Highlights {
+    pub colors: RangeMap<CharOffset, ColorU>,
+    /// Underlined ranges, mapped to the color of the underline.
+    pub underlines: RangeMap<CharOffset, ColorU>,
+}
+
+impl Highlights {
+    fn insert(&mut self, range: Range<CharOffset>, highlight: Highlight) {
+        if highlight.underline {
+            self.underlines.insert(range.clone(), highlight.color);
+        } else {
+            self.underlines.remove(range.clone());
+        }
+        self.colors.insert(range, highlight.color);
+    }
+
+    /// Adds every range of `other`, which take precedence where they overlap existing ones.
+    pub(crate) fn extend(&mut self, other: Highlights) {
+        self.colors.extend(other.colors);
+        self.underlines.extend(other.underlines);
+    }
+}
+
 /// Query for retrieving syntax highlighting information on the tokens.
 pub struct HighlightQuery {
-    highlight_map: Vec<Option<ColorU>>,
+    /// Highlight of each capture of the query, indexed like its capture names.
+    highlight_map: Vec<Option<Highlight>>,
 }
 
 impl HighlightQuery {
-    pub fn new(query: &Query, color_map: ColorMap) -> Self {
+    pub fn new(query: &Query, palette: &HighlightPalette, language: &str) -> Self {
         let highlight_map = query
             .capture_names()
             .iter()
-            .map(|name| convert_capture_name_to_color(name, &color_map))
+            .map(|name| palette.highlight(language, name))
             .collect();
 
         Self { highlight_map }
     }
 
-    /// Given the a character range, return its corresponding highlight colors.
+    /// Given the a character range, return its corresponding highlights.
     pub fn get_highlighted_chunks(
         &self,
         range: Range<CharOffset>,
         query: &Query,
         buffer: &Buffer,
         tree: &Tree,
-    ) -> RangeMap<CharOffset, ColorU> {
-        let mut range_map = RangeMap::new();
+    ) -> Highlights {
+        let mut highlights = Highlights::default();
 
         let mut cursor = QueryCursor::new();
         let byte_start = range.start.to_buffer_byte_offset(buffer).as_usize();
@@ -54,27 +192,28 @@ impl HighlightQuery {
         cursor.set_byte_range(byte_start..byte_end);
         let mut captures = cursor.captures(query, tree.root_node(), TextBuffer(buffer));
 
-        while let Some(matches) = captures.next() {
-            for cap in matches.0.captures {
-                let insertion_range = cap.node.byte_range();
-                let color = self
-                    .highlight_map
-                    .get(cap.index as usize)
-                    .and_then(|inner| *inner);
+        // The cursor yields one capture at a time, in document order, along with the match it
+        // belongs to. Applying only that capture lets a nested capture keep the style it was
+        // given after the capture of the node around it.
+        while let Some((query_match, capture_index)) = captures.next() {
+            let capture = query_match.captures[*capture_index];
+            let Some(highlight) = self
+                .highlight_map
+                .get(capture.index as usize)
+                .and_then(|highlight| *highlight)
+            else {
+                continue;
+            };
 
-                if let Some(color) = color {
-                    let char_start =
-                        ByteOffset::from(insertion_range.start).to_buffer_char_offset(buffer);
-                    let char_end =
-                        ByteOffset::from(insertion_range.end).to_buffer_char_offset(buffer);
-                    if char_start < char_end {
-                        range_map.insert(char_start..char_end, color);
-                    }
-                }
+            let insertion_range = capture.node.byte_range();
+            let char_start = ByteOffset::from(insertion_range.start).to_buffer_char_offset(buffer);
+            let char_end = ByteOffset::from(insertion_range.end).to_buffer_char_offset(buffer);
+            if char_start < char_end {
+                highlights.insert(char_start..char_end, highlight);
             }
         }
 
-        range_map
+        highlights
     }
 }
 

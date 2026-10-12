@@ -8,16 +8,17 @@ use futures::stream::AbortHandle;
 use languages::Language;
 use parking_lot::Mutex;
 use queries::highlight_query::HighlightQuery;
-pub use queries::highlight_query::{ColorMap, TextSlice};
+pub use queries::highlight_query::{
+    CaptureStyle, CaptureStyles, ColorMap, HighlightPalette, Highlights, TextSlice,
+};
 use queries::indent_query::{IndentDelta, indentation_delta};
-use rangemap::{RangeMap, RangeSet};
+use rangemap::RangeSet;
 use string_offset::{ByteOffset, CharOffset};
 use warp_editor::content::buffer::{Buffer, BufferSnapshot};
 use warp_editor::content::edit::PreciseDelta;
 use warp_editor::content::text::IndentUnit;
 use warp_editor::content::version::BufferVersion;
 use warp_editor::decoration::DecorationLayer;
-use warpui_core::color::ColorU;
 use warpui_core::text::point::Point;
 use warpui_core::{AppContext, Entity, ModelContext, WeakModelHandle};
 
@@ -45,7 +46,7 @@ struct LanguageQueries {
 /// Stores the most recent highlight computation result.
 struct HighlightCache {
     key: HighlightCacheKey,
-    highlights: RangeMap<CharOffset, ColorU>,
+    highlights: Highlights,
 }
 
 struct HighlightCacheKey {
@@ -80,7 +81,7 @@ pub struct SyntaxTreeState {
     syntax_tree: Mutex<HashMap<BufferVersion, Tree>>,
     language_queries: Option<LanguageQueries>,
     buffer_version: BufferVersion,
-    color_map: ColorMap,
+    palette: HighlightPalette,
     buffer_handle: WeakModelHandle<Buffer>,
     parsing_handle: Option<AbortHandle>,
     /// Cache for highlight results to avoid recomputing for the same viewport ranges.
@@ -91,10 +92,10 @@ impl SyntaxTreeState {
     pub fn new(
         buffer_handle: WeakModelHandle<Buffer>,
         buffer_version: BufferVersion,
-        color_map: ColorMap,
+        palette: HighlightPalette,
     ) -> Self {
         Self {
-            color_map,
+            palette,
             syntax_tree: Mutex::new(HashMap::new()),
             buffer_version,
             buffer_handle,
@@ -106,7 +107,11 @@ impl SyntaxTreeState {
 
     pub fn set_language(&mut self, language: Arc<Language>) {
         self.language_queries = Some(LanguageQueries {
-            syntax_query: HighlightQuery::new(&language.highlight_query, self.color_map),
+            syntax_query: HighlightQuery::new(
+                &language.highlight_query,
+                &self.palette,
+                &language.name,
+            ),
             language,
         });
     }
@@ -134,14 +139,14 @@ impl SyntaxTreeState {
             .map(|s| s.as_str())
     }
 
-    /// Given multiple character ranges, return their corresponding highlight colors.
+    /// Given multiple character ranges, return their corresponding highlights.
     /// If the tree is not ready or the buffer model has been deallocated, this returns None.
     pub fn highlights_in_ranges(
         &self,
         ranges: RangeSet<CharOffset>,
         render_content_version: Option<BufferVersion>,
         ctx: &AppContext,
-    ) -> Option<Ref<'_, RangeMap<CharOffset, ColorU>>> {
+    ) -> Option<Ref<'_, Highlights>> {
         // If no render content version is provided, default the most recent content version.
         let buffer_version = render_content_version.unwrap_or(self.buffer_version);
 
@@ -164,7 +169,7 @@ impl SyntaxTreeState {
         let buffer = self.buffer_handle.upgrade(ctx)?;
         let language_queries = self.language_queries.as_ref()?;
 
-        let mut combined_highlights = RangeMap::new();
+        let mut combined_highlights = Highlights::default();
 
         // Iterate over all ranges and collect highlights for each
         for range in ranges.iter() {
@@ -175,10 +180,7 @@ impl SyntaxTreeState {
                 tree,
             );
 
-            // Merge the highlights into the combined map
-            for (highlight_range, color) in highlights.iter() {
-                combined_highlights.insert(highlight_range.clone(), *color);
-            }
+            combined_highlights.extend(highlights);
         }
 
         // Once we have rendered content version X, we could discard syntax trees belonging to versions before X.
@@ -276,8 +278,8 @@ impl SyntaxTreeState {
         }
     }
 
-    pub fn set_color_map(&mut self, color_map: ColorMap) {
-        self.color_map = color_map;
+    pub fn set_palette(&mut self, palette: HighlightPalette) {
+        self.palette = palette;
         if let Some(language_query) = self.language_queries.take() {
             self.set_language(language_query.language);
         }

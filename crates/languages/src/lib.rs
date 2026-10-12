@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +16,20 @@ struct Grammars;
 
 lazy_static! {
     static ref LANGUAGE_REGISTRY: LanguageRegistry = LanguageRegistry::new();
+    /// Every capture name in the highlight queries of the supported languages, along with the
+    /// names enclosing it (`function` for `function.method`).
+    static ref HIGHLIGHT_CAPTURES: HashSet<String> = SUPPORTED_LANGUAGES
+        .iter()
+        .filter_map(|lang| highlight_query_source(lang))
+        .flat_map(|query| query_capture_names(&query))
+        .flat_map(|name| {
+            let enclosing: Vec<_> = name
+                .match_indices('.')
+                .map(|(end, _)| name[..end].to_string())
+                .collect();
+            enclosing.into_iter().chain([name])
+        })
+        .collect();
 }
 
 pub const SUPPORTED_LANGUAGES: [&str; 43] = [
@@ -289,6 +303,8 @@ pub struct Language {
     pub symbols_query: Option<Query>,
     /// Display name for the language.
     pub display_name: String,
+    /// Name the language is registered under, as listed in [`SUPPORTED_LANGUAGES`].
+    pub name: String,
 }
 
 impl Language {
@@ -387,6 +403,50 @@ fn highlight_query_source(lang: &str) -> Option<Cow<'static, str>> {
     }
 }
 
+/// Returns whether the highlight query of any supported language captures `name` or a capture
+/// nested under it, as `function` is for a query that only captures `function.method`.
+pub fn is_highlight_capture(name: &str) -> bool {
+    HIGHLIGHT_CAPTURES.contains(name)
+}
+
+/// Returns the capture names a query source uses, skipping those inside strings and comments
+/// and the `_`-prefixed ones that only serve the query's own predicates.
+fn query_capture_names(query: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut chars = query.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => {
+                chars.by_ref().find(|c| *c == '\n');
+            }
+            '@' => {
+                let mut name = String::new();
+                while let Some(c) = chars
+                    .next_if(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '?' | '!'))
+                {
+                    name.push(c);
+                }
+                if !name.is_empty() && !name.starts_with('_') {
+                    names.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 /// Returns the tree-sitter grammar for a language, from a standalone grammar crate for the few
 /// languages arborium does not bundle.
 fn grammar_for(lang: &str) -> Option<ParserGrammar> {
@@ -434,6 +494,7 @@ fn load_language(lang: &str) -> Option<Language> {
         bracket_pairs,
         symbols_query,
         display_name: config.display_name,
+        name: lang.to_string(),
     })
 }
 
