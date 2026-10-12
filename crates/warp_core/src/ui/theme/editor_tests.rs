@@ -44,6 +44,7 @@ const EDITOR_YAML: &str = r##"editor:
   diff_added_text: "#0d0d0d33"
   diff_removed_line: "#0e0e0e33"
   diff_removed_text: "#0f0f0f33"
+  blame: "#11111199"
 "##;
 
 fn theme(extra_yaml: &str) -> WarpTheme {
@@ -87,6 +88,10 @@ fn unset_editor_colors_keep_their_derived_values() {
             theme.editor_diff_modified(),
             AnsiColorIdentifier::Yellow.to_ansi_color(&ansi).into(),
         );
+        assert_eq!(
+            theme.editor_blame(),
+            theme.disabled_text_color(background).into_solid(),
+        );
 
         assert_eq!(theme.editor_cursor(), None);
         assert_eq!(theme.editor_find_match(), None);
@@ -123,6 +128,7 @@ fn set_editor_colors_replace_the_derived_values() {
     assert_eq!(theme.editor_diff_added_text(), Some(gray(0x0d, 0x33)));
     assert_eq!(theme.editor_diff_removed_line(), Some(gray(0x0e, 0x33)));
     assert_eq!(theme.editor_diff_removed_text(), Some(gray(0x0f, 0x33)));
+    assert_eq!(theme.editor_blame(), gray(0x11, 0x99));
 }
 
 #[test]

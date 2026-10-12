@@ -850,6 +850,7 @@ impl CodeView {
                     ctx,
                 );
                 editor.add_footer(ctx);
+                editor.enable_inline_blame(ctx);
                 editor
             } else {
                 editor

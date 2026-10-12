@@ -38,6 +38,8 @@ pub struct EditorColors {
     diff_removed_line: Option<AlphaHexColor>,
     /// Background of the removed part of a changed line.
     diff_removed_text: Option<AlphaHexColor>,
+    /// Text naming who last changed the line the cursor is on.
+    blame: Option<AlphaHexColor>,
 }
 
 /// Code editor colors. The ones returning an `Option` have no default that derives from the
@@ -133,6 +135,13 @@ impl WarpTheme {
 
     pub fn editor_diff_removed_text(&self) -> Option<ColorU> {
         self.editor_colors().diff_removed_text.map(ColorU::from)
+    }
+
+    pub fn editor_blame(&self) -> ColorU {
+        self.editor_colors()
+            .blame
+            .map(ColorU::from)
+            .unwrap_or_else(|| self.disabled_text_color(self.background()).into_solid())
     }
 }
 

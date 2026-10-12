@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ai::diff_validation::DiffType;
@@ -60,13 +60,19 @@ use warpui::{
 };
 
 use crate::ai::persisted_workspace::{PersistedWorkspace, PersistedWorkspaceEvent};
+use crate::code::blame::{
+    BlameCommit, BlameEvent, BlameFile, BlameLookup, BlameModel, BlameResult, RepoInfo,
+    annotation_text,
+};
 use crate::code::buffer_location::LocalOrRemotePath as BufferFileLocation;
-use crate::code::editor::EditorReviewComment;
+use crate::code::editor::{EditorReviewComment, TrailingAnnotation};
 use crate::code::editor::model::HoverableLink;
 use crate::code::footer::{CodeFooterView, CodeFooterViewEvent};
 use crate::code::global_buffer_model::{BufferState, GlobalBufferModel, GlobalBufferModelEvent};
 use crate::code::{SaveOutcome, ShowFindReferencesCardProvider};
 use crate::code_review::comments::CommentId;
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_repo_model::{GitRepoModels, GitRepoStatusEvent, GitRepoStatusModel};
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
 use crate::settings::{AISettings, CodeSettings};
 use crate::terminal::TerminalView;
@@ -80,6 +86,9 @@ const DROP_SHADOW_COLOR: ColorU = ColorU {
 };
 
 const HOVER_DEBOUNCE_PERIOD: Duration = Duration::from_millis(500);
+
+/// How long the cursor has to rest on a line before the blame of that line is shown.
+const INLINE_BLAME_DEBOUNCE_PERIOD: Duration = Duration::from_millis(250);
 
 /// How long to wait after the user stops typing before triggering a debounced
 /// auto-save. Mirrors VS Code's default `files.autoSaveDelay` of 1000ms.
@@ -267,6 +276,36 @@ impl LspHoverState {
     }
 }
 
+/// The commit behind one line of the buffer, with what is needed to describe it.
+struct LineBlame {
+    commit: BlameCommit,
+    file: BlameFile,
+    repo: RepoInfo,
+}
+
+/// What is shown after the end of the line the cursor rests on.
+struct ShownBlame {
+    line: LineCount,
+    version: ContentVersion,
+}
+
+/// State of the blame shown for the line the cursor is on.
+struct InlineBlame {
+    debounce_tx: async_channel::Sender<()>,
+    annotation_mouse_state: MouseStateHandle,
+    /// Set once the editor has had the focus. Until then nothing is blamed, so that tabs
+    /// restored in the background do not each start git.
+    activated: bool,
+    /// The answer for the cursor line was not known the last time it was asked for.
+    awaiting_blame: bool,
+    shown: Option<ShownBlame>,
+    /// The repository whose changes are being followed, once the file has been located.
+    watched_repo: Option<PathBuf>,
+    /// Kept so that the repository stays watched for as long as the file is open.
+    #[cfg(feature = "local_fs")]
+    git_status: Option<ModelHandle<GitRepoStatusModel>>,
+}
+
 pub(super) const HOVER_TOOLTIP_MAX_WIDTH: f32 = 400.;
 pub(super) const HOVER_TOOLTIP_MAX_HEIGHT: f32 = 100.;
 
@@ -317,6 +356,8 @@ pub struct LocalCodeEditorView {
     pub(super) diagnostic_decorations: Vec<Decoration>,
     /// View for the find references feature.
     find_references_view: Option<ViewHandle<FindReferencesView>>,
+    /// `None` in editors that show no blame, such as the ones of the review pane.
+    inline_blame: Option<InlineBlame>,
 }
 
 impl LocalCodeEditorView {
@@ -342,6 +383,7 @@ impl LocalCodeEditorView {
             }
             CodeEditorEvent::ContentChanged { origin, .. } => {
                 me.update_diff_hunk_gutter_buttons(ctx);
+                me.schedule_inline_blame(ctx);
 
                 // Clear cached diagnostics/decorations on any content change. This is to avoid showing stale diagnostics while we are waiting for new diagnostics.
                 if !me.processed_diagnostics.is_empty() || !me.diagnostic_decorations.is_empty() {
@@ -382,6 +424,8 @@ impl LocalCodeEditorView {
             CodeEditorEvent::SelectionEnd => {
                 ctx.notify();
             }
+            CodeEditorEvent::SelectionChanged => me.schedule_inline_blame(ctx),
+            CodeEditorEvent::Focused => me.activate_inline_blame(ctx),
             CodeEditorEvent::MouseHovered {
                 offset,
                 cmd,
@@ -538,6 +582,7 @@ impl LocalCodeEditorView {
             processed_diagnostics: Vec::new(),
             diagnostic_decorations: Vec::new(),
             find_references_view: None,
+            inline_blame: None,
         };
 
         if let Some(display_mode) = display_mode {
@@ -1278,6 +1323,232 @@ impl LocalCodeEditorView {
         self.auto_save_in_flight = true;
     }
 
+    /// Shows, after the line the cursor rests on, who last changed that line.
+    pub(crate) fn enable_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
+        let (debounce_tx, debounce_rx) = async_channel::unbounded();
+        ctx.spawn_stream_local(
+            debounce(INLINE_BLAME_DEBOUNCE_PERIOD, debounce_rx),
+            |me, (), ctx| me.update_inline_blame(ctx),
+            |_, _| {},
+        );
+        ctx.subscribe_to_model(&BlameModel::handle(ctx), |me, _, event, ctx| match event {
+            BlameEvent::Updated => me.handle_blame_updated(ctx),
+        });
+        // The annotation carries its color, which comes from the theme.
+        ctx.subscribe_to_model(&Appearance::handle(ctx), |me, _, _, ctx| {
+            me.schedule_inline_blame(ctx);
+        });
+
+        self.inline_blame = Some(InlineBlame {
+            debounce_tx,
+            annotation_mouse_state: Default::default(),
+            activated: false,
+            awaiting_blame: false,
+            shown: None,
+            watched_repo: None,
+            #[cfg(feature = "local_fs")]
+            git_status: None,
+        });
+    }
+
+    fn activate_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(inline_blame) = &mut self.inline_blame else {
+            return;
+        };
+        inline_blame.activated = true;
+        // The focus coming back is a cheap moment to notice a commit made elsewhere, in case
+        // the repository is not being watched.
+        self.refresh_blame_repo(ctx);
+        self.schedule_inline_blame(ctx);
+    }
+
+    /// Asks for the blame of the cursor line once the cursor has rested. What is shown is taken
+    /// down right away unless it still belongs to the cursor line and the text it was computed
+    /// for, so that an annotation never sits next to a line it does not describe.
+    fn schedule_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
+        let editor = self.editor.as_ref(ctx);
+        let cursor_line = editor.primary_cursor_line(ctx);
+        let version = editor.version(ctx);
+        let is_focused = editor.is_focused(ctx);
+        let Some(inline_blame) = &mut self.inline_blame else {
+            return;
+        };
+        // A click focuses the editor without the event that announces it.
+        inline_blame.activated |= is_focused;
+        if !inline_blame.activated {
+            return;
+        }
+
+        let still_valid = inline_blame
+            .shown
+            .as_ref()
+            .is_some_and(|shown| Some(shown.line) == cursor_line && shown.version == version);
+        if !still_valid && inline_blame.shown.take().is_some() {
+            self.editor
+                .update(ctx, |editor, ctx| editor.set_trailing_annotation(None, ctx));
+        }
+        if let Some(inline_blame) = &self.inline_blame {
+            let _ = inline_blame.debounce_tx.try_send(());
+        }
+    }
+
+    fn handle_blame_updated(&mut self, ctx: &mut ViewContext<Self>) {
+        self.watch_blame_repo(ctx);
+        // Editors that are not waiting for an answer skip the lookup, so that one file's blame
+        // arriving does not make every open tab ask for its own.
+        let is_interested = self
+            .inline_blame
+            .as_ref()
+            .is_some_and(|inline_blame| inline_blame.awaiting_blame || inline_blame.shown.is_some());
+        if is_interested {
+            self.update_inline_blame(ctx);
+        }
+    }
+
+    fn update_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
+        let annotation = self.inline_blame_annotation(ctx);
+        let version = self.editor.as_ref(ctx).version(ctx);
+        if let Some(inline_blame) = &mut self.inline_blame {
+            inline_blame.shown = annotation.as_ref().map(|annotation| ShownBlame {
+                line: annotation.line,
+                version,
+            });
+        }
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_trailing_annotation(annotation, ctx)
+        });
+    }
+
+    fn inline_blame_annotation(&mut self, ctx: &mut ViewContext<Self>) -> Option<TrailingAnnotation> {
+        let inline_blame = self.inline_blame.as_ref()?;
+        if !inline_blame.activated {
+            return None;
+        }
+        let mouse_state = inline_blame.annotation_mouse_state.clone();
+        let line = self.editor.as_ref(ctx).primary_cursor_line(ctx)?;
+        let blame = self.blame_for_line(line, ctx)?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        Some(TrailingAnnotation {
+            line,
+            text: annotation_text(&blame.commit, &blame.repo.identity, now),
+            color: Appearance::as_ref(ctx).theme().editor_blame(),
+            mouse_state,
+        })
+    }
+
+    /// The commit behind `line`, counted from zero, of the buffer as it is now. `None` while it
+    /// is being worked out and where there is nothing to say: in files that are not local, not
+    /// tracked or too large, and in editors that are showing a diff.
+    fn blame_for_line(&mut self, line: LineCount, ctx: &mut ViewContext<Self>) -> Option<LineBlame> {
+        // Line numbers of a buffer with a proposed or expanded diff do not match the file.
+        if self.diff_type.is_some()
+            || self.base_content_version.is_none()
+            || self.editor.as_ref(ctx).model.as_ref(ctx).diff_nav_is_active()
+        {
+            return None;
+        }
+        let Some(BufferFileLocation::Local(path)) = self.file_location() else {
+            return None;
+        };
+        let path = path.clone();
+        let version = self.editor.as_ref(ctx).version(ctx);
+        let editor = self.editor.clone();
+
+        let lookup = BlameModel::handle(ctx).update(ctx, |model, ctx| {
+            model.lookup(
+                &path,
+                version,
+                |app| editor.as_ref(app).text(app).into_string(),
+                ctx,
+            )
+        });
+        if let Some(inline_blame) = &mut self.inline_blame {
+            inline_blame.awaiting_blame = matches!(lookup, BlameLookup::Pending);
+        }
+        let result = match lookup {
+            BlameLookup::Ready(result) => result,
+            BlameLookup::Pending | BlameLookup::NoRepository => return None,
+        };
+        let commit = match result.as_ref() {
+            BlameResult::Blamed(blame) => blame.commit_for_line(line.as_usize())?.clone(),
+            BlameResult::NotTracked
+            | BlameResult::TooLarge
+            | BlameResult::TimedOut
+            | BlameResult::Failed => return None,
+        };
+
+        let blame_model = BlameModel::as_ref(ctx);
+        let file = blame_model.file_for_path(&path)?.clone();
+        let repo = blame_model.repo_info(&file.repo_root)?.clone();
+        Some(LineBlame { commit, file, repo })
+    }
+
+    /// Re-reads `HEAD` of the repository this file is in.
+    fn refresh_blame_repo(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(repo_root) = self
+            .inline_blame
+            .as_ref()
+            .and_then(|inline_blame| inline_blame.watched_repo.clone())
+        else {
+            return;
+        };
+        BlameModel::handle(ctx).update(ctx, |model, ctx| model.refresh_repo(&repo_root, ctx));
+    }
+
+    /// Follows the repository this file was found in, so that a commit, a checkout or a pull is
+    /// noticed. This joins the watcher the repository already has rather than adding one.
+    fn watch_blame_repo(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(inline_blame) = &self.inline_blame else {
+            return;
+        };
+        let Some(BufferFileLocation::Local(path)) = self.file_location() else {
+            return;
+        };
+        let Some(repo_root) = BlameModel::as_ref(ctx)
+            .file_for_path(path)
+            .map(|file| file.repo_root.clone())
+        else {
+            return;
+        };
+        if inline_blame.watched_repo.as_ref() == Some(&repo_root) {
+            return;
+        }
+
+        #[cfg(feature = "local_fs")]
+        let git_status = {
+            // The repository is looked up under the name it was detected with, which is the key
+            // its status model is shared by.
+            let detected_root = DetectedRepositories::as_ref(ctx)
+                .get_root_for_path(&LocalOrRemotePath::Local(repo_root.clone()));
+            let git_status = detected_root.and_then(|root| {
+                GitRepoModels::handle(ctx)
+                    .update(ctx, |models, ctx| models.subscribe(&root, ctx))
+                    .ok()
+            });
+            if let Some(git_status) = &git_status {
+                let repo_root = repo_root.clone();
+                ctx.subscribe_to_model(git_status, move |_, _, event, ctx| match event {
+                    GitRepoStatusEvent::MetadataChanged => {
+                        BlameModel::handle(ctx)
+                            .update(ctx, |model, ctx| model.refresh_repo(&repo_root, ctx));
+                    }
+                });
+            }
+            git_status
+        };
+
+        if let Some(inline_blame) = &mut self.inline_blame {
+            inline_blame.watched_repo = Some(repo_root);
+            #[cfg(feature = "local_fs")]
+            {
+                inline_blame.git_status = git_status;
+            }
+        }
+    }
+
     pub fn is_new_file(&self) -> bool {
         self.is_new_file
     }
@@ -1699,6 +1970,7 @@ impl LocalCodeEditorView {
                     let auto_saved = std::mem::take(&mut me.auto_save_in_flight);
                     me.base_content_version = Some(*content_version);
                     me.has_remote_conflict = false;
+                    me.refresh_blame_repo(ctx);
                     ctx.emit(LocalCodeEditorEvent::FileSaved { auto_saved });
                 }
                 GlobalBufferModelEvent::FailedToSave { error, .. } => {
