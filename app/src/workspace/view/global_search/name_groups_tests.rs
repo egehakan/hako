@@ -250,7 +250,10 @@ fn label_highlights_are_char_indices() {
 #[test]
 fn summary_counts_folders_and_files() {
     assert_eq!(name_match_summary(0, 0), None);
-    assert_eq!(name_match_summary(1, 0).as_deref(), Some("1 folder by name"));
+    assert_eq!(
+        name_match_summary(1, 0).as_deref(),
+        Some("1 folder by name")
+    );
     assert_eq!(name_match_summary(0, 3).as_deref(), Some("3 files by name"));
     assert_eq!(
         name_match_summary(2, 1).as_deref(),

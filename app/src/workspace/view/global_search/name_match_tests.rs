@@ -30,7 +30,9 @@ fn name_match(display_path: &str, score: i64) -> NameMatch {
 }
 
 fn offer(collector: &mut NameMatchCollector, kind: NameMatchKind, display_path: &str, score: i64) {
-    collector.offer(kind, score, display_path, || name_match(display_path, score));
+    collector.offer(kind, score, display_path, || {
+        name_match(display_path, score)
+    });
 }
 
 fn display_paths(ranked: &RankedNameMatches) -> Vec<&str> {
@@ -66,7 +68,11 @@ fn name_at_the_root_is_matched_without_an_offset() {
 fn folder_names_match_like_file_names() {
     let matcher = fuzzy("search");
     assert!(matcher.match_path("app/src/global_search").is_some());
-    assert!(matcher.match_path("app/src/global_search/view.rs").is_none());
+    assert!(
+        matcher
+            .match_path("app/src/global_search/view.rs")
+            .is_none()
+    );
 }
 
 #[test]

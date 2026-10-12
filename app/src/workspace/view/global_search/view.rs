@@ -2195,9 +2195,7 @@ impl GlobalSearchView {
                 };
                 self.render_name_match_row(index, kind, match_index, entry, appearance, app)
             }
-            NameGroupRow::HiddenMatches => {
-                self.render_hidden_matches_row(index, group, appearance)
-            }
+            NameGroupRow::HiddenMatches => self.render_hidden_matches_row(index, group, appearance),
         }
     }
 
@@ -2309,11 +2307,11 @@ impl GlobalSearchView {
                     theme.foreground().into()
                 }
             };
-            let highlight = Highlight::new().with_text_style(TextStyle::new().with_background_color(
-                theme.ansi_overlay_2(
+            let highlight = Highlight::new().with_text_style(
+                TextStyle::new().with_background_color(theme.ansi_overlay_2(
                     AnsiColorIdentifier::Yellow.to_ansi_color(&theme.terminal_colors().normal),
-                ),
-            ));
+                )),
+            );
 
             let icon = match kind {
                 NameMatchKind::Folder => icon_from_folder_path(&location_path, false),
