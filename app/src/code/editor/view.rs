@@ -9,6 +9,7 @@ use ai::diff_validation::DiffDelta;
 use lazy_static::lazy_static;
 use num_traits::SaturatingSub;
 use pathfinder_geometry::vector::vec2f;
+use project_replace::replacement::CaptureExpander;
 use settings::Setting as _;
 use string_offset::CharOffset;
 use vec1::{Vec1, vec1};
@@ -552,6 +553,16 @@ impl CodeEditorView {
         self.update_decorations_and_position(ctx);
         ctx.focus(find_bar);
         ctx.notify();
+    }
+
+    fn show_find_and_replace_bar(&mut self, ctx: &mut ViewContext<Self>) {
+        self.show_find_bar(ctx);
+        if let Some(find_bar) = &self.find_bar {
+            find_bar.update(ctx, |find_bar, ctx| {
+                find_bar.set_replace_open(true);
+                ctx.notify();
+            });
+        }
     }
 
     pub fn changed_lines(&self, app: &AppContext) -> Vec<Range<usize>> {
@@ -1144,11 +1155,13 @@ impl CodeEditorView {
                 let replace_query =
                     find_bar.update(ctx, |find_bar, ctx| find_bar.replace_query(ctx));
                 if let Some(match_range) = self.searcher.as_ref(ctx).selected_match_range() {
-                    let final_replace_text = if find_bar.as_ref(ctx).is_preserve_case_enabled() {
-                        self.preserve_case(match_range.clone(), &replace_query, ctx)
-                    } else {
-                        replace_query.clone()
-                    };
+                    let final_replace_text = self.replacement_for_match(
+                        &match_range,
+                        &replace_query,
+                        self.capture_expander(ctx).as_ref(),
+                        find_bar.as_ref(ctx).is_preserve_case_enabled(),
+                        ctx,
+                    );
 
                     let edits = vec1![(final_replace_text, match_range)];
                     let selection_model = self.model.as_ref(ctx).buffer_selection_model().clone();
@@ -1183,6 +1196,7 @@ impl CodeEditorView {
                         && !results.matches.is_empty()
                     {
                         // Convert all match ranges to selection offsets with case preservation
+                        let capture_expander = self.capture_expander(ctx);
                         let edits: Vec<(String, Range<CharOffset>)> = results
                             .matches
                             .iter()
@@ -1192,11 +1206,13 @@ impl CodeEditorView {
                                     end: match_result.end,
                                 };
 
-                                let final_replace_text = if preserve_case_enabled {
-                                    self.preserve_case(match_range.clone(), &replace_query, ctx)
-                                } else {
-                                    replace_query.clone()
-                                };
+                                let final_replace_text = self.replacement_for_match(
+                                    &match_range,
+                                    &replace_query,
+                                    capture_expander.as_ref(),
+                                    preserve_case_enabled,
+                                    ctx,
+                                );
 
                                 (final_replace_text, match_range)
                             })
@@ -1978,6 +1994,52 @@ impl CodeEditorView {
         } else {
             // Empty original part - keep replace_part as-is
             replace_part.to_string()
+        }
+    }
+
+    /// Expands the capture group references a replacement may hold, for a regular expression
+    /// search. `None` for a literal search, whose replacement is used as it is.
+    fn capture_expander(&self, ctx: &AppContext) -> Option<CaptureExpander> {
+        let searcher = self.searcher.as_ref(ctx);
+        if !searcher.is_regex() {
+            return None;
+        }
+        CaptureExpander::new(
+            searcher.query_text(),
+            searcher.is_case_sensitive(),
+            searcher.is_whole_word(),
+        )
+    }
+
+    /// The text that replaces the search match at `match_range`.
+    fn replacement_for_match(
+        &self,
+        match_range: &Range<CharOffset>,
+        replace_query: &str,
+        capture_expander: Option<&CaptureExpander>,
+        preserve_case: bool,
+        ctx: &AppContext,
+    ) -> String {
+        let expanded = capture_expander.and_then(|expander| {
+            let buffer = self.model.as_ref(ctx).buffer().as_ref(ctx);
+            let character_in =
+                |range: Range<CharOffset>| buffer.text_in_range(range).into_string().chars().next();
+            // The pattern may depend on the characters next to the match, as `\b` and `^` do.
+            let before = (match_range.start > CharOffset::from(1))
+                .then(|| character_in(match_range.start - 1..match_range.start))
+                .flatten();
+            let after = (match_range.end < buffer.max_charoffset())
+                .then(|| character_in(match_range.end..match_range.end + 1))
+                .flatten();
+            let matched = buffer.text_in_range(match_range.clone()).into_string();
+            expander.expand(before, &matched, after, replace_query)
+        });
+        let replace_text = expanded.as_deref().unwrap_or(replace_query);
+
+        if preserve_case {
+            self.preserve_case(match_range.clone(), replace_text, ctx)
+        } else {
+            replace_text.to_string()
         }
     }
 

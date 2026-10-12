@@ -50,6 +50,7 @@ const FIND_EDITOR_ROW_SPACING: f32 = 4.;
 
 pub const REGEX_TOGGLE_TOOLTIP: &str = "Regex toggle";
 pub const CASE_SENSITIVE_TOOLTIP: &str = "Case sensitive search";
+pub const WHOLE_WORD_TOOLTIP: &str = "Match whole word";
 pub const PRESERVE_CASE_TOOLTIP: &str = "Preserve case";
 pub const FIND_PLACEHOLDER_TEXT: &str = "Find";
 pub const REPLACE_PLACEHOLDER_TEXT: &str = "Replace";
@@ -60,6 +61,7 @@ struct ButtonMouseStates {
     match_down: MouseStateHandle,
     close: MouseStateHandle,
     toggle_case_sensitivity: MouseStateHandle,
+    toggle_whole_word: MouseStateHandle,
     toggle_regex_search: MouseStateHandle,
     toggle_replace_open: MouseStateHandle,
     toggle_preserve_case: MouseStateHandle,
@@ -97,6 +99,7 @@ pub enum FindAction {
     Down,
     Close,
     ToggleCaseSensitivity,
+    ToggleWholeWord,
     ToggleRegexSearch,
     CmdG,
     CmdShiftG,
@@ -254,6 +257,11 @@ impl CodeEditorFind {
 
     pub fn is_open(&self) -> bool {
         self.is_open
+    }
+
+    /// Shows or hides the replace row of an open find bar.
+    pub fn set_replace_open(&mut self, is_replace_open: bool) {
+        self.is_replace_open = self.is_open && is_replace_open;
     }
 
     pub fn is_preserve_case_enabled(&self) -> bool {
@@ -441,6 +449,13 @@ impl CodeEditorFind {
             },
             ctx
         );
+    }
+
+    fn toggle_whole_word(&mut self, ctx: &mut ViewContext<Self>) {
+        let new_whole_word = !self.searcher.as_ref(ctx).is_whole_word();
+        self.searcher.update(ctx, |searcher, ctx| {
+            searcher.set_whole_word(new_whole_word, ctx);
+        });
     }
 
     fn toggle_regex_search(&mut self, ctx: &mut ViewContext<Self>) {
@@ -765,6 +780,16 @@ impl CodeEditorFind {
             Some(REGEX_TOGGLE_TOOLTIP),
             ICON_PADDING,
         );
+        let whole_word_icon = self.render_hoverable_icon_in_editor(
+            appearance,
+            Icon::WholeWord,
+            self.searcher.as_ref(app).is_whole_word(),
+            self.button_mouse_states.toggle_whole_word.clone(),
+            FindAction::ToggleWholeWord,
+            editor_height,
+            Some(WHOLE_WORD_TOOLTIP),
+            ICON_PADDING,
+        );
         let case_sensitive_icon = Container::new(
             SavePosition::new(
                 self.render_hoverable_icon_in_editor(
@@ -803,6 +828,7 @@ impl CodeEditorFind {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(Shrinkable::new(1., find_editor).finish());
         query_editor_row.add_child(regex_icon);
+        query_editor_row.add_child(whole_word_icon);
         query_editor_row.add_child(case_sensitive_icon);
 
         // Create the find row with replace toggle, query editor, and select all button
@@ -938,6 +964,7 @@ impl TypedActionView for CodeEditorFind {
             FindAction::Up | FindAction::CmdShiftG => self.focus_next_match(FindDirection::Up, ctx),
             FindAction::Close => self.close_find_bar(ctx),
             FindAction::ToggleCaseSensitivity => self.toggle_case_sensitivity(ctx),
+            FindAction::ToggleWholeWord => self.toggle_whole_word(ctx),
             FindAction::ToggleRegexSearch => self.toggle_regex_search(ctx),
             FindAction::SelectAll => ctx.emit(Event::SelectAll),
             FindAction::ReplaceAll => ctx.emit(Event::ReplaceAll),

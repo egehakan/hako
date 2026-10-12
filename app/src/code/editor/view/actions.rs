@@ -604,6 +604,15 @@ pub fn init(app: &mut AppContext) {
     .with_context_predicate(text_entry.clone() & id!("FindBarAvailable"))
     .with_enabled(|| FeatureFlag::CodeFindReplace.is_enabled())]);
 
+    app.register_editable_bindings([EditableBinding::new(
+        "code_editor:find_and_replace",
+        "Find and replace in code editor",
+        CodeEditorViewAction::ShowFindAndReplaceBar,
+    )
+    .with_key_binding("cmdorctrl-alt-f")
+    .with_context_predicate(text_entry.clone() & id!("FindBarAvailable"))
+    .with_enabled(|| FeatureFlag::CodeFindReplace.is_enabled())]);
+
     // Editable Go to Line keybinding
     app.register_editable_bindings([EditableBinding::new(
         "editor_view:go_to_line",
@@ -712,6 +721,8 @@ pub enum CodeEditorViewAction {
     Tab,
     ShiftTab,
     ShowFindBar,
+    /// Shows the find bar with its replace row open.
+    ShowFindAndReplaceBar,
     ShowGoToLine,
     Escape,
     VimEnter,
@@ -796,6 +807,7 @@ impl CodeEditorViewAction {
             | Self::CursorAtBufferEnd
             | Self::Copy
             | Self::ShowFindBar
+            | Self::ShowFindAndReplaceBar
             | Self::ShowGoToLine
             | Self::Escape
             | Self::HiddenSectionExpansion { .. }
@@ -1044,6 +1056,7 @@ impl TypedActionView for CodeEditorView {
             }
 
             ShowFindBar => self.show_find_bar(ctx),
+            ShowFindAndReplaceBar => self.show_find_and_replace_bar(ctx),
             ShowGoToLine => self.show_goto_line(ctx),
             Escape => self.escape(ctx),
             TrailingAnnotationHoverChanged => {

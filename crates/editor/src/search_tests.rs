@@ -9,6 +9,61 @@ use crate::content::selection_model::BufferSelectionModel;
 use crate::content::text::IndentBehavior;
 
 #[test]
+fn test_whole_word_search() {
+    App::test((), |mut app| async move {
+        let (content, selection) = buffer(&mut app, "abc abcd a.c abc");
+        let search = searcher(&mut app, content, selection);
+
+        search
+            .update(&mut app, |search, ctx| {
+                search.set_query("abc", ctx);
+                search.set_whole_word(true, ctx);
+                search.search_finished(ctx)
+            })
+            .await;
+
+        search.read(&app, |search, _| {
+            assert!(search.is_whole_word());
+            assert_eq!(
+                search.results,
+                Some(SearchResults {
+                    matches: vec![
+                        Match {
+                            start: 1.into(),
+                            end: 4.into()
+                        },
+                        Match {
+                            start: 14.into(),
+                            end: 17.into()
+                        }
+                    ]
+                })
+            )
+        });
+
+        // A literal query stays literal: the dot does not match any character.
+        search
+            .update(&mut app, |search, ctx| {
+                search.set_query("a.c", ctx);
+                search.search_finished(ctx)
+            })
+            .await;
+
+        search.read(&app, |search, _| {
+            assert_eq!(
+                search.results,
+                Some(SearchResults {
+                    matches: vec![Match {
+                        start: 10.into(),
+                        end: 13.into()
+                    }]
+                })
+            )
+        });
+    });
+}
+
+#[test]
 fn test_literal_search() {
     App::test((), |mut app| async move {
         let (content, selection) = buffer(&mut app, "abc def abc def");

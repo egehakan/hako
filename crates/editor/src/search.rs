@@ -22,6 +22,7 @@ pub struct Searcher {
     query_text: String,
     case_sensitive: bool,
     regex: bool,
+    whole_word: bool,
     buffer: ModelHandle<Buffer>,
     selection_model: ModelHandle<BufferSelectionModel>,
     results: Option<SearchResults>,
@@ -75,6 +76,7 @@ impl Searcher {
             query_text: String::new(),
             case_sensitive: false,
             regex: false,
+            whole_word: false,
             buffer,
             selection_model,
             results: None,
@@ -122,6 +124,11 @@ impl Searcher {
         !self.query_text.is_empty()
     }
 
+    /// The query text as it was set, before any option is applied to it.
+    pub fn query_text(&self) -> &str {
+        &self.query_text
+    }
+
     /// Set regex mode.
     pub fn set_regex(&mut self, regex: bool, ctx: &mut ModelContext<Self>) {
         self.regex = regex;
@@ -144,6 +151,18 @@ impl Searcher {
     /// Whether or not the search is case-sensitive.
     pub fn is_case_sensitive(&self) -> bool {
         self.case_sensitive
+    }
+
+    /// Set whether matches have to be whole words.
+    pub fn set_whole_word(&mut self, whole_word: bool, ctx: &mut ModelContext<Self>) {
+        self.whole_word = whole_word;
+        self.selected_result = None;
+        self.run_search(ctx);
+    }
+
+    /// Whether or not matches have to be whole words.
+    pub fn is_whole_word(&self) -> bool {
+        self.whole_word
     }
 
     pub fn set_auto_select(&mut self, should_auto_select: bool) {
@@ -258,9 +277,14 @@ impl Searcher {
     }
 
     fn build_query(&self, ctx: &mut ModelContext<Self>) -> anyhow::Result<Query> {
-        let config = SearchConfig::new(&self.query_text)
-            .with_regex(self.regex)
-            .with_case_sensitive(self.case_sensitive);
+        let whole_word_pattern = self
+            .whole_word
+            .then(|| whole_word_pattern(&self.query_text, self.regex));
+        let config = match &whole_word_pattern {
+            Some(pattern) => SearchConfig::regex(pattern),
+            None => SearchConfig::new(&self.query_text).with_regex(self.regex),
+        }
+        .with_case_sensitive(self.case_sensitive);
         self.buffer.as_ref(ctx).prepare_search(&config)
     }
 
@@ -417,4 +441,17 @@ impl Searcher {
 
 impl Entity for Searcher {
     type Event = SearchEvent;
+}
+
+/// The regular expression that matches `query` only as whole words.
+///
+/// The boundaries are ASCII ones: with a Unicode word boundary in the pattern, the search engine
+/// gives up on any text that has a non-ASCII character in it.
+fn whole_word_pattern(query: &str, is_regex: bool) -> String {
+    let pattern = if is_regex {
+        query.to_string()
+    } else {
+        regex_syntax::escape(query)
+    };
+    format!(r"(?-u:\b{{start-half}})(?:{pattern})(?-u:\b{{end-half}})")
 }
