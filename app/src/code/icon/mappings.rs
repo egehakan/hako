@@ -333,7 +333,7 @@ pub(super) const EXTENSIONS: &[(&[&str], FileIcon)] = &[
     (
         &[
             "png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "tif", "tiff", "avif", "heic",
-            "icns",
+            "heif", "icns",
         ],
         icon!("image"),
     ),
