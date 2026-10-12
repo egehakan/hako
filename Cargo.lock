@@ -5120,12 +5120,14 @@ name = "file_viewer_ui"
 version = "0.1.0"
 dependencies = [
  "file_viewers",
+ "futures",
  "image",
  "instant",
  "log",
  "parking_lot",
  "pathfinder_color",
  "pathfinder_geometry",
+ "tempfile",
  "warp_core",
  "warpui",
 ]

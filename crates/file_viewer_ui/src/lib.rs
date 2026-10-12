@@ -1412,3 +1412,7 @@ impl TypedActionView for FileViewerView {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "scene_tests.rs"]
+mod scene_tests;
