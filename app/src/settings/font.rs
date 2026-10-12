@@ -11,6 +11,9 @@ use super::EnforceMinimumContrast as EnforceMinimumContrastEnum;
 pub const DEFAULT_MONOSPACE_FONT_NAME: &str = "Hack";
 pub const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 13.0;
 pub const DEFAULT_MONOSPACE_FONT_WEIGHT: Weight = Weight::Normal;
+/// Stands for the platform's default interface font, which is the bundled font of this name
+/// except where the platform has a preferred one.
+pub const DEFAULT_UI_FONT_NAME: &str = "Roboto";
 
 define_settings_group!(FontSettings,
     settings: [
@@ -56,6 +59,16 @@ define_settings_group!(FontSettings,
             private: false,
             toml_path: "appearance.text.line_height_ratio",
             description: "The line height ratio for terminal text.",
+        },
+        ui_font_name: UiFontName {
+            type: String,
+            default: DEFAULT_UI_FONT_NAME.to_string(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            surface: settings::SettingSurfaces::GUI,
+            private: false,
+            toml_path: "appearance.text.ui_font_name",
+            description: "The font used for the interface, outside of terminal and code text.",
         },
         ai_font_name: AIFontName {
             type: String,

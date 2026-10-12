@@ -19,8 +19,8 @@ pub use warp_core::ui::appearance::{Appearance, AppearanceEvent};
 
 use crate::ASSETS;
 use crate::settings::{
-    FontSettings, FontSettingsChangedEvent, MonospaceFontSize, Settings, ThemeSettings,
-    active_theme_kind,
+    DEFAULT_UI_FONT_NAME, FontSettings, FontSettingsChangedEvent, MonospaceFontSize, Settings,
+    ThemeSettings, active_theme_kind,
 };
 use crate::themes::theme::{ThemeKind, WarpTheme};
 
@@ -97,6 +97,14 @@ impl AppearanceManager {
                     Appearance::handle(ctx).update(ctx, |appearance, ctx| {
                         appearance.set_line_height_ratio(new_line_height_ratio, ctx);
                     });
+                }
+                FontSettingsChangedEvent::UiFontName { .. } => {
+                    let font_name = FontSettings::as_ref(ctx).ui_font_name.value().clone();
+                    if let Some(new_family) = get_or_load_font_family(&font_name, ctx) {
+                        Appearance::handle(ctx).update(ctx, |appearance, ctx| {
+                            appearance.set_ui_font_family(new_family, ctx)
+                        });
+                    }
                 }
                 FontSettingsChangedEvent::AIFontName { .. } => {
                     let font_name = FontSettings::as_ref(ctx).ai_font_name.value().clone();
@@ -404,8 +412,14 @@ fn build_appearance(ctx: &mut AppContext) -> Appearance {
 
     let monospace_font_family_from_settings = get_or_load_font_family(&monospace_font_name, ctx);
 
-    let ui_font_family =
+    let default_ui_font_family =
         load_default_ui_font_family(ctx).expect("unable to load default ui font family");
+    let ui_font_name = FontSettings::as_ref(ctx).ui_font_name.value().clone();
+    let ui_font_family_from_settings = if ui_font_name == DEFAULT_UI_FONT_NAME {
+        None
+    } else {
+        get_or_load_font_family(&ui_font_name, ctx)
+    };
 
     let am_font_family_from_settings = get_or_load_font_family(&am_font_name, ctx);
 
@@ -428,7 +442,7 @@ fn build_appearance(ctx: &mut AppContext) -> Appearance {
         monospace_font_family_from_settings.unwrap_or(default_monospace_font_family),
         monospace_font_size,
         monospace_font_weight,
-        ui_font_family,
+        ui_font_family_from_settings.unwrap_or(default_ui_font_family),
         line_height_ratio,
         am_font_family_from_settings.unwrap_or(default_monospace_font_family),
         password_font_family,
