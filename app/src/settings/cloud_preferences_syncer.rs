@@ -7,6 +7,7 @@ use cloud_object_models::JsonSerializer;
 use lazy_static::lazy_static;
 use settings::{Setting as _, SyncToCloud};
 use warp_core::r#async::debounce;
+use warp_core::channel::{Channel, ChannelState};
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::settings::ChangeEventReason;
 use warp_core::user_preferences::GetUserPreferences;
@@ -99,13 +100,28 @@ pub fn initialize_cloud_preferences_syncer(
 
     // The settings surface decides whether this process participates in cloud
     // sync at all (e.g. the TUI keeps its config local).
-    let sync_enabled = settings::settings_mode().should_sync_to_cloud();
+    let sync_enabled =
+        settings::settings_mode().should_sync_to_cloud() && channel_syncs_settings_to_cloud();
     CloudPreferencesSyncer::new(
         force_local_wins_on_startup,
         toml_file_path,
         sync_enabled,
         ctx,
     )
+}
+
+/// Whether the current channel shares its settings with the user's account. The OSS build runs
+/// alongside an official install signed in to the same account, and the sync toggle is itself a
+/// synced setting, so syncing from OSS would rewrite the official app's settings.
+fn channel_syncs_settings_to_cloud() -> bool {
+    match ChannelState::channel() {
+        Channel::Oss => false,
+        Channel::Stable
+        | Channel::Preview
+        | Channel::Dev
+        | Channel::Integration
+        | Channel::Local => true,
+    }
 }
 
 /// Handles syncing CloudPreferences (the Warp Drive objects) and local Settings models that
