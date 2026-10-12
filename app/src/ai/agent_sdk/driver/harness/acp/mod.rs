@@ -328,9 +328,10 @@ struct RunConversation {
 /// The CLI session behind the ACP session, whose own transcript is uploaded for the run.
 struct CliSession {
     kind: CliTranscriptKind,
-    /// The ACP session id, which is also the CLI's session id.
+    /// The ACP session id. ACP treats it as opaque, but the codex-acp and claude-agent-acp
+    /// adapters both reuse the CLI's own session id, which is what names the transcript on disk.
     session_id: Uuid,
-    /// See [`CliTranscriptKind::root`].
+    /// The directory the CLI keeps its transcripts under.
     root: PathBuf,
     /// Cached once the CLI has written the transcript.
     transcript_path: OnceLock<PathBuf>,
@@ -476,7 +477,7 @@ impl AcpHarnessRunner {
                 );
                 upload_captured_transcript(self.client.as_ref(), server_id, capture).await
             }
-            None => cli.kind.missing_transcript(is_final),
+            None => Ok(cli.kind.missing_transcript(is_final)),
         }
     }
 

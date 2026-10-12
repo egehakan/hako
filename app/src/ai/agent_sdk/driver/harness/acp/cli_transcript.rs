@@ -1,14 +1,17 @@
 //! The CLI behind an ACP adapter writes the same session transcript it writes when run in a
-//! terminal, keyed by the ACP session id: codex-acp returns the Codex thread id from
-//! `session/new`, and claude-agent-acp passes its session id to the Agent SDK as the Claude
-//! session id. The terminal runners' capture code therefore applies unchanged.
+//! terminal. ACP itself treats the session id as opaque, so finding that transcript relies on
+//! adapter behavior: codex-acp returns the Codex thread id from `session/new`, and
+//! claude-agent-acp passes its session id to the Agent SDK as the Claude session id. The
+//! terminal runners' capture code therefore applies unchanged. An adapter that minted its own
+//! ids would leave the transcript unlocatable, which costs the run its CLI transcript upload and
+//! nothing else.
 //!
 //! One gap: when claude-agent-acp restarts a session to clear its context after a plan is
 //! approved, the SDK continues under a fresh id that the adapter never reports. Captures keep
 //! reading the transcript under the ACP session id, which stops at the restart.
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
 
@@ -26,6 +29,7 @@ pub(super) enum CliTranscriptKind {
 }
 
 impl CliTranscriptKind {
+    /// The harnesses whose ACP adapters are known to reuse the CLI's own session id.
     pub(super) fn for_harness(harness: Harness) -> Option<Self> {
         match harness {
             Harness::Codex => Some(Self::Codex),
@@ -73,25 +77,19 @@ impl CliTranscriptKind {
         }
     }
 
-    /// The save result when the transcript does not exist yet. The CLI writes it only after the
-    /// first prompt, so its absence during the run is expected; at the final save each CLI
-    /// keeps its terminal runner's behavior.
-    pub(super) fn missing_transcript(self, is_final: bool) -> Result<UploadedTranscriptUsage> {
-        match (self, is_final) {
-            (Self::Codex | Self::Claude, false) => {
-                log::debug!("{self:?} transcript for the ACP session is not available yet");
-                Ok(UploadedTranscriptUsage::empty())
-            }
-            (Self::Codex, true) => {
-                log::warn!(
-                    "Codex rollout still unavailable at final save; transcript was never uploaded"
-                );
-                Ok(UploadedTranscriptUsage::empty())
-            }
-            (Self::Claude, true) => Err(anyhow!(
-                "Claude Code transcript does not exist after harness termination"
-            )),
+    /// The save result when the transcript does not exist. The CLI writes it only after the
+    /// first prompt, so its absence during the run is expected. Its absence at the final save is
+    /// not, but the CLI transcript supplements the native conversation the run already uploads,
+    /// so it never fails the save.
+    pub(super) fn missing_transcript(self, is_final: bool) -> UploadedTranscriptUsage {
+        if is_final {
+            log::warn!(
+                "{self:?} transcript still unavailable at final save; it was never uploaded"
+            );
+        } else {
+            log::debug!("{self:?} transcript for the ACP session is not available yet");
         }
+        UploadedTranscriptUsage::empty()
     }
 }
 

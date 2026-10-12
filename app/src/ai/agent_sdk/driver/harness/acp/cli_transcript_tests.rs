@@ -61,19 +61,3 @@ fn claude_transcript_is_the_project_session_file_named_after_the_acp_session_id(
         "the transcript is keyed by the session's working directory"
     );
 }
-
-#[test]
-fn a_missing_transcript_is_skipped_during_the_run_and_handled_per_cli_at_the_end() {
-    for kind in [CliTranscriptKind::Codex, CliTranscriptKind::Claude] {
-        let uploaded = kind.missing_transcript(false).unwrap();
-        assert!(uploaded.into_request().is_none(), "{kind:?}");
-    }
-    assert!(
-        CliTranscriptKind::Codex
-            .missing_transcript(true)
-            .unwrap()
-            .into_request()
-            .is_none()
-    );
-    assert!(CliTranscriptKind::Claude.missing_transcript(true).is_err());
-}
