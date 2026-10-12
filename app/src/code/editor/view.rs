@@ -153,10 +153,9 @@ pub enum CodeEditorEvent {
     VimGotoDefinition,
     VimFindReferences,
     VimShowHover,
-    /// The mouse entered or left the annotation drawn after a line.
-    TrailingAnnotationHovered {
-        hovered: bool,
-    },
+    /// The mouse entered or left the annotation drawn after a line. Which of the two is in
+    /// the mouse state the annotation was given.
+    TrailingAnnotationHoverChanged,
 }
 
 /// Store all states related to displaying the editor content.

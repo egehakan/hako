@@ -225,8 +225,8 @@ pub enum LocalCodeEditorAction {
     },
     /// Open the card about the commit behind the line the cursor is on.
     ShowLineBlame,
-    /// The mouse entered (`true`) or left the blame card.
-    BlameCardHovered(bool),
+    /// The mouse entered or left the blame card.
+    BlameCardHoverChanged,
     CopyBlameSha(String),
     /// Compare the working tree of `repo_root` with commit `sha` in the code review panel.
     OpenBlameCommitInCodeReview {
@@ -308,7 +308,7 @@ pub(super) struct LineBlame {
 }
 
 /// What is shown after the end of the line the cursor rests on.
-struct ShownBlame {
+pub(super) struct ShownBlame {
     line: LineCount,
     version: ContentVersion,
 }
@@ -322,11 +322,18 @@ pub(super) struct InlineBlame {
     pub(super) activated: bool,
     /// The answer for the cursor line was not known the last time it was asked for.
     pub(super) awaiting_blame: bool,
-    shown: Option<ShownBlame>,
+    pub(super) shown: Option<ShownBlame>,
     pub(super) card: Option<BlameCard>,
     pub(super) card_handles: BlameCardHandles,
     /// A card was asked for from the keyboard before the blame of its line was known.
     pub(super) card_requested: bool,
+    /// The mouse is on the blame and the card opens if it is still there in a moment.
+    pub(super) card_hover_pending: bool,
+    /// The card closes in a moment unless the mouse comes back to it or to the blame.
+    pub(super) card_dismissal_pending: bool,
+    /// Cleared by typing, and set again once the mouse is seen off the blame, so that a card
+    /// does not keep opening under a mouse left where the blame happens to be.
+    pub(super) card_hover_armed: bool,
     /// The repository the file was found in.
     watched_repo: Option<PathBuf>,
     /// Reports changes to that repository. `None` when Warp is not watching it, in which case
@@ -415,6 +422,9 @@ impl LocalCodeEditorView {
             CodeEditorEvent::ContentChanged { origin, .. } => {
                 me.update_diff_hunk_gutter_buttons(ctx);
                 me.dismiss_blame_card(ctx);
+                if let Some(inline_blame) = &mut me.inline_blame {
+                    inline_blame.card_hover_armed = false;
+                }
                 me.schedule_inline_blame(ctx);
 
                 // Clear cached diagnostics/decorations on any content change. This is to avoid showing stale diagnostics while we are waiting for new diagnostics.
@@ -460,9 +470,7 @@ impl LocalCodeEditorView {
                 me.dismiss_blame_card_off_line(ctx);
                 me.schedule_inline_blame(ctx);
             }
-            CodeEditorEvent::TrailingAnnotationHovered { hovered } => {
-                me.handle_blame_annotation_hovered(*hovered, ctx);
-            }
+            CodeEditorEvent::TrailingAnnotationHoverChanged => me.track_blame_hover(ctx),
             CodeEditorEvent::Focused => me.activate_inline_blame(ctx),
             CodeEditorEvent::MouseHovered {
                 offset,
@@ -470,6 +478,8 @@ impl LocalCodeEditorView {
                 clamped,
                 is_covered,
             } => {
+                me.track_blame_hover(ctx);
+
                 // If the mouse location is clamped (meaning it's not hovering on an actual buffer text),
                 // or if the event is covered by an element above the editor,
                 // we should clear the hovered range and symbol.
@@ -1394,6 +1404,9 @@ impl LocalCodeEditorView {
             card: None,
             card_handles: Default::default(),
             card_requested: false,
+            card_hover_pending: false,
+            card_dismissal_pending: false,
+            card_hover_armed: true,
             watched_repo: None,
             #[cfg(feature = "local_fs")]
             git_status: None,
@@ -1471,6 +1484,9 @@ impl LocalCodeEditorView {
     fn update_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
         self.check_unwatched_blame_repo(ctx);
         let annotation = self.inline_blame_annotation(ctx);
+        if annotation.is_none() {
+            self.dismiss_hovered_blame_card(ctx);
+        }
         let version = self.editor.as_ref(ctx).version(ctx);
         if let Some(inline_blame) = &mut self.inline_blame {
             inline_blame.shown = annotation.as_ref().map(|annotation| ShownBlame {
@@ -2893,9 +2909,7 @@ impl TypedActionView for LocalCodeEditorView {
             LocalCodeEditorAction::ShowLineBlame => {
                 self.show_blame_card(BlameCardTrigger::Command, ctx);
             }
-            LocalCodeEditorAction::BlameCardHovered(hovered) => {
-                self.handle_blame_card_hovered(*hovered, ctx);
-            }
+            LocalCodeEditorAction::BlameCardHoverChanged => self.track_blame_hover(ctx),
             LocalCodeEditorAction::CopyBlameSha(sha) => {
                 ctx.clipboard()
                     .write(ClipboardContent::plain_text(sha.clone()));

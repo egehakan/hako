@@ -2,7 +2,6 @@ mod gutter_button;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 pub use gutter_button::{AddAsContextButton, CommentButton, RevertHunkButton};
 use parking_lot::Mutex;
@@ -48,9 +47,6 @@ const VERTICAL_DIFF_HUNK_INDICATOR_WIDTH: f32 = 3.;
 const VERTICAL_DIFF_HUNK_INDICATOR_HOVERED_WIDTH: f32 = 8.;
 /// Space between the end of a line and the annotation drawn after it.
 pub(super) const TRAILING_ANNOTATION_GAP: f32 = 32.;
-/// How long the mouse has to stay on a trailing annotation before it counts as hovering it, so
-/// that crossing one on the way elsewhere does nothing.
-const TRAILING_ANNOTATION_HOVER_DELAY: Duration = Duration::from_millis(350);
 /// A trailing annotation with less room than this is left out rather than squeezed in.
 const TRAILING_ANNOTATION_MIN_WIDTH: f32 = 96.;
 /// Kept clear at the right edge of the editor, where the vertical scrollbar is.
@@ -637,11 +633,8 @@ impl<V: EditorView> EditorWrapper<V> {
         .with_clip(ClipConfig::ellipsis())
         .finish();
         let mut element = Hoverable::new(annotation.mouse_state.clone(), |_| text)
-            .with_hover_in_delay(TRAILING_ANNOTATION_HOVER_DELAY)
-            .on_hover(|is_hovered, ctx, _, _| {
-                ctx.dispatch_typed_action(CodeEditorViewAction::TrailingAnnotationHovered(
-                    is_hovered,
-                ));
+            .on_hover(|_, ctx, _, _| {
+                ctx.dispatch_typed_action(CodeEditorViewAction::TrailingAnnotationHoverChanged);
             })
             .finish();
         let size = element.layout(

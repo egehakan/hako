@@ -700,8 +700,8 @@ pub enum CodeEditorViewAction {
     RightMouseDown {
         offset: CharOffset,
     },
-    /// The mouse entered (`true`) or left the annotation drawn after a line.
-    TrailingAnnotationHovered(bool),
+    /// The mouse entered or left the annotation drawn after a line.
+    TrailingAnnotationHoverChanged,
     Paste,
     Cut,
     Copy,
@@ -806,7 +806,7 @@ impl CodeEditorViewAction {
             | Self::MouseHovered { .. }
             | Self::MaybeClickOnHoveredLink(_)
             | Self::RightMouseDown { .. }
-            | Self::TrailingAnnotationHovered(_) => true,
+            | Self::TrailingAnnotationHoverChanged => true,
         }
     }
 }
@@ -1046,8 +1046,8 @@ impl TypedActionView for CodeEditorView {
             ShowFindBar => self.show_find_bar(ctx),
             ShowGoToLine => self.show_goto_line(ctx),
             Escape => self.escape(ctx),
-            TrailingAnnotationHovered(hovered) => {
-                ctx.emit(CodeEditorEvent::TrailingAnnotationHovered { hovered: *hovered })
+            TrailingAnnotationHoverChanged => {
+                ctx.emit(CodeEditorEvent::TrailingAnnotationHoverChanged)
             }
             HiddenSectionExpansion {
                 line_range,

@@ -30,6 +30,9 @@ const BLAME_CARD_WIDTH: f32 = 440.;
 const BLAME_CARD_MESSAGE_MAX_HEIGHT: f32 = 150.;
 /// The room the card needs above its line to be placed there rather than below.
 const BLAME_CARD_ROOM_ABOVE: f32 = 290.;
+/// How long the mouse has to stay on the blame before its card opens, so that crossing it on the
+/// way elsewhere does nothing.
+const BLAME_CARD_HOVER_DELAY: Duration = Duration::from_millis(350);
 /// How long the mouse may be off both the blame and its card before the card closes, which is
 /// what lets it travel from one to the other.
 const BLAME_CARD_DISMISS_DELAY: Duration = Duration::from_millis(300);
@@ -120,9 +123,27 @@ impl LocalCodeEditorView {
         inline_blame.card_requested = false;
         let was_open = inline_blame.card.take().is_some();
         if was_open {
+            // Nothing tells the card's element that the mouse is no longer on it once it is
+            // gone, and the next card must not start out as hovered.
+            if let Ok(mut mouse_state) = inline_blame.card_handles.card.lock() {
+                mouse_state.reset_interaction_state();
+            }
             ctx.notify();
         }
         was_open
+    }
+
+    /// Closes a card that was opened by hovering the blame, for when the blame it hung from is
+    /// no longer shown.
+    pub(super) fn dismiss_hovered_blame_card(&mut self, ctx: &mut ViewContext<Self>) {
+        let is_hover_card = self
+            .inline_blame
+            .as_ref()
+            .and_then(|inline_blame| inline_blame.card.as_ref())
+            .is_some_and(|card| card.trigger == BlameCardTrigger::Hover);
+        if is_hover_card {
+            self.dismiss_blame_card(ctx);
+        }
     }
 
     /// Closes the card when the cursor has left the line it describes.
@@ -166,45 +187,85 @@ impl LocalCodeEditorView {
         }
     }
 
-    pub(super) fn handle_blame_annotation_hovered(&mut self, hovered: bool, ctx: &mut ViewContext<Self>) {
-        if !hovered {
-            self.schedule_blame_card_dismissal(ctx);
+    /// Follows the mouse, on every move over the editor: opens the card once the mouse has
+    /// stayed on the blame for a moment, and closes a card opened that way once the mouse is on
+    /// neither of them.
+    ///
+    /// The hover callbacks of the two elements are not enough for this. A hover that completes
+    /// on a mouse event the framework made up after a layout change is not always reported,
+    /// which the state of the mouse checked here does not depend on.
+    pub(super) fn track_blame_hover(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(inline_blame) = &mut self.inline_blame else {
             return;
+        };
+        let is_over_annotation_element = is_mouse_over(&inline_blame.annotation_mouse_state);
+        if !is_over_annotation_element {
+            inline_blame.card_hover_armed = true;
         }
-        let has_card = self
-            .inline_blame
-            .as_ref()
-            .is_some_and(|inline_blame| inline_blame.card.is_some());
-        if !has_card {
+        // The element keeps its last state while no annotation is drawn.
+        let on_annotation = inline_blame.shown.is_some() && is_over_annotation_element;
+        let on_card = is_mouse_over(&inline_blame.card_handles.card);
+
+        match &mut inline_blame.card {
+            None => {
+                let should_open = on_annotation
+                    && inline_blame.card_hover_armed
+                    && !inline_blame.card_hover_pending;
+                if should_open {
+                    inline_blame.card_hover_pending = true;
+                    ctx.spawn(Timer::after(BLAME_CARD_HOVER_DELAY), |me, _, ctx| {
+                        me.open_blame_card_if_still_hovered(ctx);
+                    });
+                }
+            }
+            Some(card) => match card.trigger {
+                // Once the mouse has been on a card opened from the keyboard, leaving closes it.
+                BlameCardTrigger::Command => {
+                    if on_card {
+                        card.trigger = BlameCardTrigger::Hover;
+                    }
+                }
+                BlameCardTrigger::Hover => {
+                    if !on_annotation && !on_card {
+                        self.schedule_blame_card_dismissal(ctx);
+                    }
+                }
+            },
+        }
+    }
+
+    fn open_blame_card_if_still_hovered(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(inline_blame) = &mut self.inline_blame else {
+            return;
+        };
+        inline_blame.card_hover_pending = false;
+        let is_still_hovered = inline_blame.card.is_none()
+            && inline_blame.shown.is_some()
+            && is_mouse_over(&inline_blame.annotation_mouse_state);
+        if is_still_hovered {
             self.show_blame_card(BlameCardTrigger::Hover, ctx);
         }
     }
 
-    pub(super) fn handle_blame_card_hovered(&mut self, hovered: bool, ctx: &mut ViewContext<Self>) {
-        if !hovered {
-            self.schedule_blame_card_dismissal(ctx);
+    fn schedule_blame_card_dismissal(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(inline_blame) = &mut self.inline_blame else {
+            return;
+        };
+        if inline_blame.card_dismissal_pending {
             return;
         }
-        // Once the mouse has been on a card opened from the keyboard, leaving closes it too.
-        if let Some(card) = self
-            .inline_blame
-            .as_mut()
-            .and_then(|inline_blame| inline_blame.card.as_mut())
-        {
-            card.trigger = BlameCardTrigger::Hover;
-        }
-    }
-
-    fn schedule_blame_card_dismissal(&mut self, ctx: &mut ViewContext<Self>) {
+        inline_blame.card_dismissal_pending = true;
         ctx.spawn(Timer::after(BLAME_CARD_DISMISS_DELAY), |me, _, ctx| {
-            let Some(inline_blame) = &me.inline_blame else {
+            let Some(inline_blame) = &mut me.inline_blame else {
                 return;
             };
+            inline_blame.card_dismissal_pending = false;
             let is_hover_card = inline_blame
                 .card
                 .as_ref()
                 .is_some_and(|card| card.trigger == BlameCardTrigger::Hover);
-            let is_hovered = is_mouse_over(&inline_blame.annotation_mouse_state)
+            let is_hovered = (inline_blame.shown.is_some()
+                && is_mouse_over(&inline_blame.annotation_mouse_state))
                 || is_mouse_over(&inline_blame.card_handles.card);
             if is_hover_card && !is_hovered {
                 me.dismiss_blame_card(ctx);
@@ -418,8 +479,8 @@ impl LocalCodeEditorView {
         // Hover is tracked so that the card stays open while the mouse is on it.
         Some(
             Hoverable::new(handles.card.clone(), |_| card_element)
-                .on_hover(|is_hovered, ctx, _, _| {
-                    ctx.dispatch_typed_action(LocalCodeEditorAction::BlameCardHovered(is_hovered));
+                .on_hover(|_, ctx, _, _| {
+                    ctx.dispatch_typed_action(LocalCodeEditorAction::BlameCardHoverChanged);
                 })
                 .finish(),
         )
