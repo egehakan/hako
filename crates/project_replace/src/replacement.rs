@@ -18,11 +18,38 @@ impl ReplaceSpec {
     /// group.
     pub(crate) fn template(&self, search: &SearchSpec) -> String {
         if search.use_regex {
-            self.replacement.clone()
+            delimit_numbered_groups(&self.replacement)
         } else {
             self.replacement.replace('$', "$$")
         }
     }
+}
+
+/// Rewrites every `$1` of `replacement` as `${1}`, so that a numbered capture group can be
+/// followed by text. The search library reads `$1_total` as a group named `1_total`, which does
+/// not exist and expands to nothing.
+pub(crate) fn delimit_numbered_groups(replacement: &str) -> String {
+    let mut template = String::with_capacity(replacement.len() + 4);
+    let mut chars = replacement.chars().peekable();
+    while let Some(c) = chars.next() {
+        template.push(c);
+        if c != '$' {
+            continue;
+        }
+        match chars.peek() {
+            // An escaped dollar sign, which must not start a reference with what follows it.
+            Some('$') => template.extend(chars.next()),
+            Some(digit) if digit.is_ascii_digit() => {
+                template.push('{');
+                while let Some(digit) = chars.next_if(char::is_ascii_digit) {
+                    template.push(digit);
+                }
+                template.push('}');
+            }
+            Some(_) | None => {}
+        }
+    }
+    template
 }
 
 /// Carries the casing of `original` over to `replacement`.
@@ -160,7 +187,7 @@ impl CaptureExpander {
             return None;
         }
         let mut expanded = String::new();
-        captures.expand(replacement, &mut expanded);
+        captures.expand(&delimit_numbered_groups(replacement), &mut expanded);
         Some(expanded)
     }
 }

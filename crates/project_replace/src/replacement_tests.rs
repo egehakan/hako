@@ -42,7 +42,7 @@ fn template_escapes_dollars_outside_regex_mode() {
         ..Default::default()
     };
     assert_eq!(replace.template(&literal), "$$1 costs $$5");
-    assert_eq!(replace.template(&regex), "$1 costs $5");
+    assert_eq!(replace.template(&regex), "${1} costs ${5}");
 }
 
 #[test]
@@ -52,6 +52,32 @@ fn capture_expander_expands_numbered_and_named_groups() {
         expander.expand(Some(' '), "width=10", Some(';'), "${2}:$key $$"),
         Some("10:width $".to_string())
     );
+}
+
+#[test]
+fn a_numbered_group_can_be_followed_by_text() {
+    assert_eq!(delimit_numbered_groups("$1_total"), "${1}_total");
+    assert_eq!(delimit_numbered_groups("$12x $2"), "${12}x ${2}");
+    // Escaped dollars, braced and named references are left as they are.
+    assert_eq!(delimit_numbered_groups("$$1 ${1}a $name $"), "$$1 ${1}a $name $");
+
+    let expander = CaptureExpander::new(r"(\w+)_count", true, false).unwrap();
+    assert_eq!(
+        expander.expand(Some(' '), "widget_count", Some(' '), "$1_total"),
+        Some("widget_total".to_string())
+    );
+
+    let spec = ReplaceSpec {
+        replacement: "$1_total".to_string(),
+        preserve_case: false,
+    };
+    let regex_search = SearchSpec {
+        pattern: r"(\w+)_count".to_string(),
+        use_regex: true,
+        case_sensitive: true,
+        whole_word: false,
+    };
+    assert_eq!(spec.template(&regex_search), "${1}_total");
 }
 
 #[test]
