@@ -6835,16 +6835,29 @@ impl Workspace {
             LeftPanelEvent::WarpDrive(drive_event) => {
                 self.handle_warp_drive_event(drive_event, ctx);
             }
+            #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
             LeftPanelEvent::OpenFileWithTarget {
                 location,
                 target,
                 line_col,
+                tab_mode,
             } => {
                 let code_source = CodeSource::FileTree {
                     location: location.clone(),
                 };
                 match location {
                     LocalOrRemotePath::Local(path) => {
+                        #[cfg(feature = "local_fs")]
+                        self.open_file_with_target_beside(
+                            path.clone(),
+                            target.clone(),
+                            *line_col,
+                            code_source,
+                            *tab_mode,
+                            None,
+                            ctx,
+                        );
+                        #[cfg(not(feature = "local_fs"))]
                         self.open_file_with_target(
                             path.clone(),
                             target.clone(),
@@ -6872,7 +6885,7 @@ impl Workspace {
                                     code_source,
                                     crate::util::openable_file_type::EditorLayout::SplitPane,
                                     *line_col,
-                                    TabOpenMode::Keep,
+                                    *tab_mode,
                                     &[],
                                     ctx,
                                 );

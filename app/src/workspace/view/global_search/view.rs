@@ -41,6 +41,7 @@ use warpui::{
 };
 
 use crate::TelemetryEvent;
+use crate::code::editor_management::TabOpenMode;
 use crate::code::{default_file_icon, icon_from_file_path, icon_from_folder_path};
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::editor::{
@@ -108,10 +109,13 @@ pub enum GlobalSearchAction {
         location: LocalOrRemotePath,
         line_number: u32,
         column_num: Option<usize>,
+        tab_mode: TabOpenMode,
     },
     ClickNameGroupRow {
         kind: NameMatchKind,
         row: NameGroupRow,
+        /// How a file row opens its file.
+        tab_mode: TabOpenMode,
     },
     ClickTextMatchesHeader,
     ResultsUp,
@@ -170,9 +174,13 @@ pub enum Event {
         location: LocalOrRemotePath,
         line_number: u32,
         column_num: Option<usize>,
+        tab_mode: TabOpenMode,
     },
     /// Open a file that matched by name.
-    OpenFile { location: LocalOrRemotePath },
+    OpenFile {
+        location: LocalOrRemotePath,
+        tab_mode: TabOpenMode,
+    },
     /// Show a folder that matched by name in the file tree.
     RevealFolder { location: LocalOrRemotePath },
 }
@@ -426,15 +434,21 @@ impl TypedActionView for GlobalSearchView {
                 location,
                 line_number,
                 column_num,
+                tab_mode,
             } => {
                 ctx.emit(Event::OpenMatch {
                     location: location.clone(),
                     line_number: *line_number,
                     column_num: *column_num,
+                    tab_mode: *tab_mode,
                 });
                 self.enter_query_mode(ctx);
             }
-            GlobalSearchAction::ClickNameGroupRow { kind, row } => {
+            GlobalSearchAction::ClickNameGroupRow {
+                kind,
+                row,
+                tab_mode,
+            } => {
                 self.set_selected_row(
                     ResultRow::NameGroup {
                         kind: *kind,
@@ -443,7 +457,7 @@ impl TypedActionView for GlobalSearchView {
                     ctx,
                 );
                 self.enter_results_mode(ctx);
-                self.activate_selected_row(ctx);
+                self.activate_selected_row(*tab_mode, ctx);
                 match row {
                     // Hand focus back to the query, as opening a text match does.
                     NameGroupRow::Match(_) => self.enter_query_mode(ctx),
@@ -495,7 +509,7 @@ impl TypedActionView for GlobalSearchView {
                 }
                 self.ensure_selection(ctx);
                 if self.selected_row.is_some() {
-                    self.activate_selected_row(ctx);
+                    self.activate_selected_row(TabOpenMode::PreviewThenKeep, ctx);
                 }
             }
             GlobalSearchAction::FocusQueryEditor => {
@@ -1453,6 +1467,7 @@ impl GlobalSearchView {
         let directory_path_for_select = directory_path.clone();
         let file_path_for_select = matched_path.path.clone();
         let location_for_click = matched_path.path.clone();
+        let location_for_double_click = matched_path.path.clone();
 
         Hoverable::new(mouse_state, move |mouse_state| {
             let list_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
@@ -1512,6 +1527,16 @@ impl GlobalSearchView {
                 location: location_for_click.clone(),
                 line_number,
                 column_num,
+                tab_mode: TabOpenMode::Preview,
+            });
+        })
+        // The first click of the pair has already opened the match as a preview.
+        .on_double_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(GlobalSearchAction::OpenMatch {
+                location: location_for_double_click.clone(),
+                line_number,
+                column_num,
+                tab_mode: TabOpenMode::Keep,
             });
         })
         .finish()
@@ -1941,10 +1966,12 @@ impl GlobalSearchView {
         self.set_selected_row_by_index(clamped_next, ctx);
     }
 
-    fn activate_selected_row(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Opens, expands or collapses the selected row. `tab_mode` is how a row that stands for a
+    /// file or a match opens it.
+    fn activate_selected_row(&mut self, tab_mode: TabOpenMode, ctx: &mut ViewContext<Self>) {
         let selected_row = match self.selected_row.clone() {
             Some(ResultRow::NameGroup { kind, row }) => {
-                self.activate_name_group_row(kind, row, ctx);
+                self.activate_name_group_row(kind, row, tab_mode, ctx);
                 return;
             }
             Some(ResultRow::TextMatchesHeader) => {
@@ -1982,6 +2009,7 @@ impl GlobalSearchView {
                     location: matched_path.path.clone(),
                     line_number: matched.line_number,
                     column_num: matched.column_num,
+                    tab_mode,
                 });
             }
             RowIndexType::DirectoryHeader => {
@@ -1996,6 +2024,7 @@ impl GlobalSearchView {
         &mut self,
         kind: NameMatchKind,
         row: NameGroupRow,
+        tab_mode: TabOpenMode,
         ctx: &mut ViewContext<Self>,
     ) {
         match row {
@@ -2007,7 +2036,7 @@ impl GlobalSearchView {
                 let location = entry.name_match.location.clone();
                 ctx.emit(match kind {
                     NameMatchKind::Folder => Event::RevealFolder { location },
-                    NameMatchKind::File => Event::OpenFile { location },
+                    NameMatchKind::File => Event::OpenFile { location, tab_mode },
                 });
             }
             NameGroupRow::HiddenMatches => {
@@ -2191,7 +2220,11 @@ impl GlobalSearchView {
                     group.total(),
                     group.is_collapsed(),
                     group.header_mouse_state.clone(),
-                    GlobalSearchAction::ClickNameGroupRow { kind, row },
+                    GlobalSearchAction::ClickNameGroupRow {
+                        kind,
+                        row,
+                        tab_mode: TabOpenMode::Preview,
+                    },
                     appearance,
                 )
             }
@@ -2411,6 +2444,15 @@ impl GlobalSearchView {
             ctx.dispatch_typed_action(GlobalSearchAction::ClickNameGroupRow {
                 kind,
                 row: NameGroupRow::Match(match_index),
+                tab_mode: TabOpenMode::Preview,
+            });
+        })
+        // The first click of the pair has already opened the file as a preview.
+        .on_double_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(GlobalSearchAction::ClickNameGroupRow {
+                kind,
+                row: NameGroupRow::Match(match_index),
+                tab_mode: TabOpenMode::Keep,
             });
         })
         .finish()
@@ -2468,6 +2510,7 @@ impl GlobalSearchView {
             ctx.dispatch_typed_action(GlobalSearchAction::ClickNameGroupRow {
                 kind,
                 row: NameGroupRow::HiddenMatches,
+                tab_mode: TabOpenMode::Preview,
             });
         });
 

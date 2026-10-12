@@ -41,6 +41,7 @@ use warpui::{
 use crate::appearance::Appearance;
 use crate::code::active_file::{ActiveFileEvent, ActiveFileModel};
 use crate::code::buffer_location::LocalOrRemotePath;
+use crate::code::editor_management::TabOpenMode;
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::editor::{EditorOptions, EditorView, TextOptions};
 use crate::menu::{Menu, MenuItem, MenuItemFields};
@@ -89,6 +90,9 @@ enum PendingEditKind {
 #[derive(Debug, Clone)]
 pub enum FileTreeAction {
     ItemClicked {
+        id: FileTreeIdentifier,
+    },
+    ItemDoubleClicked {
         id: FileTreeIdentifier,
     },
     SelectPreviousItem,
@@ -2090,6 +2094,7 @@ impl FileTreeView {
 
         let editor_view = is_pending_edit.then_some(&self.editor_view);
         let id_for_click = id.clone();
+        let id_for_double_click = id.clone();
         let id_for_context = id.clone();
         let id_for_drop = id.clone();
         let id_for_drag = id.clone();
@@ -2107,6 +2112,13 @@ impl FileTreeView {
                 // Dispatch the action to select this item
                 event_ctx.dispatch_typed_action(FileTreeAction::ItemClicked {
                     id: id_for_click.clone(),
+                });
+            },
+        )
+        .on_double_click(
+            move |event_ctx: &mut EventContext, _app_ctx: &AppContext, _position| {
+                event_ctx.dispatch_typed_action(FileTreeAction::ItemDoubleClicked {
+                    id: id_for_double_click.clone(),
                 });
             },
         )
@@ -2289,6 +2301,7 @@ impl FileTreeView {
         &self,
         _path: &Path,
         _editor_layout: Option<EditorLayout>,
+        _tab_mode: TabOpenMode,
         _ctx: &mut ViewContext<Self>,
     ) {
     }
@@ -2298,6 +2311,7 @@ impl FileTreeView {
         &self,
         path: &Path,
         editor_layout: Option<EditorLayout>,
+        tab_mode: TabOpenMode,
         ctx: &mut ViewContext<Self>,
     ) {
         let settings = EditorSettings::as_ref(ctx);
@@ -2325,12 +2339,16 @@ impl FileTreeView {
             path: LocalOrRemotePath::Local(path.to_path_buf()),
             target,
             line_col: None,
+            tab_mode,
         });
     }
 
+    /// Selects the item at `id` and opens it: a file in the way `tab_mode` asks for, a folder
+    /// by toggling whether it is expanded.
     fn select_and_execute_item_at_id(
         &mut self,
         id: &FileTreeIdentifier,
+        tab_mode: TabOpenMode,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(root_dir) = self.root_directories.get(&id.root) else {
@@ -2378,11 +2396,12 @@ impl FileTreeView {
                             path: LocalOrRemotePath::Remote(remote_path),
                             target,
                             line_col: None,
+                            tab_mode,
                         });
                     }
                 } else {
                     let path = metadata.path.to_local_path_lossy();
-                    self.open_file(&path, None, ctx);
+                    self.open_file(&path, None, tab_mode, ctx);
                 }
             }
             FileTreeItem::DirectoryHeader { directory, .. } => {
@@ -2601,6 +2620,7 @@ impl FileTreeView {
         self.open_file(
             &item.path().to_local_path_lossy(),
             Some(EditorLayout::SplitPane),
+            TabOpenMode::Keep,
             ctx,
         );
     }
@@ -2617,7 +2637,7 @@ impl FileTreeView {
         if path.is_dir() {
             ctx.emit(FileTreeEvent::OpenDirectoryInNewTab { path: path.clone() });
         } else {
-            self.open_file(&path, Some(EditorLayout::NewTab), ctx);
+            self.open_file(&path, Some(EditorLayout::NewTab), TabOpenMode::Keep, ctx);
         }
     }
 
@@ -3007,6 +3027,7 @@ pub enum FileTreeEvent {
         path: LocalOrRemotePath,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
+        tab_mode: TabOpenMode,
     },
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     FileRenamed {
@@ -3090,7 +3111,13 @@ impl TypedActionView for FileTreeView {
         match action {
             FileTreeAction::ItemClicked { id } => {
                 ctx.focus_self();
-                self.select_and_execute_item_at_id(id, ctx);
+                self.select_and_execute_item_at_id(id, TabOpenMode::Preview, ctx);
+                ctx.notify();
+            }
+            // The first click of the pair has already gone through `ItemClicked`.
+            FileTreeAction::ItemDoubleClicked { id } => {
+                ctx.focus_self();
+                self.select_and_execute_item_at_id(id, TabOpenMode::Keep, ctx);
                 ctx.notify();
             }
             FileTreeAction::SelectPreviousItem => {
@@ -3152,7 +3179,7 @@ impl TypedActionView for FileTreeView {
             }
             FileTreeAction::ExecuteSelectedItem => {
                 if let Some(id) = self.selected_item.clone() {
-                    self.select_and_execute_item_at_id(&id, ctx);
+                    self.select_and_execute_item_at_id(&id, TabOpenMode::PreviewThenKeep, ctx);
                 }
             }
             FileTreeAction::OpenContextMenu { position, id } => {

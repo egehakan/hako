@@ -30,6 +30,7 @@ use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::appearance::Appearance;
 use crate::auth::AuthStateProvider;
 use crate::code::buffer_location::LocalOrRemotePath;
+use crate::code::editor_management::TabOpenMode;
 #[cfg(feature = "local_fs")]
 use crate::code::file_tree::FileTreeEvent;
 use crate::code::file_tree::FileTreeView;
@@ -48,6 +49,8 @@ use crate::pane_group::{
 use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
 use crate::settings::AISettings;
+#[cfg(feature = "local_fs")]
+use crate::settings::CodeSettings;
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
 use crate::terminal::resizable_data::{ModalType, ResizableData};
 use crate::ui_components::buttons::{icon_button, icon_button_with_color};
@@ -139,6 +142,7 @@ pub enum LeftPanelEvent {
         location: LocalOrRemotePath,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
+        tab_mode: TabOpenMode,
     },
     NewConversationInNewTab,
     ShowDeleteConfirmationDialog {
@@ -904,15 +908,16 @@ impl LeftPanelView {
                 location,
                 line_number,
                 column_num,
+                tab_mode,
             } => {
                 let line_col = LineAndColumnArg {
                     line_num: *line_number as usize,
                     column_num: *column_num,
                 };
-                self.open_global_search_result(location, Some(line_col), ctx);
+                self.open_global_search_result(location, Some(line_col), *tab_mode, ctx);
             }
-            GlobalSearchViewEvent::OpenFile { location } => {
-                self.open_global_search_result(location, None, ctx);
+            GlobalSearchViewEvent::OpenFile { location, tab_mode } => {
+                self.open_global_search_result(location, None, *tab_mode, ctx);
             }
             GlobalSearchViewEvent::RevealFolder { location } => {
                 self.reveal_folder_in_file_tree(location, ctx);
@@ -925,6 +930,7 @@ impl LeftPanelView {
         &mut self,
         location: &LocalOrRemotePath,
         line_col: Option<LineAndColumnArg>,
+        tab_mode: TabOpenMode,
         ctx: &mut ViewContext<Self>,
     ) {
         let settings = EditorSettings::as_ref(ctx);
@@ -961,7 +967,19 @@ impl LeftPanelView {
             location: location.clone(),
             target,
             line_col,
+            tab_mode: Self::tab_mode_per_settings(tab_mode, ctx),
         });
+    }
+
+    /// The mode a file picked in the panel opens in: the one its click or key asked for, unless
+    /// previews are turned off.
+    #[cfg(feature = "local_fs")]
+    fn tab_mode_per_settings(requested: TabOpenMode, app: &AppContext) -> TabOpenMode {
+        if *CodeSettings::as_ref(app).open_files_in_preview_mode {
+            requested
+        } else {
+            TabOpenMode::Keep
+        }
     }
 
     /// Switches to the Project Explorer and selects `location` in its tree. Does nothing when the
@@ -1051,11 +1069,13 @@ impl LeftPanelView {
                 path,
                 target,
                 line_col,
+                tab_mode,
             } => {
                 ctx.emit(LeftPanelEvent::OpenFileWithTarget {
                     location: path.clone(),
                     target: target.clone(),
                     line_col: *line_col,
+                    tab_mode: Self::tab_mode_per_settings(*tab_mode, ctx),
                 });
             }
             FileTreeEvent::CDToDirectory { path } => {

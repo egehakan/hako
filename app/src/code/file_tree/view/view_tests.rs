@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,10 +15,11 @@ use virtual_fs::{Stub, VirtualFS};
 use warp_core::ui::appearance::Appearance;
 use warpui::r#async::Timer;
 use warpui::platform::WindowStyle;
-use warpui::{App, ModelHandle, SingletonEntity, ViewHandle};
+use warpui::{App, ModelHandle, SingletonEntity, TypedActionView, ViewHandle};
 
-use super::FileTreeView;
+use super::{FileTreeAction, FileTreeEvent, FileTreeIdentifier, FileTreeView};
 use crate::auth::AuthStateProvider;
+use crate::code::editor_management::TabOpenMode;
 use crate::server::server_api::team::MockTeamClient;
 use crate::server::server_api::workspace::MockWorkspaceClient;
 use crate::settings::CodeSettings;
@@ -1394,6 +1397,97 @@ fn reveal_file_uses_the_root_that_contains_it_and_ignores_files_outside_every_ro
                     vec![std_path(&one), std_path(&two)]
                 );
             });
+        });
+    });
+}
+
+/// Records the files the tree asks to open and how.
+fn record_opened_files(
+    app: &mut App,
+    file_tree_view: &ViewHandle<FileTreeView>,
+) -> Rc<RefCell<Vec<(PathBuf, TabOpenMode)>>> {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let recorded = opened.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(file_tree_view, move |_, event, _| {
+            if let FileTreeEvent::OpenFile { path, tab_mode, .. } = event {
+                let path = path.to_local_path().expect("local file").to_path_buf();
+                recorded.borrow_mut().push((path, *tab_mode));
+            }
+        });
+    });
+    opened
+}
+
+fn item_id(
+    app: &App,
+    file_tree_view: &ViewHandle<FileTreeView>,
+    root: &Path,
+    path: &Path,
+) -> FileTreeIdentifier {
+    file_tree_view.read(app, |view, _ctx| {
+        view.find_item_id(&std_path(root), &std_path(path))
+            .expect("item is in the tree")
+    })
+}
+
+#[test]
+fn clicks_and_enter_open_a_file_in_the_tab_mode_they_stand_for() {
+    VirtualFS::test("file_tree_tab_modes", |dirs, mut vfs| {
+        vfs.mkdir("tree").with_files(vec![
+            Stub::FileWithContent("tree/a.txt", "a\n"),
+            Stub::FileWithContent("tree/b.txt", "b\n"),
+        ]);
+        let tree = dirs.tests().join("tree");
+        let a = tree.join("a.txt");
+        let b = tree.join("b.txt");
+
+        App::test((), |mut app| async move {
+            let (_, repository_metadata_model) = initialize_app(&mut app);
+            let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.set_is_active(true, ctx);
+                view.set_root_directories(vec![tree.clone()], ctx);
+            });
+            await_repository_indexed(&mut app, &repository_metadata_model, &tree).await;
+            let opened = record_opened_files(&mut app, &file_tree_view);
+            let a_id = item_id(&app, &file_tree_view, &tree, &a);
+            let b_id = item_id(&app, &file_tree_view, &tree, &b);
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.handle_action(&FileTreeAction::ItemClicked { id: a_id.clone() }, ctx);
+            });
+            assert_eq!(
+                opened.borrow_mut().drain(..).collect::<Vec<_>>(),
+                [(a.clone(), TabOpenMode::Preview)]
+            );
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.handle_action(&FileTreeAction::ItemDoubleClicked { id: a_id.clone() }, ctx);
+            });
+            assert_eq!(
+                opened.borrow_mut().drain(..).collect::<Vec<_>>(),
+                [(a.clone(), TabOpenMode::Keep)]
+            );
+
+            // Moving the selection with the arrow keys opens nothing.
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.handle_action(&FileTreeAction::SelectNextItem, ctx);
+                view.handle_action(&FileTreeAction::SelectPreviousItem, ctx);
+                view.handle_action(&FileTreeAction::SelectNextItem, ctx);
+            });
+            assert!(opened.borrow().is_empty());
+            file_tree_view.read(&app, |view, _ctx| {
+                assert_eq!(view.selected_item.as_ref(), Some(&b_id));
+            });
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.handle_action(&FileTreeAction::ExecuteSelectedItem, ctx);
+            });
+            assert_eq!(
+                opened.borrow_mut().drain(..).collect::<Vec<_>>(),
+                [(b.clone(), TabOpenMode::PreviewThenKeep)]
+            );
         });
     });
 }
