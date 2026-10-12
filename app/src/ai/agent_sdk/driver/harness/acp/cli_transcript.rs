@@ -1,10 +1,8 @@
 //! The CLI behind an ACP adapter writes the same session transcript it writes when run in a
-//! terminal. ACP itself treats the session id as opaque, so finding that transcript relies on
-//! adapter behavior: codex-acp returns the Codex thread id from `session/new`, and
-//! claude-agent-acp passes its session id to the Agent SDK as the Claude session id. The
-//! terminal runners' capture code therefore applies unchanged. An adapter that minted its own
-//! ids would leave the transcript unlocatable, which costs the run its CLI transcript upload and
-//! nothing else.
+//! terminal, so the terminal runners' capture code applies unchanged once that session is
+//! identified. ACP treats session ids as opaque, so how an adapter's session id relates to the
+//! CLI's is decided per harness in [`CliTranscriptKind::cli_session_id`]. A transcript that
+//! cannot be identified costs the run its CLI transcript upload and nothing else.
 //!
 //! One gap: when claude-agent-acp restarts a session to clear its context after a plan is
 //! approved, the SDK continues under a fresh id that the adapter never reports. Captures keep
@@ -29,12 +27,22 @@ pub(super) enum CliTranscriptKind {
 }
 
 impl CliTranscriptKind {
-    /// The harnesses whose ACP adapters are known to reuse the CLI's own session id.
+    /// The harnesses whose CLI transcript is uploaded for an ACP run.
     pub(super) fn for_harness(harness: Harness) -> Option<Self> {
         match harness {
             Harness::Codex => Some(Self::Codex),
             Harness::Claude => Some(Self::Claude),
             Harness::Gemini | Harness::Oz | Harness::OpenCode | Harness::Unknown => None,
+        }
+    }
+
+    /// The CLI's own session id behind an ACP session, which names its transcript on disk.
+    /// `None` when the adapter's id cannot be mapped to one.
+    pub(super) fn cli_session_id(self, acp_session_id: &str) -> Option<Uuid> {
+        match self {
+            // codex-acp returns the Codex thread id from `session/new`, and claude-agent-acp
+            // passes its session id to the Agent SDK as the Claude session id.
+            Self::Codex | Self::Claude => Uuid::parse_str(acp_session_id).ok(),
         }
     }
 
