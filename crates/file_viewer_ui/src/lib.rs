@@ -36,7 +36,7 @@ use warpui::elements::{
     MainAxisSize, MouseStateHandle, ParentElement, Shrinkable, Text, Wrap,
 };
 use warpui::image_cache::StaticImage;
-use warpui::keymap::{EditableBinding, FixedBinding};
+use warpui::keymap::{self, EditableBinding, FixedBinding};
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::UiComponent;
@@ -85,6 +85,10 @@ const TABLE_MAX_CELL_CHARS: usize = 160;
 
 /// Width of a character of the monospace font relative to its size.
 const MONOSPACE_ADVANCE: f32 = 0.62;
+
+/// Keymap context a viewer adds while it shows something that zooms, for bindings that should
+/// not take a key away from the rest of the app otherwise.
+pub const ZOOMABLE_CONTEXT: &str = "FileViewer_Zoomable";
 
 pub fn init(app: &mut AppContext) {
     let (editable, fixed) = bindings();
@@ -1287,6 +1291,17 @@ impl Entity for FileViewerView {
 impl View for FileViewerView {
     fn ui_name() -> &'static str {
         "FileViewerView"
+    }
+
+    fn keymap_context(&self, _: &AppContext) -> keymap::Context {
+        let mut context = Self::default_keymap_context();
+        match self.body {
+            Body::Image(_) | Body::Pdf(_) => {
+                context.set.insert(ZOOMABLE_CONTEXT);
+            }
+            Body::Loading(_) | Body::Message(_) | Body::Table(_) => {}
+        }
+        context
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {

@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(feature = "local_fs")]
-use file_viewer_ui::FileViewerEvent;
-use file_viewer_ui::FileViewerView;
+use file_viewer_ui::{FileViewerAction, FileViewerEvent, FileViewerView};
 #[cfg(feature = "local_fs")]
 use file_viewers::kind::{self as viewer_kind, ViewerKind};
 use lsp::LspManagerModel;
@@ -28,7 +27,7 @@ use warpui::elements::{
     SavePosition, Shrinkable, Stack, Text,
 };
 use warpui::fonts::{Properties, Style, Weight};
-use warpui::keymap::{self, EditableBinding};
+use warpui::keymap::{self, EditableBinding, FixedBinding};
 use warpui::text::point::Point;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::button::ButtonVariant;
@@ -84,6 +83,7 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::buttons::icon_button;
 use crate::util::path::{display_name_with_host, display_path_with_host};
 use crate::view_components::{DismissibleToast, MarkdownToggleEvent, MarkdownToggleView};
+use crate::util::bindings::CustomAction;
 use crate::workspace::close_confirmation::confirms_every_close;
 use crate::workspace::util::get_context_target_terminal_view;
 use crate::workspace::{ActiveSession, TabBarDropTargetData, ToastStack, WorkspaceAction};
@@ -106,6 +106,30 @@ pub fn init(app: &mut AppContext) {
     super::editor::view::init(app);
     super::local_code_editor::init(app);
     file_viewer_ui::init(app);
+
+    // The zoom shortcuts are menu items, which zoom the whole window unless the focused view
+    // binds their actions. A viewer showing something that zooms takes them for its content.
+    let zoomable_viewer = id!(FileViewerView::ui_name()) & id!(file_viewer_ui::ZOOMABLE_CONTEXT);
+    app.register_fixed_bindings([
+        FixedBinding::custom(
+            CustomAction::IncreaseZoom,
+            FileViewerAction::ZoomIn,
+            "Zoom in on the viewed file",
+            zoomable_viewer.clone(),
+        ),
+        FixedBinding::custom(
+            CustomAction::DecreaseZoom,
+            FileViewerAction::ZoomOut,
+            "Zoom out of the viewed file",
+            zoomable_viewer.clone(),
+        ),
+        FixedBinding::custom(
+            CustomAction::ResetZoom,
+            FileViewerAction::FitToWindow,
+            "Fit the viewed file to the window",
+            zoomable_viewer,
+        ),
+    ]);
 
     let text_entry = id!("CodeEditorView") & !id!("IMEOpen");
     app.register_editable_bindings([
