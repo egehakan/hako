@@ -1,9 +1,12 @@
 use std::path::Path;
 
 use futures::channel::oneshot;
+use pathfinder_color::ColorU;
+use string_offset::CharOffset;
 use vec1::vec1;
 use warp_editor::content::buffer::{InitialBufferState, SelectionOffsets};
 use warp_editor::multiline::MultilineString;
+use warp_editor::render::model::TextDecorationLayer;
 use warp_util::content_version::ContentVersion;
 use warpui::App;
 
@@ -962,6 +965,114 @@ async fn compute_diff_and_expand(app: &mut App, editor: &ModelHandle<CodeEditorM
         editor.expand_diffs(ctx);
     });
     layout_model(app, editor).await;
+}
+
+/// Text under each decoration of one layer, in buffer order.
+fn decorated_texts(
+    app: &App,
+    editor: &ModelHandle<CodeEditorModel>,
+    layer: TextDecorationLayer,
+) -> Vec<String> {
+    app.read(|ctx| {
+        let editor = editor.as_ref(ctx);
+        let buffer = editor.content.as_ref(ctx);
+        let mut decorations = editor
+            .render_state()
+            .as_ref(ctx)
+            .decorations()
+            .text(layer)
+            .to_vec();
+        decorations.sort_by_key(|decoration| decoration.start);
+        decorations
+            .into_iter()
+            .map(|decoration| {
+                // Decorations count characters from the start of the text, which the buffer
+                // precedes with one marker character.
+                buffer
+                    .text_in_range(decoration.start + 1..decoration.end + 1)
+                    .into_string()
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn test_expanded_diff_marks_changed_words_of_multi_line_hunks() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+
+        let base_text =
+            "fn main() {\n    let first = load(path);\n    let second = parse(first);\n}\n";
+        let current_text = "fn main() {\n    let first = load(&path);\n    log(\"loaded\");\n    let second = parse(&first)?;\n}\nfn added() {}\n";
+        let editor = mock_model_with_diff(&mut app, base_text, current_text, ContentVersion::new());
+        layout_model(&mut app, &editor).await;
+        compute_diff_and_expand(&mut app, &editor).await;
+
+        // The line inserted between the two edited ones, and the purely added last line, have
+        // no marked words.
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Diff),
+            ["&", "&", "?"]
+        );
+    })
+}
+
+#[test]
+fn test_diff_refresh_keeps_search_and_diagnostic_decorations() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+
+        let editor = mock_model_with_diff(
+            &mut app,
+            "let total = compute(a);\n",
+            "let total = compute(a, b);\n",
+            ContentVersion::new(),
+        );
+        layout_model(&mut app, &editor).await;
+
+        let search_match = Decoration::new(CharOffset::from(0), CharOffset::from(3));
+        let diagnostic = Decoration::new(CharOffset::from(4), CharOffset::from(9))
+            .with_dashed_underline(ColorU::new(255, 0, 0, 255));
+        editor.update(&mut app, |editor, ctx| {
+            editor.render_state().update(ctx, |render, ctx| {
+                render.set_text_decorations(TextDecorationLayer::Search, vec![search_match], ctx);
+                render.set_text_decorations(
+                    TextDecorationLayer::Diagnostic,
+                    vec![diagnostic],
+                    ctx,
+                );
+            });
+        });
+
+        compute_diff_and_expand(&mut app, &editor).await;
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Diff),
+            [", b"]
+        );
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Search),
+            ["let"]
+        );
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Diagnostic),
+            ["total"]
+        );
+
+        // A new search does not drop the diff's marks either.
+        editor.update(&mut app, |editor, ctx| {
+            editor.render_state().update(ctx, |render, ctx| {
+                render.set_text_decorations(TextDecorationLayer::Search, Vec::new(), ctx);
+            });
+        });
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Diff),
+            [", b"]
+        );
+        assert_eq!(
+            decorated_texts(&app, &editor, TextDecorationLayer::Diagnostic),
+            ["total"]
+        );
+    })
 }
 
 #[test]

@@ -49,52 +49,42 @@ pub(crate) fn replace_color(appearance: &Appearance) -> ColorU {
         .into()
 }
 
-/// Get the theme-appropriate remove overlay color
+/// A translucent version of a diff color, for painting behind text.
+fn overlay(mut color: ColorU, alpha: u8) -> ColorU {
+    color.a = alpha;
+    color
+}
+
+/// Background of removed lines.
 pub(crate) fn remove_overlay_color(appearance: &Appearance) -> ColorU {
-    if let Some(color) = appearance.theme().editor_diff_removed_line() {
-        return color;
-    }
-    let ansi_color =
-        AnsiColorIdentifier::Red.to_ansi_color(&appearance.theme().terminal_colors().normal);
-    let mut color: ColorU = ansi_color.into();
-    color.a = OVERLAY_ALPHA;
-    color
+    let theme = appearance.theme();
+    theme
+        .editor_diff_removed_line()
+        .unwrap_or_else(|| overlay(theme.editor_diff_removed(), OVERLAY_ALPHA))
 }
 
-/// Get the theme-appropriate add overlay color
+/// Background of added lines.
 pub(crate) fn add_overlay_color(appearance: &Appearance) -> ColorU {
-    if let Some(color) = appearance.theme().editor_diff_added_line() {
-        return color;
-    }
-    let ansi_color =
-        AnsiColorIdentifier::Green.to_ansi_color(&appearance.theme().terminal_colors().normal);
-    let mut color: ColorU = ansi_color.into();
-    color.a = OVERLAY_ALPHA;
-    color
+    let theme = appearance.theme();
+    theme
+        .editor_diff_added_line()
+        .unwrap_or_else(|| overlay(theme.editor_diff_added(), OVERLAY_ALPHA))
 }
 
-/// Get the theme-appropriate add inline overlay color
+/// Background of the added part of a changed line, painted over the line's own background.
 pub(crate) fn add_inline_overlay_color(appearance: &Appearance) -> ColorU {
-    if let Some(color) = appearance.theme().editor_diff_added_text() {
-        return color;
-    }
-    let ansi_color =
-        AnsiColorIdentifier::Green.to_ansi_color(&appearance.theme().terminal_colors().normal);
-    let mut color: ColorU = ansi_color.into();
-    color.a = INLINE_OVERLAY_ALPHA;
-    color
+    let theme = appearance.theme();
+    theme
+        .editor_diff_added_text()
+        .unwrap_or_else(|| overlay(theme.editor_diff_added(), INLINE_OVERLAY_ALPHA))
 }
 
-/// Get the theme-appropriate remove inline overlay color
+/// Background of the removed part of a changed line, painted over the line's own background.
 pub(crate) fn remove_inline_overlay_color(appearance: &Appearance) -> ColorU {
-    if let Some(color) = appearance.theme().editor_diff_removed_text() {
-        return color;
-    }
-    let ansi_color =
-        AnsiColorIdentifier::Red.to_ansi_color(&appearance.theme().terminal_colors().normal);
-    let mut color: ColorU = ansi_color.into();
-    color.a = INLINE_OVERLAY_ALPHA;
-    color
+    let theme = appearance.theme();
+    theme
+        .editor_diff_removed_text()
+        .unwrap_or_else(|| overlay(theme.editor_diff_removed(), INLINE_OVERLAY_ALPHA))
 }
 
 pub enum DiffModelEvent {
