@@ -13,7 +13,6 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
-use warp_multi_agent_api::ConversationData;
 
 use super::*;
 use crate::ai::agent::api::ServerConversationToken;
@@ -104,7 +103,7 @@ impl HarnessSupportClient for FailingUploadTargetsClient {
     async fn upload_conversation_data(
         &self,
         _conversation_id: &ServerConversationToken,
-        _conversation_data: &ConversationData,
+        _conversation_data: &[u8],
     ) -> Result<()> {
         unimplemented!("not used by the coordinator")
     }
@@ -217,7 +216,7 @@ impl HarnessSupportClient for RecordingClient {
     async fn upload_conversation_data(
         &self,
         _conversation_id: &ServerConversationToken,
-        _conversation_data: &ConversationData,
+        _conversation_data: &[u8],
     ) -> Result<()> {
         unimplemented!("not used by the coordinator")
     }

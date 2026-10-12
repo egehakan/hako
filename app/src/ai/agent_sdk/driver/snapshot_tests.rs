@@ -9,7 +9,6 @@ use mockito::{Matcher, Server, ServerGuard};
 use tempfile::{Builder as TempDirBuilder, TempDir};
 use tokio::runtime::Runtime;
 use warp_cli::agent::Harness;
-use warp_multi_agent_api::ConversationData;
 
 use super::*;
 use crate::ai::agent::api::ServerConversationToken;
@@ -131,7 +130,7 @@ impl HarnessSupportClient for TestClient {
     async fn upload_conversation_data(
         &self,
         _conversation_id: &ServerConversationToken,
-        _conversation_data: &ConversationData,
+        _conversation_data: &[u8],
     ) -> Result<()> {
         unimplemented!("not used by upload_snapshot_from_declarations_file")
     }

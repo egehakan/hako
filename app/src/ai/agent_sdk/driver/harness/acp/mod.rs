@@ -35,6 +35,7 @@ pub(crate) use bridge::run_bridge;
 use futures::{FutureExt, future, pin_mut, select};
 pub(crate) use launch::AcpLaunchSpec;
 use parking_lot::Mutex;
+use prost::Message as _;
 use serde_json::Value;
 use uuid::Uuid;
 use warp_cli::agent::{Harness, HarnessTransport};
@@ -86,8 +87,9 @@ use crate::server::server_api::ServerApi;
 use crate::server::server_api::harness_support::HarnessSupportClient;
 use crate::terminal::CLIAgent;
 
-/// Format slug sent to the server when creating the conversation for an ACP-driven run.
-const ACP_FORMAT: &str = "acp";
+/// Format slug sent to the server when creating the conversation: its history is stored as
+/// native MAA `ConversationData`, which the driver uploads itself.
+const MAA_FORMAT: &str = "maa";
 
 /// Bound on the agent connecting back through the bridge plus its `initialize` and
 /// `session/new` handshakes.
@@ -288,7 +290,10 @@ impl ThirdPartyHarness for AcpHarness {
                 .map(|(name, server)| mcp_server_for_acp(name, server))
                 .collect(),
             conversation: OnceLock::new(),
-            persistence: HarnessPersistence::default(),
+            boundary_snapshot: Arc::default(),
+            // Save points are raised at request-stream boundaries, which is the cadence the
+            // server persists its own conversations at, so they are uploaded as they come.
+            persistence: HarnessPersistence::default().with_save_debounce(Duration::ZERO),
             save_request_tx,
             save_request_rx,
             agent: Mutex::new(None),
@@ -327,6 +332,10 @@ pub(crate) struct AcpHarnessRunner {
     mcp_servers: Vec<McpServer>,
     /// Set before the first turn.
     conversation: OnceLock<RunConversation>,
+    /// The encoded conversation as captured at the most recent request-stream boundary and not
+    /// yet uploaded. Captured by the turn driver when it finishes a stream, so the upload never
+    /// sees a stream that a later turn has since opened.
+    boundary_snapshot: Arc<Mutex<Option<Vec<u8>>>>,
     persistence: HarnessPersistence,
     /// Save points raised by the turn driver at request-stream and turn boundaries.
     save_request_tx: async_channel::Sender<SavePoint>,
@@ -397,7 +406,7 @@ impl AcpHarnessRunner {
         let server_id = setup_events
             .record_result(SetupStep::ThirdPartyHarnessExternalConversation, async {
                 self.client
-                    .create_external_conversation(ACP_FORMAT, self.harness)
+                    .create_external_conversation(MAA_FORMAT, self.harness)
                     .await
                     .map_err(|error| {
                         report_error!(&error);
@@ -594,6 +603,7 @@ impl HarnessRunner for AcpHarnessRunner {
             }
         };
         let restored_root_task_id = conversation.restored_root_task_id.clone();
+        let local_conversation_id = conversation.local_id;
         let _ = self.conversation.set(conversation);
 
         let run_id = self.task_id.map(|id| id.to_string());
@@ -636,6 +646,8 @@ impl HarnessRunner for AcpHarnessRunner {
             session_id,
             prompt_text: self.prompt_text.clone(),
             attachments: self.attachments.clone(),
+            conversation_id: local_conversation_id,
+            boundary_snapshot: self.boundary_snapshot.clone(),
             save_requests: self.save_request_tx.clone(),
         };
         background
@@ -653,12 +665,6 @@ impl HarnessRunner for AcpHarnessRunner {
         save_point: SavePoint,
         foreground: &ModelSpawner<AgentDriver>,
     ) -> PersistenceOutcome {
-        match save_point {
-            // Between the boundaries the turn driver raises, the conversation only gains streamed
-            // text, which the next boundary or the final save captures.
-            SavePoint::Periodic => return PersistenceOutcome::skipped(),
-            SavePoint::PostTurn | SavePoint::Final => {}
-        }
         let Some(conversation) = self.conversation.get().cloned() else {
             return match save_point {
                 SavePoint::Final => PersistenceOutcome::failed(anyhow!(
@@ -667,8 +673,29 @@ impl HarnessRunner for AcpHarnessRunner {
                 SavePoint::PostTurn | SavePoint::Periodic => PersistenceOutcome::skipped(),
             };
         };
+        let snapshot = match save_point {
+            // Mid-stream the conversation holds a request that has not finished; the boundary
+            // that closes it raises the save that captures it.
+            SavePoint::Periodic => return PersistenceOutcome::skipped(),
+            // Coalesced save points share one snapshot: the newest boundary. A request whose
+            // snapshot a previous save already took has nothing left to upload.
+            SavePoint::PostTurn => match self.boundary_snapshot.lock().take() {
+                Some(snapshot) => snapshot,
+                None => return PersistenceOutcome::skipped(),
+            },
+            // Nothing streams after the harness exits, so the live conversation is boundary
+            // state, including a turn that the exit cut short.
+            SavePoint::Final => {
+                match capture_conversation_snapshot(conversation.local_id, foreground).await {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => return PersistenceOutcome::skipped(),
+                    Err(error) => return PersistenceOutcome::failed(error),
+                }
+            }
+        };
         PersistenceOutcome::without_transcript(
-            upload_conversation_snapshot(self.client.as_ref(), &conversation, foreground).await,
+            upload_conversation_snapshot(self.client.as_ref(), &conversation.server_id, &snapshot)
+                .await,
         )
     }
 
@@ -724,6 +751,8 @@ struct TurnDriver {
     session_id: String,
     prompt_text: String,
     attachments: Arc<AttachmentResolver>,
+    conversation_id: AIConversationId,
+    boundary_snapshot: Arc<Mutex<Option<Vec<u8>>>>,
     save_requests: async_channel::Sender<SavePoint>,
 }
 
@@ -820,12 +849,22 @@ impl TurnDriver {
         {
             log::warn!("Agent driver dropped before the ACP turn could be finished");
         }
-        self.request_save();
+        self.request_save().await;
         turn_result
     }
 
-    /// Asks the driver to persist the conversation as it stands once the save runs.
-    fn request_save(&self) {
+    /// Captures the conversation at the request-stream boundary just closed and asks the driver
+    /// to upload it. The capture happens here, before another stream can open, so the upload
+    /// is of a conversation whose every request has finished.
+    async fn request_save(&self) {
+        match capture_conversation_snapshot(self.conversation_id, &self.foreground).await {
+            Ok(Some(snapshot)) => *self.boundary_snapshot.lock() = Some(snapshot),
+            Ok(None) => return,
+            Err(error) => {
+                log::warn!("Skipping ACP save: {error:#}");
+                return;
+            }
+        }
         if self.save_requests.try_send(SavePoint::PostTurn).is_err() {
             log::debug!("ACP save request dropped; the runner is gone");
         }
@@ -906,7 +945,7 @@ impl TurnDriver {
                     )
                     .await
                     .map_err(|error| anyhow!("{error}"))?;
-                    self.request_save();
+                    self.request_save().await;
                     let next =
                         begin_turn(&self.foreground, &self.terminal_driver, self.run_id.clone())
                             .await
@@ -941,39 +980,36 @@ async fn with_ai_controller<T: Send + 'static>(
         .map_err(|_| AgentDriverError::InvalidRuntimeState)
 }
 
-/// Captures the native conversation on the foreground thread and replaces the server's copy
-/// with it. A conversation whose only task was torn down by a failed turn has nothing to
-/// upload, and the server rejects an empty snapshot.
-async fn upload_conversation_snapshot(
-    client: &dyn HarnessSupportClient,
-    conversation: &RunConversation,
+/// Captures the native conversation on the foreground thread as encoded `ConversationData`.
+/// Returns `None` when the conversation has no tasks (its only task was torn down by a failed
+/// turn): there is nothing to upload, and the server rejects an empty snapshot.
+async fn capture_conversation_snapshot(
+    local_id: AIConversationId,
     foreground: &ModelSpawner<AgentDriver>,
-) -> Result<()> {
-    let local_id = conversation.local_id;
-    let snapshot = foreground
+) -> Result<Option<Vec<u8>>> {
+    foreground
         .spawn(move |_, ctx| {
-            BlocklistAIHistoryModel::as_ref(ctx)
+            let data = BlocklistAIHistoryModel::as_ref(ctx)
                 .conversation(&local_id)
-                .map(AIConversation::to_conversation_data)
+                .map(AIConversation::to_conversation_data)?;
+            Some((!data.tasks.is_empty()).then(|| data.encode_to_vec()))
         })
         .await
         .map_err(|_| anyhow!("Agent driver dropped before the ACP conversation was captured"))?
-        .ok_or_else(|| anyhow!("ACP conversation {local_id:?} is no longer loaded"))?;
-    if snapshot.tasks.is_empty() {
-        log::info!(
-            "Skipping ACP conversation data upload to {}: conversation has no tasks",
-            conversation.server_id
-        );
-        return Ok(());
-    }
+        .ok_or_else(|| anyhow!("ACP conversation {local_id:?} is no longer loaded"))
+}
+
+/// Replaces the server's copy of the conversation with the encoded `snapshot`.
+async fn upload_conversation_snapshot(
+    client: &dyn HarnessSupportClient,
+    server_conversation_id: &ServerConversationToken,
+    snapshot: &[u8],
+) -> Result<()> {
     client
-        .upload_conversation_data(&conversation.server_id, &snapshot)
+        .upload_conversation_data(server_conversation_id, snapshot)
         .await
         .with_context(|| {
-            format!(
-                "Failed to upload ACP conversation data to {}",
-                conversation.server_id
-            )
+            format!("Failed to upload ACP conversation data to {server_conversation_id}")
         })
 }
 

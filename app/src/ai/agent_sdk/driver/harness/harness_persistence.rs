@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::{Context, Error, Result, anyhow};
 use warp_errors::report_if_error;
@@ -64,6 +65,12 @@ pub(crate) struct HarnessPersistence {
 }
 
 impl HarnessPersistence {
+    /// Overrides how long a save request is held for coalescing before it runs.
+    pub(super) fn with_save_debounce(mut self, interval: Duration) -> Self {
+        self.saves = SaveCoordinator::new(interval);
+        self
+    }
+
     pub(crate) fn initialize(
         &self,
         client: Arc<ServerApi>,

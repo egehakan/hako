@@ -9,9 +9,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 #[cfg(test)]
 use mockall::automock;
-use prost::Message as _;
 use warp_cli::agent::Harness;
-use warp_multi_agent_api::ConversationData;
 
 #[path = "harness_usage/publication.rs"]
 mod publication;
@@ -230,7 +228,7 @@ struct GetUploadTargetRequest {
 #[derive(serde::Serialize)]
 struct UploadConversationDataRequest {
     conversation_id: String,
-    /// Base64 of the prost-encoded [`ConversationData`].
+    /// Base64 of the prost-encoded `ConversationData`.
     conversation_data: String,
 }
 
@@ -338,11 +336,11 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
     ) -> Result<ServerConversationToken>;
 
     /// Replace the stored native conversation data for an external conversation whose format
-    /// is client-reduced.
+    /// is client-reduced. `conversation_data` is prost-encoded `ConversationData`.
     async fn upload_conversation_data(
         &self,
         conversation_id: &ServerConversationToken,
-        conversation_data: &ConversationData,
+        conversation_data: &[u8],
     ) -> Result<()>;
 
     /// Get a presigned upload target for the conversation's raw transcript.
@@ -553,13 +551,13 @@ impl HarnessSupportClient for ServerApi {
     async fn upload_conversation_data(
         &self,
         conversation_id: &ServerConversationToken,
-        conversation_data: &ConversationData,
+        conversation_data: &[u8],
     ) -> Result<()> {
         self.post_public_api_unit(
             "harness-support/conversation-data",
             &UploadConversationDataRequest {
                 conversation_id: conversation_id.to_string(),
-                conversation_data: BASE64_STANDARD.encode(conversation_data.encode_to_vec()),
+                conversation_data: BASE64_STANDARD.encode(conversation_data),
             },
         )
         .await
