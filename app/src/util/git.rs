@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
+#[cfg(feature = "local_fs")]
+use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use warp_core::safe_warn;
@@ -509,13 +511,85 @@ pub async fn compute_unpushed_state(_repo_path: &Path) -> (Vec<Commit>, Option<S
 /// daemon-side execution-time check.
 #[cfg(feature = "local_fs")]
 pub fn git_operation_in_progress(repo_path: &Path) -> bool {
-    let git_dir = repo_path.join(".git");
+    let git_dir = working_tree_git_dir(repo_path);
     git_dir.join("MERGE_HEAD").exists()
         || git_dir.join("CHERRY_PICK_HEAD").exists()
         || git_dir.join("REVERT_HEAD").exists()
         || git_dir.join("rebase-merge").exists()
         || git_dir.join("rebase-apply").exists()
         || git_dir.join("index.lock").exists()
+}
+
+/// The directory that holds a working tree's `HEAD`, index and in-progress operation state.
+///
+/// For a linked worktree `.git` is a file that points at that directory inside the main
+/// repository, so `<root>/.git` cannot be used as a directory there.
+#[cfg(feature = "local_fs")]
+fn working_tree_git_dir(repo_path: &Path) -> PathBuf {
+    let dot_git = repo_path.join(".git");
+    if dot_git.is_dir() {
+        return dot_git;
+    }
+    let Ok(contents) = std::fs::read_to_string(&dot_git) else {
+        return dot_git;
+    };
+    match contents.trim().strip_prefix("gitdir:") {
+        Some(target) => {
+            let target = Path::new(target.trim());
+            if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                repo_path.join(target)
+            }
+        }
+        None => dot_git,
+    }
+}
+
+/// Where a branch's commits go when pushed: the remote and remote ref it tracks.
+#[cfg(feature = "local_fs")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PushDestination {
+    pub remote: String,
+    /// Full ref name on the remote, e.g. `refs/heads/main`.
+    pub remote_ref: String,
+}
+
+/// Reads the upstream configured for `branch`, if it tracks a branch on a remote.
+#[cfg(feature = "local_fs")]
+pub(crate) async fn push_destination(repo_path: &Path, branch: &str) -> Option<PushDestination> {
+    let remote = git_config_value(repo_path, &format!("branch.{branch}.remote")).await?;
+    let remote_ref = git_config_value(repo_path, &format!("branch.{branch}.merge")).await?;
+    // A remote of `.` means the branch tracks another local branch, which is not a push target.
+    (remote != ".").then_some(PushDestination { remote, remote_ref })
+}
+
+#[cfg(feature = "local_fs")]
+async fn git_config_value(repo_path: &Path, key: &str) -> Option<String> {
+    run_git_command(repo_path, &["config", "--get", key])
+        .await
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Arguments of the `git push` that sends `branch` to `destination`, or publishes it to `origin`
+/// and starts tracking it there when it has no destination yet.
+#[cfg(feature = "local_fs")]
+pub(crate) fn push_args(branch: &str, destination: Option<&PushDestination>) -> Vec<String> {
+    match destination {
+        Some(destination) => vec![
+            "push".to_owned(),
+            destination.remote.clone(),
+            format!("refs/heads/{branch}:{}", destination.remote_ref),
+        ],
+        None => vec![
+            "push".to_owned(),
+            "--set-upstream".to_owned(),
+            "origin".to_owned(),
+            branch.to_owned(),
+        ],
+    }
 }
 
 /// Maximum number of characters of diff content to send to AI for commit
@@ -702,16 +776,15 @@ pub async fn run_commit(
     Err(anyhow!("Not supported on wasm"))
 }
 
-/// Pushes the given branch to origin, setting upstream tracking if not already configured.
+/// Pushes the given branch to the remote branch it tracks, or publishes it to `origin` and
+/// starts tracking it there when it tracks none.
 /// `path_env` is forwarded so the LFS `pre-push` hook can find `git-lfs`.
 #[cfg(feature = "local_fs")]
 pub async fn run_push(repo_path: &Path, branch: &str, path_env: Option<&str>) -> Result<String> {
-    run_git_command_with_env(
-        repo_path,
-        &["push", "--set-upstream", "origin", branch],
-        path_env,
-    )
-    .await
+    let destination = push_destination(repo_path, branch).await;
+    let args = push_args(branch, destination.as_ref());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git_command_with_env(repo_path, &args, path_env).await
 }
 
 #[cfg(not(feature = "local_fs"))]

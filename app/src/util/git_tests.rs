@@ -439,3 +439,108 @@ async fn detached_tag_display_returns_short_sha() {
         "expected {full_sha} to start with {result}"
     );
 }
+
+/// Creates a bare repository and a clone of it with one pushed commit on `main`. Returns the
+/// temp dir that owns both and the clone's path.
+#[cfg(feature = "local_fs")]
+async fn init_repo_with_origin() -> (TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let origin = root.join("origin.git");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "--bare", "-b", "main"]).await;
+    git(&root, &["clone", origin.to_str().unwrap(), "repo"]).await;
+    configure_identity(&repo).await;
+    git(&repo, &["checkout", "-b", "main"]).await;
+    std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+    git(&repo, &["add", "-A"]).await;
+    git(&repo, &["commit", "-m", "initial"]).await;
+    git(&repo, &["push", "-u", "origin", "main"]).await;
+    (dir, repo)
+}
+
+#[cfg(feature = "local_fs")]
+async fn configure_identity(repo: &Path) {
+    git(repo, &["config", "user.email", "test@test.com"]).await;
+    git(repo, &["config", "user.name", "Test"]).await;
+    git(repo, &["config", "commit.gpgsign", "false"]).await;
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn push_goes_to_the_tracked_remote_branch() {
+    let destination = super::PushDestination {
+        remote: "upstream".to_owned(),
+        remote_ref: "refs/heads/release".to_owned(),
+    };
+
+    assert_eq!(
+        super::push_args("feature", Some(&destination)),
+        ["push", "upstream", "refs/heads/feature:refs/heads/release"]
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn push_publishes_an_untracked_branch_to_origin() {
+    assert_eq!(
+        super::push_args("feature", None),
+        ["push", "--set-upstream", "origin", "feature"]
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn push_destination_follows_the_branch_configuration() {
+    let (_dir, repo) = init_repo_with_origin().await;
+
+    assert_eq!(
+        super::push_destination(&repo, "main").await,
+        Some(super::PushDestination {
+            remote: "origin".to_owned(),
+            remote_ref: "refs/heads/main".to_owned(),
+        })
+    );
+
+    git(&repo, &["checkout", "-b", "unpublished"]).await;
+    assert_eq!(super::push_destination(&repo, "unpublished").await, None);
+
+    // A branch that tracks another local branch has no remote to push to.
+    git(
+        &repo,
+        &["checkout", "-b", "local-tracking", "--track", "main"],
+    )
+    .await;
+    assert_eq!(super::push_destination(&repo, "local-tracking").await, None);
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn operation_in_progress_is_detected_in_a_linked_worktree() {
+    let (_dir, repo) = init_repo_with_origin().await;
+    let worktree = repo.parent().unwrap().join("worktree");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert!(worktree.join(".git").is_file());
+    assert!(!super::git_operation_in_progress(&worktree));
+
+    let git_dir =
+        std::path::PathBuf::from(git(&worktree, &["rev-parse", "--absolute-git-dir"]).await);
+    std::fs::write(git_dir.join("MERGE_HEAD"), "0000\n").unwrap();
+
+    assert!(super::git_operation_in_progress(&worktree));
+    assert!(
+        !super::git_operation_in_progress(&repo),
+        "a merge in a linked worktree does not block the main working tree"
+    );
+}
