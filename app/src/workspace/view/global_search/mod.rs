@@ -70,4 +70,7 @@ mod name_groups;
 mod name_match;
 #[cfg(not(target_family = "wasm"))]
 mod name_search;
+#[cfg_attr(feature = "local_fs", path = "replace_model.rs")]
+#[cfg_attr(not(feature = "local_fs"), path = "replace_model_stub.rs")]
+pub mod replace_model;
 pub mod view;

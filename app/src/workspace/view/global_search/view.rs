@@ -149,6 +149,19 @@ pub enum GlobalSearchAction {
     ToggleFileDismissed {
         location: LocalOrRemotePath,
     },
+    /// Replaces every text match that was not set aside, after asking.
+    ReplaceAll,
+    /// Replaces the text matches of one file that were not set aside.
+    ReplaceInFile {
+        location: LocalOrRemotePath,
+    },
+    ReplaceMatch {
+        location: LocalOrRemotePath,
+        line_number: u32,
+        column: usize,
+    },
+    /// Stops the replace that is running before its next file.
+    CancelReplace,
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -333,6 +346,7 @@ struct MatchedPath {
     path: LocalOrRemotePath,
     is_collapsed: bool,
     mouse_state: MouseStateHandle,
+    replace_mouse_state: MouseStateHandle,
     dismiss_mouse_state: MouseStateHandle,
     matches: Vec<Match>,
 }
@@ -343,6 +357,7 @@ impl MatchedPath {
             path,
             is_collapsed: false,
             mouse_state: MouseStateHandle::default(),
+            replace_mouse_state: MouseStateHandle::default(),
             dismiss_mouse_state: MouseStateHandle::default(),
             matches: Vec::new(),
         }
@@ -367,6 +382,7 @@ struct Match {
     column_num: Option<usize>,
     submatches: Vec<Submatch>,
     mouse_state: MouseStateHandle,
+    replace_mouse_state: MouseStateHandle,
     dismiss_mouse_state: MouseStateHandle,
 }
 
@@ -383,6 +399,7 @@ impl Match {
             column_num,
             submatches,
             mouse_state: MouseStateHandle::default(),
+            replace_mouse_state: MouseStateHandle::default(),
             dismiss_mouse_state: MouseStateHandle::default(),
         }
     }
@@ -592,6 +609,14 @@ impl TypedActionView for GlobalSearchView {
             GlobalSearchAction::ToggleFileDismissed { location } => {
                 self.toggle_file_dismissed(location, ctx);
             }
+            GlobalSearchAction::ReplaceAll => self.confirm_replace_all(ctx),
+            GlobalSearchAction::ReplaceInFile { location } => self.replace_in_file(location, ctx),
+            GlobalSearchAction::ReplaceMatch {
+                location,
+                line_number,
+                column,
+            } => self.replace_match(location, *line_number, *column, ctx),
+            GlobalSearchAction::CancelReplace => self.cancel_replace(ctx),
         }
     }
 }
@@ -1011,6 +1036,7 @@ impl GlobalSearchView {
         self.total_match_count += 1;
 
         if self.total_match_count == MAX_MATCH_COUNT {
+            self.replace.truncated_file = location.to_local_path().map(Path::to_path_buf);
             self.abort_search(ctx);
         }
     }
@@ -1057,15 +1083,17 @@ impl GlobalSearchView {
             EditorEvent::Edited(_)
             | EditorEvent::BufferReplaced
             | EditorEvent::BufferReinitialized => {
+                self.replace.scroll_top_to_restore = None;
                 let query_text = self.query_editor.as_ref(ctx).buffer_text(ctx);
                 if query_text.is_empty() {
                     self.cancel_search(ctx);
                     self.reset_search_state(true);
-                    ctx.notify();
+                    self.refresh_replace_controls(ctx);
                     return;
                 }
 
                 self.notify_query_changed();
+                self.refresh_replace_controls(ctx);
             }
             EditorEvent::Enter => {
                 self.rerun_search_from_query(ctx, true);
@@ -1082,6 +1110,7 @@ impl GlobalSearchView {
             | EditorEvent::BufferReinitialized => {
                 self.update_scope_button(ctx);
                 self.notify_query_changed();
+                self.refresh_replace_controls(ctx);
             }
             EditorEvent::Enter => {
                 self.rerun_search_from_query(ctx, true);
@@ -1148,6 +1177,8 @@ impl GlobalSearchView {
         self.directory_path_to_directory_index_entry.clear();
         self.total_match_count = 0;
         self.capped_matches = false;
+        self.replace.truncated_file = None;
+        self.replace.search_incomplete = false;
     }
 
     fn reset_search_state(&mut self, clear_last_pattern: bool) {
@@ -1265,6 +1296,9 @@ impl GlobalSearchView {
                 }
 
                 self.apply_progress_item(result.clone(), ctx);
+                if self.capped_matches {
+                    self.refresh_replace_controls(ctx);
+                }
                 ctx.notify();
             }
             GlobalSearchEvent::ProgressBatch { search_id, items } => {
@@ -1278,6 +1312,9 @@ impl GlobalSearchView {
                     if self.capped_matches {
                         break;
                     }
+                }
+                if self.capped_matches {
+                    self.refresh_replace_controls(ctx);
                 }
                 ctx.notify();
             }
@@ -1295,6 +1332,10 @@ impl GlobalSearchView {
                 self.is_search_in_progress = false;
                 self.total_match_count = *total_match_count;
                 self.capped_matches |= capped;
+                self.replace.search_incomplete = *local_source_failed;
+                if let Some(scroll_top) = self.replace.scroll_top_to_restore.take() {
+                    self.uniform_list_state.add_scroll_top(scroll_top);
+                }
 
                 if let Some(started_at) = self.search_started_at.take() {
                     send_telemetry_from_ctx!(
@@ -1309,7 +1350,7 @@ impl GlobalSearchView {
                         ctx
                     );
                 }
-                ctx.notify();
+                self.refresh_replace_controls(ctx);
             }
             GlobalSearchEvent::Failed { search_id, error } => {
                 if Some(*search_id) != self.current_search_id {
@@ -1327,7 +1368,7 @@ impl GlobalSearchView {
                     self.selected_row = None;
                 }
                 self.last_error = Some(error.clone());
-                ctx.notify();
+                self.refresh_replace_controls(ctx);
             }
         }
     }
@@ -1490,15 +1531,7 @@ impl GlobalSearchView {
         let file_path = matched_path.path.clone();
         let match_count = matched_path.matches.len();
         let is_dismissed = self.is_file_dismissed(matched_path);
-        // Shown while replacing, for a file a replace can reach.
-        let dismiss = (self.replace.is_open && file_path.is_local()).then(|| {
-            (
-                matched_path.dismiss_mouse_state.clone(),
-                GlobalSearchAction::ToggleFileDismissed {
-                    location: file_path.clone(),
-                },
-            )
-        });
+        let row_buttons = self.file_row_buttons(matched_path);
 
         let directory_path_for_select = directory_path.clone();
         let file_path_clone = file_path.clone();
@@ -1594,16 +1627,8 @@ impl GlobalSearchView {
             let mut trailing = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(count_badge);
-            if let Some((dismiss_mouse_state, dismiss_action)) = dismiss
-                && (mouse_state.is_hovered() || is_selected)
-            {
-                let icon = if is_dismissed { Icon::Plus } else { Icon::X };
-                trailing.add_child(Self::render_row_button(
-                    icon,
-                    dismiss_mouse_state,
-                    dismiss_action,
-                    appearance,
-                ));
+            if !row_buttons.is_empty() && (mouse_state.is_hovered() || is_selected) {
+                trailing.add_child(Self::render_row_buttons(row_buttons, appearance));
             }
 
             let header_row = Flex::row()
@@ -1686,22 +1711,7 @@ impl GlobalSearchView {
         let mouse_state = matched.mouse_state.clone();
         let preview = self.replace_preview(matched_path, matched);
         let is_dismissed = self.is_match_dismissed(matched_path, matched);
-        // Shown while replacing, for a match a replace can reach.
-        let dismiss = self
-            .replace
-            .is_open
-            .then(|| Self::replaceable_key(matched_path, matched))
-            .flatten()
-            .map(|(_, column)| {
-                (
-                    matched.dismiss_mouse_state.clone(),
-                    GlobalSearchAction::ToggleMatchDismissed {
-                        location: matched_path.path.clone(),
-                        line_number,
-                        column,
-                    },
-                )
-            });
+        let row_buttons = self.match_row_buttons(matched_path, matched);
 
         let directory_path_for_select = directory_path.clone();
         let file_path_for_select = matched_path.path.clone();
@@ -1768,25 +1778,16 @@ impl GlobalSearchView {
                 }
             };
 
-            let content = match dismiss {
-                Some((dismiss_mouse_state, dismiss_action))
-                    if mouse_state.is_hovered() || is_selected =>
-                {
-                    let icon = if is_dismissed { Icon::Plus } else { Icon::X };
-                    Flex::row()
-                        .with_main_axis_size(MainAxisSize::Max)
-                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(Shrinkable::new(1.0, match_text.finish()).finish())
-                        .with_child(Self::render_row_button(
-                            icon,
-                            dismiss_mouse_state,
-                            dismiss_action,
-                            appearance,
-                        ))
-                        .finish()
-                }
-                Some(_) | None => match_text.finish(),
+            let content = if !row_buttons.is_empty() && (mouse_state.is_hovered() || is_selected) {
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(Shrinkable::new(1.0, match_text.finish()).finish())
+                    .with_child(Self::render_row_buttons(row_buttons, appearance))
+                    .finish()
+            } else {
+                match_text.finish()
             };
 
             let mut row = Container::new(content)
@@ -3045,6 +3046,7 @@ impl View for GlobalSearchView {
 
         if self.replace.is_open {
             header_column.add_child(self.render_replace_row(app));
+            header_column.add_child(self.render_replace_actions(app));
         }
         if self.is_scope_open {
             header_column.add_child(self.render_field_row(&self.include_editor, None, app));
