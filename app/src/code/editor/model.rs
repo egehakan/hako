@@ -1598,7 +1598,9 @@ impl CodeEditorModel {
                 selection_model_id,
             } => {
                 let buffer = self.content().as_ref(ctx);
-                let content = buffer.text();
+                // Copying out the whole text on every keystroke is only worth it when there is
+                // something to compare it with.
+                let content = self.diff.as_ref(ctx).has_base().then(|| buffer.text());
                 if self.should_defer_syntax_tree_parsing() {
                     self.pending_syntax_tree_bootstrap = true;
                 } else {
@@ -1647,8 +1649,9 @@ impl CodeEditorModel {
                     }
                 }
 
-                self.diff.update(ctx, move |diff, ctx| {
-                    diff.compute_diff(content, *buffer_version, ctx)
+                self.diff.update(ctx, move |diff, ctx| match content {
+                    Some(content) => diff.compute_diff(content, *buffer_version, ctx),
+                    None => diff.content_changed_without_base(*buffer_version),
                 });
 
                 // If we are delaying rendering, push these updates to the delay rendering state. Otherwise, flush them to diff and rendering model.

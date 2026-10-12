@@ -587,6 +587,32 @@ impl DiffModel {
         self.base.clone()
     }
 
+    /// Whether there is a base to compare the content with. Without one a diff computation ends
+    /// before it looks at the content.
+    pub fn has_base(&self) -> bool {
+        self.base.is_some()
+    }
+
+    /// Aborts a diff computation under way for a version other than `version`. Returns whether
+    /// one for `version` itself is under way, which is left to finish.
+    fn is_computing_or_abort_stale(&mut self, version: BufferVersion) -> bool {
+        let Some((abort_handle, current_version)) = self.abort_handle.take() else {
+            return false;
+        };
+        if current_version == version {
+            self.abort_handle = Some((abort_handle, version));
+            return true;
+        }
+        abort_handle.abort();
+        false
+    }
+
+    /// What a change of content to `version` amounts to while there is no base: nothing to
+    /// compute, and a computation still under way for another version no longer applies.
+    pub fn content_changed_without_base(&mut self, version: BufferVersion) {
+        self.is_computing_or_abort_stale(version);
+    }
+
     /// Given the new content, compute the new set of diff contents.
     pub fn compute_diff(
         &mut self,
@@ -594,14 +620,8 @@ impl DiffModel {
         version: BufferVersion,
         ctx: &mut ModelContext<Self>,
     ) {
-        if let Some((abort_handle, current_version)) = self.abort_handle.take() {
-            // Do not abort a diff computation for the same buffer version. Early return instead.
-            if current_version != version {
-                abort_handle.abort();
-            } else {
-                self.abort_handle = Some((abort_handle, version));
-                return;
-            }
+        if self.is_computing_or_abort_stale(version) {
+            return;
         }
 
         let Some(base_text) = self.base.clone() else {

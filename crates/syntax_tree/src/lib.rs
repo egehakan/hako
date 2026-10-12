@@ -169,9 +169,9 @@ impl SyntaxTreeState {
         let buffer = self.buffer_handle.upgrade(ctx)?;
         let language_queries = self.language_queries.as_ref()?;
 
-        let mut combined_highlights = Highlights::default();
-
-        // Iterate over all ranges and collect highlights for each
+        // The viewport is usually a single range, whose highlights are kept as they are rather
+        // than copied into an empty map range by range.
+        let mut combined_highlights: Option<Highlights> = None;
         for range in ranges.iter() {
             let highlights = language_queries.syntax_query.get_highlighted_chunks(
                 range.clone(),
@@ -180,8 +180,12 @@ impl SyntaxTreeState {
                 tree,
             );
 
-            combined_highlights.extend(highlights);
+            match &mut combined_highlights {
+                Some(combined) => combined.extend(highlights),
+                None => combined_highlights = Some(highlights),
+            }
         }
+        let combined_highlights = combined_highlights.unwrap_or_default();
 
         // Once we have rendered content version X, we could discard syntax trees belonging to versions before X.
         if let Some(render_content_version) = render_content_version {
