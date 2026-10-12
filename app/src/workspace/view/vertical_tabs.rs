@@ -2841,30 +2841,32 @@ fn render_grouped_tabs_header(
 
     // A group with an icon of its own, or a folder, shows that icon whether or not it is collapsed;
     // a folder's default icon is open or closed to match.
+    let sized_image = |image: Box<dyn Element>| {
+        ConstrainedBox::new(image)
+            .with_width(TAB_GROUP_ICON_SIZE + 2.)
+            .with_height(TAB_GROUP_ICON_SIZE + 2.)
+            .finish()
+    };
     let own_icon: Option<Box<dyn Element>> = match &group.icon {
-        Some(icon @ TabGroupIcon::Material(_)) => icon.material_image(),
+        Some(icon @ TabGroupIcon::Material(_)) => icon.material_image().map(sized_image),
+        // Text sizes itself; boxing it to the icon size would clip an emoji's line height.
         Some(TabGroupIcon::Text(text)) => Some(
-            Text::new_inline(text.clone(), font_family, TAB_GROUP_ICON_SIZE)
+            Text::new_inline(text.clone(), font_family, 14.)
                 .with_color(main_text_color.into())
                 .finish(),
         ),
         None => group
             .directory
             .as_ref()
-            .map(|directory| icon_from_folder_path(&directory.to_string_lossy(), !is_collapsed)),
+            .map(|directory| icon_from_folder_path(&directory.to_string_lossy(), !is_collapsed))
+            .map(sized_image),
     };
 
     // Collapsed groups show the icon collage (same component as horizontal tab
     // groups) in place of the chevron, sized to VERTICAL_TABS_ICON_SIZE so
     // the 2-icon variant matches the tab Summary Pair layout exactly.
     let tab_group_icon = if let Some(own_icon) = own_icon {
-        Align::new(
-            ConstrainedBox::new(own_icon)
-                .with_max_width(TAB_GROUP_ICON_SIZE + 2.)
-                .with_max_height(TAB_GROUP_ICON_SIZE + 2.)
-                .finish(),
-        )
-        .finish()
+        Align::new(own_icon).finish()
     } else if is_collapsed {
         let kinds = collapsed_member_kinds.unwrap_or(&[]);
         render_group_member_icon_collage(kinds, VERTICAL_TABS_ICON_SIZE, appearance)
@@ -2913,11 +2915,12 @@ fn render_grouped_tabs_header(
     };
     let (subtitle_text, subtitle_color) = match &group.directory {
         Some(directory) if group.directory_missing => (
-            format!("Folder not found: {}", display_directory(directory)),
+            format!("Folder not found · {}", display_directory(directory)),
             theme.ui_error_color(),
         ),
+        // The count comes first: a long path is cut off at the end, and the count must not be.
         Some(directory) => (
-            format!("{} · {tab_count_text}", display_directory(directory)),
+            format!("{tab_count_text} · {}", display_directory(directory)),
             sub_text_color.into(),
         ),
         None => (tab_count_text, sub_text_color.into()),
@@ -2934,7 +2937,9 @@ fn render_grouped_tabs_header(
         .with_child(subtitle)
         .finish();
 
-    // Opening a tab in the group is the one action that is always at hand, not only on hover.
+    // Opening a tab in the group is the one action that is always at hand, not only on hover. It
+    // sits at the far end, so the buttons that appear on hover do not push it from under the
+    // pointer.
     let add_tab_button = render_tab_group_header_icon_button(
         WarpIcon::Plus,
         TAB_GROUP_HEADER_ACTION_ICON_SIZE,
@@ -2971,9 +2976,9 @@ fn render_grouped_tabs_header(
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(GROUP_ACTION_BUTTON_GAP)
-            .with_child(add_tab_button)
             .with_child(kebab_button)
             .with_child(close_button)
+            .with_child(add_tab_button)
             .finish()
     } else {
         add_tab_button

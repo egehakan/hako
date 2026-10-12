@@ -23,7 +23,7 @@ use crate::editor::{
 };
 use crate::ui_components::dialog::{Dialog, dialog_styles};
 use crate::workspace::tab_folders::{
-    MATERIAL_GROUP_ICONS, TabFolders, TabGroupIcon, color_swatch_rows, format_hex_color,
+    MATERIAL_GROUP_ICONS, MAX_RECENT_COLORS, TabFolders, TabGroupIcon, color_swatch_rows, format_hex_color,
     parse_hex_color,
 };
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
@@ -107,7 +107,7 @@ impl TabGroupCustomizeDialog {
             icon_text_editor,
             swatch_rows,
             swatch_mouse_states: mouse_states(swatch_count),
-            recent_mouse_states: Vec::new(),
+            recent_mouse_states: mouse_states(MAX_RECENT_COLORS),
             icon_mouse_states: mouse_states(MATERIAL_GROUP_ICONS.len()),
             no_color_mouse_state: Default::default(),
             default_icon_mouse_state: Default::default(),
@@ -138,7 +138,6 @@ impl TabGroupCustomizeDialog {
         self.color = group.custom_color;
         self.icon = group.icon.clone();
         self.hex_is_invalid = false;
-        self.recent_mouse_states = mouse_states(TabFolders::as_ref(ctx).recent_colors().len());
 
         let hex = self.color.map(format_hex_color).unwrap_or_default();
         self.hex_editor.update(ctx, |editor, ctx| {

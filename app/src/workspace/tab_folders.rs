@@ -13,7 +13,7 @@ use crate::tab::SelectedTabColor;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 
 /// How many recently applied custom colors the customize dialog offers.
-const MAX_RECENT_COLORS: usize = 8;
+pub const MAX_RECENT_COLORS: usize = 8;
 
 macro_rules! material_icons {
     ($($name:literal),* $(,)?) => {
