@@ -15441,6 +15441,7 @@ dependencies = [
  "cloud_object_persistence",
  "cloud_objects",
  "cocoa 0.26.0",
+ "code_formatters",
  "comfy-table",
  "command",
  "command-corrections",
