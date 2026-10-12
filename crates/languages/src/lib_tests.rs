@@ -857,6 +857,27 @@ export const App = () => (
 }
 
 #[test]
+fn jsx_component_keeps_its_color_when_a_function_of_the_same_name_is_declared() {
+    let source = "\
+export function Card() {
+  return (
+    <section className=\"card\">
+      <Header title={title} />
+    </section>
+  );
+}
+function Header(props: { title: string }) {
+  return <h2>{props.title}</h2>;
+}
+";
+    assert_painted(
+        "tsx",
+        source,
+        &[("constructor", "Header"), ("tag", "h2")],
+    );
+}
+
+#[test]
 fn javascript_distinguishes_classes_parameters_and_bindings() {
     let source = "\
 class Animal extends Base {

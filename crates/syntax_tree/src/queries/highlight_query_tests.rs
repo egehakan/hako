@@ -433,3 +433,22 @@ fn highlighting_without_theme_styles_uses_the_color_map() {
     assert_eq!(colors, vec![(3, KEYWORD), (3, STRING), (1, COMMENT)]);
     assert!(underlines.is_empty());
 }
+
+#[test]
+fn text_predicates_see_the_text_of_the_captured_node() {
+    let palette = palette(capture_styles(
+        &[
+            ("variable.builtin", colored(THEME_VARIABLE)),
+            ("variable.parameter", colored(THEME_FUNCTION)),
+        ],
+        &[],
+    ));
+
+    // `self` is only told apart from other identifiers by a predicate on its text. It sits on a
+    // later line so that the predicate reads past the start of the buffer.
+    let (colors, _) = highlight("python", "x = 1\n\ny = self\n", palette);
+    assert!(
+        colors.contains(&(4, THEME_VARIABLE)),
+        "`self` should be colored as a builtin variable, got {colors:?}",
+    );
+}

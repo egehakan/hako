@@ -285,9 +285,11 @@ impl<'a> TextProvider<&'a [u8]> for TextBuffer<'a> {
 
     fn text(&mut self, node: Node) -> Self::I {
         let range = node.range();
+        // The buffer's byte offsets start at 1, after its leading block marker, while the syntax
+        // tree was parsed from the text alone.
         self.0.bytes_in_range(
-            ByteOffset::from(range.start_byte),
-            ByteOffset::from(range.end_byte),
+            ByteOffset::from(range.start_byte + 1),
+            ByteOffset::from(range.end_byte + 1),
         )
     }
 }
