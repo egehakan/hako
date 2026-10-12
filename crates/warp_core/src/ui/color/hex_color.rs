@@ -7,6 +7,7 @@ use super::OPAQUE;
 
 const SHORT_COLOR_LEN: usize = 3;
 const FULL_COLOR_LEN: usize = 6;
+const ALPHA_COLOR_LEN: usize = 8;
 
 #[derive(PartialEq, Eq, Debug, Clone, thiserror::Error)]
 pub enum HexColorError {
@@ -56,6 +57,64 @@ pub fn coloru_from_hex_string(s: &str) -> Result<ColorU, HexColorError> {
 
 pub fn coloru_to_hex_string(coloru: &ColorU) -> String {
     format!("#{:02x}{:02x}{:02x}", coloru.r, coloru.g, coloru.b)
+}
+
+/// Parses `#rgb` and `#rrggbb` like [`coloru_from_hex_string`], and also `#rrggbbaa`.
+pub fn coloru_from_hex_string_with_alpha(s: &str) -> Result<ColorU, HexColorError> {
+    let Some(digits) = s.strip_prefix('#') else {
+        return Err(HexColorError::HashPrefix);
+    };
+    if digits.len() != ALPHA_COLOR_LEN {
+        return coloru_from_hex_string(s);
+    }
+    if !digits.is_ascii() {
+        return Err(HexColorError::InvalidValue);
+    }
+
+    let (rgb, alpha) = digits.split_at(FULL_COLOR_LEN);
+    let opaque = coloru_from_hex_string(&format!("#{rgb}"))?;
+    let alpha = u8::from_str_radix(alpha, 16).map_err(|_| HexColorError::InvalidValue)?;
+    Ok(ColorU::new(opaque.r, opaque.g, opaque.b, alpha))
+}
+
+/// Formats a color as `#rrggbb`, or as `#rrggbbaa` when it is not opaque.
+pub fn coloru_to_hex_string_with_alpha(coloru: &ColorU) -> String {
+    if coloru.a == OPAQUE {
+        coloru_to_hex_string(coloru)
+    } else {
+        format!("{}{:02x}", coloru_to_hex_string(coloru), coloru.a)
+    }
+}
+
+/// A color that is written as a hex string and may carry an alpha channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlphaHexColor(pub ColorU);
+
+impl From<AlphaHexColor> for ColorU {
+    fn from(color: AlphaHexColor) -> Self {
+        color.0
+    }
+}
+
+impl Serialize for AlphaHexColor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        coloru_to_hex_string_with_alpha(&self.0).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AlphaHexColor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        coloru_from_hex_string_with_alpha(&s)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
 }
 
 pub fn deserialize<'de, D, C>(deserializer: D) -> Result<C, D::Error>

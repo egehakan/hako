@@ -332,6 +332,138 @@ fn from_hex_positive_test() {
 }
 
 #[test]
+fn from_hex_with_alpha_test() {
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("#11223344").unwrap(),
+        ColorU::from_u32(0x11223344)
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("#112233").unwrap(),
+        ColorU::from_u32(0x112233ff)
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("#123").unwrap(),
+        ColorU::from_u32(0x112233ff)
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("#1122334").unwrap_err(),
+        hex_color::HexColorError::InvalidLength
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("#112233zz").unwrap_err(),
+        hex_color::HexColorError::InvalidValue
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string_with_alpha("11223344").unwrap_err(),
+        hex_color::HexColorError::HashPrefix
+    );
+    assert_eq!(
+        hex_color::coloru_from_hex_string("#11223344").unwrap_err(),
+        hex_color::HexColorError::InvalidLength
+    );
+}
+
+#[test]
+fn to_hex_with_alpha_test() {
+    assert_eq!(
+        hex_color::coloru_to_hex_string_with_alpha(&ColorU::from_u32(0x112233ff)),
+        "#112233"
+    );
+    assert_eq!(
+        hex_color::coloru_to_hex_string_with_alpha(&ColorU::from_u32(0x1122330a)),
+        "#1122330a"
+    );
+}
+
+/// The base fields of a theme, to which a test appends the optional sections it exercises.
+const BASE_THEME_YAML: &str = r##"---
+background: "#20a5ba"
+accent: "#20a5ba"
+foreground: "#20a5ba"
+details: darker
+terminal_colors:
+  normal:
+    black: "#616161"
+    red: "#ff8272"
+    green: "#b4fa72"
+    yellow: "#fefdc2"
+    blue: "#a5d5fe"
+    magenta: "#ff8ffd"
+    cyan: "#d0d1fe"
+    white: "#f1f1f1"
+  bright:
+    black: "#8e8e8e"
+    red: "#ffc4bd"
+    green: "#d6fcb9"
+    yellow: "#fefdd5"
+    blue: "#c1e3fe"
+    magenta: "#ffb1fe"
+    cyan: "#e5e6fe"
+    white: "#feffff"
+name: test_theme
+"##;
+
+#[test]
+fn theme_without_optional_sections_has_no_syntax_styles() {
+    let theme = serde_yaml::from_str::<WarpTheme>(BASE_THEME_YAML).expect("Couldn't deserialize");
+
+    assert_eq!(theme.syntax(), None);
+    assert_eq!(
+        serde_yaml::to_string(&theme).expect("Couldn't serialize"),
+        BASE_THEME_YAML
+    );
+}
+
+#[test]
+fn theme_with_optional_sections_round_trips() {
+    let yaml = format!(
+        r##"{BASE_THEME_YAML}syntax:
+  captures:
+    function.method: "#010203"
+    keyword:
+      color: "#040506"
+      underline: true
+  languages:
+    rust:
+      keyword: "#07080910"
+editor:
+  selection: "#0a0b0c0d"
+"##
+    );
+    let theme = serde_yaml::from_str::<WarpTheme>(&yaml).expect("Couldn't deserialize");
+
+    let syntax = theme.syntax().expect("theme should carry syntax styles");
+    assert_eq!(
+        syntax.captures()["function.method"].color,
+        Some(ColorU::from_u32(0x010203ff))
+    );
+    assert!(syntax.captures()["keyword"].underline);
+    assert_eq!(
+        syntax.languages()["rust"]["keyword"].color,
+        Some(ColorU::from_u32(0x07080910))
+    );
+    assert_eq!(
+        theme.editor_selection(),
+        Fill::Solid(ColorU::from_u32(0x0a0b0c0d))
+    );
+
+    assert_eq!(
+        serde_yaml::to_string(&theme).expect("Couldn't serialize"),
+        yaml
+    );
+}
+
+#[test]
+fn unknown_theme_fields_are_ignored() {
+    let yaml = format!("{BASE_THEME_YAML}not_a_field: 1\nsyntax:\n  not_a_field: 2\n");
+    let theme = serde_yaml::from_str::<WarpTheme>(&yaml).expect("Couldn't deserialize");
+
+    let syntax = theme.syntax().expect("theme should carry syntax styles");
+    assert!(syntax.captures().is_empty());
+    assert!(syntax.languages().is_empty());
+}
+
+#[test]
 fn infer_from_foreground_color_test() {
     assert_eq!(
         ColorScheme::infer_from_foreground_color(ColorU::white()),

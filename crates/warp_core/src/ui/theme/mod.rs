@@ -1,5 +1,7 @@
 pub mod color;
+pub mod editor;
 pub mod phenomenon;
+pub mod syntax;
 
 use std::path::PathBuf;
 
@@ -10,8 +12,11 @@ use warpui_core::color::ColorU;
 use warpui_core::geometry::vector::vec2f;
 
 use self::color::CustomDetails;
+use self::editor::EditorColors;
+use self::syntax::SyntaxTheme;
 use super::color::blend::Blend;
 use super::color::contrast::{MinimumAllowedContrast, pick_best_foreground_color};
+use super::color::hex_color::AlphaHexColor;
 use super::color::{ContrastingColor, OPAQUE, Opacity, coloru_with_opacity, hex_color, mid_coloru};
 use crate::paths::themes_dir;
 // Import relative_luminance from contrast module for brightness calculation
@@ -472,6 +477,12 @@ impl From<ColorU> for Fill {
     }
 }
 
+impl From<AlphaHexColor> for Fill {
+    fn from(color: AlphaHexColor) -> Fill {
+        Fill::Solid(color.into())
+    }
+}
+
 #[derive(Serialize, Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct AnsiColors {
     #[serde(with = "hex_color")]
@@ -599,6 +610,12 @@ pub struct WarpTheme {
     terminal_colors: TerminalColors,
     // If name is None, we construct the name by processing the theme .yaml file name
     name: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    syntax: Option<SyntaxTheme>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    editor: Option<EditorColors>,
 }
 
 impl WarpTheme {
@@ -622,7 +639,14 @@ impl WarpTheme {
             terminal_colors,
             background_image,
             name,
+            syntax: None,
+            editor: None,
         }
+    }
+
+    /// Syntax highlighting styles, for themes that carry their own.
+    pub fn syntax(&self) -> Option<&SyntaxTheme> {
+        self.syntax.as_ref()
     }
 
     pub fn name(&self) -> Option<String> {
