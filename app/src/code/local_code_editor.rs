@@ -48,7 +48,8 @@ use warpui::elements::{
     MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
     Rect, Shrinkable, Stack, Text,
 };
-use warpui::keymap::FixedBinding;
+use warpui::clipboard::ClipboardContent;
+use warpui::keymap::{EditableBinding, FixedBinding};
 use warpui::keymap::macros::*;
 use warpui::platform::SaveFilePickerConfiguration;
 use warpui::text::point::Point;
@@ -64,6 +65,7 @@ use crate::code::blame::{
     BlameCommit, BlameEvent, BlameFile, BlameLookup, BlameModel, BlameResult, RepoInfo,
     annotation_text,
 };
+use crate::code::blame_card::{BlameCard, BlameCardHandles, BlameCardTrigger};
 use crate::code::buffer_location::LocalOrRemotePath as BufferFileLocation;
 use crate::code::editor::{EditorReviewComment, TrailingAnnotation};
 use crate::code::editor::model::HoverableLink;
@@ -113,6 +115,12 @@ pub fn init(app: &mut AppContext) {
         LocalCodeEditorAction::InsertSelectedTextToInput,
         id!("LocalCodeEditorView") & !id!("IMEOpen"),
     )]);
+    app.register_editable_bindings([EditableBinding::new(
+        "code_editor:show_line_blame",
+        "Show line blame",
+        LocalCodeEditorAction::ShowLineBlame,
+    )
+    .with_context_predicate(id!("LocalCodeEditorView"))]);
 }
 
 pub enum LocalCodeEditorEvent {
@@ -211,6 +219,18 @@ pub enum LocalCodeEditorAction {
         lsp_position: lsp::types::Location,
         anchor_offset: CharOffset,
     },
+    /// Open the card about the commit behind the line the cursor is on.
+    ShowLineBlame,
+    /// The mouse entered (`true`) or left the blame card.
+    BlameCardHovered(bool),
+    CopyBlameSha(String),
+    /// Compare the working tree of `repo_root` with commit `sha` in the code review panel.
+    OpenBlameCommitInCodeReview {
+        repo_root: PathBuf,
+        sha: String,
+    },
+    /// Open the page of a commit, given as its address.
+    OpenBlameCommitOnGitHub(String),
 }
 
 #[derive(Default)]
@@ -277,10 +297,10 @@ impl LspHoverState {
 }
 
 /// The commit behind one line of the buffer, with what is needed to describe it.
-struct LineBlame {
-    commit: BlameCommit,
-    file: BlameFile,
-    repo: RepoInfo,
+pub(super) struct LineBlame {
+    pub(super) commit: BlameCommit,
+    pub(super) file: BlameFile,
+    pub(super) repo: RepoInfo,
 }
 
 /// What is shown after the end of the line the cursor rests on.
@@ -290,15 +310,19 @@ struct ShownBlame {
 }
 
 /// State of the blame shown for the line the cursor is on.
-struct InlineBlame {
+pub(super) struct InlineBlame {
     debounce_tx: async_channel::Sender<()>,
-    annotation_mouse_state: MouseStateHandle,
+    pub(super) annotation_mouse_state: MouseStateHandle,
     /// Set once the editor has had the focus. Until then nothing is blamed, so that tabs
     /// restored in the background do not each start git.
-    activated: bool,
+    pub(super) activated: bool,
     /// The answer for the cursor line was not known the last time it was asked for.
-    awaiting_blame: bool,
+    pub(super) awaiting_blame: bool,
     shown: Option<ShownBlame>,
+    pub(super) card: Option<BlameCard>,
+    pub(super) card_handles: BlameCardHandles,
+    /// A card was asked for from the keyboard before the blame of its line was known.
+    pub(super) card_requested: bool,
     /// The repository whose changes are being followed, once the file has been located.
     watched_repo: Option<PathBuf>,
     /// Kept so that the repository stays watched for as long as the file is open.
@@ -357,7 +381,7 @@ pub struct LocalCodeEditorView {
     /// View for the find references feature.
     find_references_view: Option<ViewHandle<FindReferencesView>>,
     /// `None` in editors that show no blame, such as the ones of the review pane.
-    inline_blame: Option<InlineBlame>,
+    pub(super) inline_blame: Option<InlineBlame>,
 }
 
 impl LocalCodeEditorView {
@@ -383,6 +407,7 @@ impl LocalCodeEditorView {
             }
             CodeEditorEvent::ContentChanged { origin, .. } => {
                 me.update_diff_hunk_gutter_buttons(ctx);
+                me.dismiss_blame_card(ctx);
                 me.schedule_inline_blame(ctx);
 
                 // Clear cached diagnostics/decorations on any content change. This is to avoid showing stale diagnostics while we are waiting for new diagnostics.
@@ -424,7 +449,13 @@ impl LocalCodeEditorView {
             CodeEditorEvent::SelectionEnd => {
                 ctx.notify();
             }
-            CodeEditorEvent::SelectionChanged => me.schedule_inline_blame(ctx),
+            CodeEditorEvent::SelectionChanged => {
+                me.dismiss_blame_card_off_line(ctx);
+                me.schedule_inline_blame(ctx);
+            }
+            CodeEditorEvent::TrailingAnnotationHovered { hovered } => {
+                me.handle_blame_annotation_hovered(*hovered, ctx);
+            }
             CodeEditorEvent::Focused => me.activate_inline_blame(ctx),
             CodeEditorEvent::MouseHovered {
                 offset,
@@ -1345,6 +1376,9 @@ impl LocalCodeEditorView {
             activated: false,
             awaiting_blame: false,
             shown: None,
+            card: None,
+            card_handles: Default::default(),
+            card_requested: false,
             watched_repo: None,
             #[cfg(feature = "local_fs")]
             git_status: None,
@@ -1403,6 +1437,7 @@ impl LocalCodeEditorView {
         if is_interested {
             self.update_inline_blame(ctx);
         }
+        self.refresh_blame_card(ctx);
     }
 
     fn update_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1442,7 +1477,11 @@ impl LocalCodeEditorView {
     /// The commit behind `line`, counted from zero, of the buffer as it is now. `None` while it
     /// is being worked out and where there is nothing to say: in files that are not local, not
     /// tracked or too large, and in editors that are showing a diff.
-    fn blame_for_line(&mut self, line: LineCount, ctx: &mut ViewContext<Self>) -> Option<LineBlame> {
+    pub(super) fn blame_for_line(
+        &mut self,
+        line: LineCount,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<LineBlame> {
         // Line numbers of a buffer with a proposed or expanded diff do not match the file.
         if self.diff_type.is_some()
             || self.base_content_version.is_none()
@@ -2408,11 +2447,13 @@ impl LocalCodeEditorView {
         self.fetch_find_references_and_show(lsp_position, anchor_offset, ctx);
     }
 
-    /// Dismiss any open LSP overlays (hover tooltip and find references card).
+    /// Dismiss any open overlays: the LSP hover tooltip, the find references card and the blame
+    /// card.
     fn dismiss_lsp_overlays(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let had_refs = self.close_find_references_card(ctx);
         let had_hover = self.lsp_hover_state.clear();
-        had_refs || had_hover
+        let had_blame = self.dismiss_blame_card(ctx);
+        had_refs || had_hover || had_blame
     }
 
     /// Perform goto definition at the cursor position and navigate directly.
@@ -2698,6 +2739,12 @@ impl View for LocalCodeEditorView {
             stack.add_positioned_overlay_child(hover_tooltip, positioning);
         }
 
+        if let (Some(blame_card), Some(positioning)) =
+            (self.render_blame_card(app), self.blame_card_positioning(app))
+        {
+            stack.add_positioned_overlay_child(blame_card, positioning);
+        }
+
         if let Some(footer) = &self.footer {
             let mut col = Flex::column();
 
@@ -2787,6 +2834,29 @@ impl TypedActionView for LocalCodeEditorView {
                 // Lazily fetch find-references as fallback when at the definition.
                 // This is triggered on cmd-click when go-to-definition has no different location.
                 self.fetch_find_references_and_show(lsp_position.clone(), *anchor_offset, ctx);
+            }
+            LocalCodeEditorAction::ShowLineBlame => {
+                self.show_blame_card(BlameCardTrigger::Command, ctx);
+            }
+            LocalCodeEditorAction::BlameCardHovered(hovered) => {
+                self.handle_blame_card_hovered(*hovered, ctx);
+            }
+            LocalCodeEditorAction::CopyBlameSha(sha) => {
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text(sha.clone()));
+                self.mark_blame_sha_copied(ctx);
+            }
+            LocalCodeEditorAction::OpenBlameCommitInCodeReview { repo_root, sha } => {
+                self.dismiss_blame_card(ctx);
+                #[cfg(feature = "local_fs")]
+                ctx.dispatch_typed_action(&WorkspaceAction::CompareWithRevisionInCodeReview {
+                    repo_root: repo_root.clone(),
+                    revision: sha.clone(),
+                });
+            }
+            LocalCodeEditorAction::OpenBlameCommitOnGitHub(url) => {
+                self.dismiss_blame_card(ctx);
+                ctx.open_url(url);
             }
         }
     }

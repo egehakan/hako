@@ -692,6 +692,13 @@ pub enum WorkspaceAction {
     FileDeleted {
         path: PathBuf,
     },
+    /// Open the code review panel on the repository at `repo_root`, comparing its working tree
+    /// with `revision`.
+    #[cfg(feature = "local_fs")]
+    CompareWithRevisionInCodeReview {
+        repo_root: PathBuf,
+        revision: String,
+    },
     /// Open a repository directory via file picker. The `path` is an `Option` because some
     /// dispatchers don't know the path to open yet (so the Workspace must open the file picker)
     /// and some do, e.g. the GetStartedView. The GetStartedView needs to handle the file picker
@@ -1266,6 +1273,8 @@ impl WorkspaceAction {
             FileRenamed { .. } => false, // File rename doesn't change workspace state
             #[cfg(feature = "local_fs")]
             FileDeleted { .. } => false, // File deletion doesn't change workspace state
+            #[cfg(feature = "local_fs")]
+            CompareWithRevisionInCodeReview { .. } => false,
             OpenEnvironmentManagementPane => false,
             #[cfg(target_os = "linux")]
             DismissWaylandCrashRecoveryBannerAndOpenLink => false,

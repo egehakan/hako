@@ -271,7 +271,11 @@ use crate::code::file_tree::FileTreeView;
 #[cfg(feature = "local_fs")]
 use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::GlobalCodeReviewModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::code_review_view::CodeReviewAction;
 use crate::code_review::diff_state::DiffStateModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::diff_state::{DiffMode, RevisionComparison};
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::context_chips::ChipRuntimeCapabilities;
@@ -10061,6 +10065,53 @@ impl Workspace {
             self.right_panel_view.update(ctx, |right_panel_view, ctx| {
                 right_panel_view.close_code_review(ctx);
             })
+        }
+    }
+
+    /// Opens the code review panel on the repository at `repo_root` and compares its working
+    /// tree with `revision`.
+    #[cfg(feature = "local_fs")]
+    fn compare_with_revision_in_code_review(
+        &mut self,
+        repo_root: &Path,
+        revision: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let repo = LocalOrRemotePath::Local(repo_root.to_path_buf());
+        let pane_group = self.active_tab_pane_group().clone();
+        let Some(diff_state_model) = self.working_directories_model.update(ctx, |model, ctx| {
+            model.get_or_create_diff_state_model(repo.clone(), None, ctx)
+        }) else {
+            return;
+        };
+        let context = CodeReviewPaneContext {
+            repo_path: Some(repo.clone()),
+            diff_state_model: diff_state_model.clone(),
+        };
+        self.open_right_panel(
+            &context,
+            &pane_group,
+            CodeReviewPaneEntrypoint::Other,
+            None,
+            ctx,
+        );
+
+        let mode = DiffMode::Revision {
+            rev: revision.to_string(),
+            comparison: RevisionComparison::Direct,
+        };
+        let review_view = self
+            .working_directories_model
+            .as_ref(ctx)
+            .get_code_review_view(pane_group.id(), &repo);
+        match review_view {
+            // Going through the view keeps its base picker and file list in step with the mode.
+            Some(view) => view.update(ctx, |view, ctx| {
+                view.handle_action(&CodeReviewAction::SetDiffMode(mode), ctx);
+            }),
+            None => diff_state_model.update(ctx, |model, ctx| {
+                model.set_diff_mode(mode, false, true, None, ctx);
+            }),
         }
     }
 
@@ -26503,6 +26554,13 @@ impl TypedActionView for Workspace {
             #[cfg(feature = "local_fs")]
             FileDeleted { path } => {
                 self.close_tabs_with_file_path(path, ctx);
+            }
+            #[cfg(feature = "local_fs")]
+            CompareWithRevisionInCodeReview {
+                repo_root,
+                revision,
+            } => {
+                self.compare_with_revision_in_code_review(repo_root, revision, ctx);
             }
             #[cfg(debug_assertions)]
             OpenBuildPlanMigrationModal => {

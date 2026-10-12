@@ -59,6 +59,7 @@ impl FileBlame {
         self.commits.get(blame_line.commit as usize)
     }
 
+    #[cfg(test)]
     pub fn line(&self, line: usize) -> Option<BlameLine> {
         *self.lines.get(line)?
     }
@@ -68,6 +69,7 @@ impl FileBlame {
         self.lines.iter().flatten().count()
     }
 
+    #[cfg(test)]
     pub fn commits(&self) -> &[BlameCommit] {
         &self.commits
     }

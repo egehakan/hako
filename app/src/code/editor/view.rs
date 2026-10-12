@@ -896,6 +896,23 @@ impl CodeEditorView {
         ))
     }
 
+    /// Where the annotation drawn after `line` starts, relative to this view: a box of no width
+    /// as tall as the visual row the annotation is on.
+    pub fn trailing_annotation_bounds_in_viewport(
+        &self,
+        line: LineCount,
+        app: &AppContext,
+    ) -> Option<RectF> {
+        let line_end = self.line_end_bounds_in_viewport(line, app)?;
+        Some(RectF::new(
+            vec2f(
+                line_end.max_x() + super::element::TRAILING_ANNOTATION_GAP,
+                line_end.origin_y(),
+            ),
+            vec2f(0.0, line_end.height()),
+        ))
+    }
+
     fn gutter_width(&self) -> f32 {
         if self.display_options.show_line_numbers {
             super::element::GUTTER_WIDTH
