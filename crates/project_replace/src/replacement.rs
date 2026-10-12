@@ -86,7 +86,7 @@ fn split_text(text: &str) -> (Vec<String>, Option<char>) {
             Some(next) => next.is_lowercase(),
             None => !current_part
                 .chars()
-                .last()
+                .next_back()
                 .is_some_and(|previous| previous.is_uppercase()),
         };
         if starts_new_part {

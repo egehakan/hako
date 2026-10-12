@@ -1004,7 +1004,9 @@ impl GlobalBufferModel {
         });
 
         let text = buffer.as_ref(ctx).text().into_string();
-        if save {
+        // Edits that change nothing leave the buffer at its version, which a save under the new
+        // one would put out of step with the file for good.
+        if save && text != expected_text {
             let content = buffer.as_ref(ctx).text_with_line_ending().into_string();
             if let Err(err) = self.save(file_id, content, new_version, ctx) {
                 log::warn!("could not save a buffer after applying edits to it: {err}");

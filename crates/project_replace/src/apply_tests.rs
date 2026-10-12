@@ -805,3 +805,22 @@ fn many_files_are_replaced_without_leaving_anything_behind() {
         }
     );
 }
+
+#[test]
+fn a_replacement_equal_to_the_match_changes_nothing() {
+    let project = Project::new();
+    project.write("file.txt", "foo\n");
+    let open = project.write("open.txt", "foo\n");
+    let spec = literal("foo");
+    let targets = project.search_all(&spec, &["file.txt", "open.txt"]);
+
+    let mut request = project.request(&spec, "foo", targets);
+    request.open_buffers = vec![open_buffer(&open, "foo\n", false)];
+    let outcome = project.replace(&request);
+
+    assert!(outcome.replaced.is_empty());
+    assert!(outcome.buffer_edits.is_empty());
+    assert!(outcome.skipped.is_empty());
+    assert!(!finish(outcome).can_undo);
+    assert!(project.journal.latest().unwrap().is_none());
+}

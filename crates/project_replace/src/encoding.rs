@@ -63,7 +63,7 @@ fn decode_utf8(bytes: &[u8]) -> Result<String, DecodeError> {
 }
 
 fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> Result<String, DecodeError> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(DecodeError::UnsupportedEncoding);
     }
     let units = bytes.chunks_exact(2).map(|pair| unit([pair[0], pair[1]]));

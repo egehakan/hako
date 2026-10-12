@@ -300,7 +300,12 @@ fn replace_on_disk(
         return Ok(0);
     }
 
-    let new_bytes = encode(&apply_edits(&decoded.text, &edits), decoded.encoding);
+    let new_text = apply_edits(&decoded.text, &edits);
+    // A replacement equal to what it replaces leaves nothing to write, or to undo.
+    if new_text == decoded.text {
+        return Ok(0);
+    }
+    let new_bytes = encode(&new_text, decoded.encoding);
     if !stamp.still_matches(&target.path) {
         return Err(SkipReason::ChangedDuringReplace);
     }
@@ -349,7 +354,7 @@ fn plan_buffer_edits(
         .map_err(|err| SkipReason::SearchFailed(err.to_string()))?;
     let mut edits = plan_edits(&found, &target.expectation, true)
         .map_err(|_| SkipReason::ChangedSinceSearch)?;
-    if edits.is_empty() {
+    if edits.is_empty() || apply_edits(searched, &edits) == searched {
         return Ok(None);
     }
     for edit in &mut edits {

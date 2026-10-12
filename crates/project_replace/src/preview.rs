@@ -28,17 +28,16 @@ pub struct Previewer {
 
 impl Previewer {
     pub fn new(search: &SearchSpec, replace: &ReplaceSpec) -> Self {
-        let matcher = search
-            .use_regex
-            .then(|| {
-                build_matcher(
-                    &[search.effective_pattern()],
-                    search.ignore_case(),
-                    search.is_multiline(),
-                )
-                .ok()
-            })
-            .flatten();
+        let matcher = if search.use_regex {
+            build_matcher(
+                &[search.effective_pattern()],
+                search.ignore_case(),
+                search.is_multiline(),
+            )
+            .ok()
+        } else {
+            None
+        };
         Self {
             matcher,
             replacement: replace.replacement.clone(),

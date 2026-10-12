@@ -317,6 +317,7 @@ impl GlobalSearch {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_local_search(
         &mut self,
         search_id: u32,

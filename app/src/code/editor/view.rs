@@ -2025,12 +2025,16 @@ impl CodeEditorView {
             let character_in =
                 |range: Range<CharOffset>| buffer.text_in_range(range).into_string().chars().next();
             // The pattern may depend on the characters next to the match, as `\b` and `^` do.
-            let before = (match_range.start > CharOffset::from(1))
-                .then(|| character_in(match_range.start - 1..match_range.start))
-                .flatten();
-            let after = (match_range.end < buffer.max_charoffset())
-                .then(|| character_in(match_range.end..match_range.end + 1))
-                .flatten();
+            let before = if match_range.start > CharOffset::from(1) {
+                character_in(match_range.start - 1..match_range.start)
+            } else {
+                None
+            };
+            let after = if match_range.end < buffer.max_charoffset() {
+                character_in(match_range.end..match_range.end + 1)
+            } else {
+                None
+            };
             let matched = buffer.text_in_range(match_range.clone()).into_string();
             expander.expand(before, &matched, after, replace_query)
         });
