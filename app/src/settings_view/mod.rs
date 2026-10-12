@@ -544,6 +544,7 @@ pub mod flags {
     pub const MATCH_NOTEBOOK_FONT_SIZE_TO_TERMINAL_FONT_SIZE_FLAG: &str =
         "Match_Notebook_Font_Size_To_Terminal_Font_Size";
     pub const QUIT_WARNING_MODAL: &str = "Quit_Warning_Modal";
+    pub const CONFIRM_BEFORE_CLOSING: &str = "Confirm_Before_Closing";
     pub const BLOCK_DIVIDERS_CONTEXT_FLAG: &str = "Block_Dividers_Enabled";
 
     pub const LOG_OUT_WARNING_MODAL: &str = "Log_Out_Warning_Modal";

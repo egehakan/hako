@@ -83,8 +83,8 @@ use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
 };
 use crate::terminal::general_settings::{
-    GeneralSettings, LinkTooltip, LoginItem, QuitOnLastWindowClosed, RestoreSession,
-    ShowWarningBeforeQuitting,
+    ConfirmBeforeClosing, GeneralSettings, LinkTooltip, LoginItem, QuitOnLastWindowClosed,
+    RestoreSession, ShowWarningBeforeQuitting,
 };
 use crate::terminal::input::OPEN_COMPLETIONS_KEYBINDING_NAME;
 use crate::terminal::keys_settings::{
@@ -413,6 +413,21 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         .with_enabled(|| FeatureFlag::HOANotifications.is_enabled()),
     );
 
+    toggle_binding_pairs.push(
+        ToggleSettingActionPair::new(
+            "always confirm before closing",
+            builder(SettingsAction::FeaturesPageToggle(
+                FeaturesPageAction::ToggleConfirmBeforeClosing,
+            )),
+            context,
+            flags::CONFIRM_BEFORE_CLOSING,
+        )
+        .is_supported_on_current_platform(
+            GeneralSettings::as_ref(app)
+                .confirm_before_closing
+                .is_supported_on_current_platform(),
+        ),
+    );
     toggle_binding_pairs.push(
         ToggleSettingActionPair::new(
             "quit warning modal",
@@ -803,6 +818,7 @@ pub enum FeaturesPageAction {
     ToggleNotificationSound,
     SetNotificationToastDuration,
     ToggleShowWarningBeforeQuitting,
+    ToggleConfirmBeforeClosing,
     ToggleLoginItem,
     ToggleQuitOnLastWindowClosed,
     ToggleSmartSelection,
@@ -1164,6 +1180,10 @@ impl FeaturesPageAction {
                         .notifications
                         .play_notification_sound,
                 ),
+            },
+            Self::ToggleConfirmBeforeClosing => TelemetryEvent::FeaturesPageAction {
+                action: "ToggleConfirmBeforeClosing".to_string(),
+                value: to_string(*GeneralSettings::as_ref(ctx).confirm_before_closing.value()),
             },
             Self::ToggleShowWarningBeforeQuitting => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleShowWarningBeforeQuitting".to_string(),
@@ -1945,6 +1965,11 @@ impl TypedActionView for FeaturesPageView {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.link_tooltip.toggle_and_save_value(ctx));
                 });
+            }
+            ToggleConfirmBeforeClosing => {
+                GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.confirm_before_closing.toggle_and_save_value(ctx));
+                })
             }
             ToggleShowWarningBeforeQuitting => {
                 GeneralSettings::handle(ctx).update(ctx, |warning_settings, ctx| {
@@ -2801,6 +2826,13 @@ impl FeaturesPageView {
             .is_supported_on_current_platform()
         {
             general_widgets.push(Box::new(QuitWarningModalWidget::default()));
+        }
+
+        if general_settings
+            .confirm_before_closing
+            .is_supported_on_current_platform()
+        {
+            general_widgets.push(Box::new(ConfirmBeforeClosingWidget::default()));
         }
 
         if general_settings
@@ -4872,6 +4904,56 @@ impl SettingsWidget for QuitWarningModalWidget {
                 })
                 .finish(),
             None,
+        )
+    }
+}
+
+#[derive(Default)]
+struct ConfirmBeforeClosingWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for ConfirmBeforeClosingWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "always confirm before closing warning dialog close pane tab group folder window terminal"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let general_settings = GeneralSettings::as_ref(app);
+        render_body_item::<FeaturesPageAction>(
+            "Always confirm before closing".into(),
+            None,
+            LocalOnlyIconState::for_setting(
+                ConfirmBeforeClosing::storage_key(),
+                ConfirmBeforeClosing::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*general_settings.confirm_before_closing)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(FeaturesPageAction::ToggleConfirmBeforeClosing);
+                })
+                .finish(),
+            Some(
+                "Closing a pane, a tab, several tabs, a tab group or a window asks first, whether or not a command is running. When off, Warp only warns about running commands, shared sessions and unsaved files."
+                    .into(),
+            ),
         )
     }
 }

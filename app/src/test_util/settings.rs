@@ -84,6 +84,14 @@ pub fn initialize_settings_for_tests_with_mode(
 
     FontSettings::register(app);
     GeneralSettings::register(app);
+    // Tests close tabs and panes directly; those about the confirmation turn it back on.
+    app.update(|ctx| {
+        use settings::Setting as _;
+        use warpui::SingletonEntity as _;
+        GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
+            let _ = settings.confirm_before_closing.set_value(false, ctx);
+        });
+    });
     GPUSettings::register(app);
     InputModeSettings::register(app);
     InputSettings::register(app);

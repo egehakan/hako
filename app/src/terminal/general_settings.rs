@@ -17,6 +17,16 @@ define_settings_group!(GeneralSettings, settings: [
         toml_path: "general.show_warning_before_quitting",
         description: "Whether to show a warning dialog before quitting Warp.",
     },
+    confirm_before_closing: ConfirmBeforeClosing {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "general.confirm_before_closing",
+        description: "Whether closing a pane, tab, tab group or window always asks for confirmation first.",
+    },
     quit_on_last_window_closed: QuitOnLastWindowClosed {
         type: bool,
         default: false,
