@@ -49,6 +49,11 @@ impl<K: Hash + Eq + Clone, V> ByteBudgetCache<K, V> {
         self.entries.contains_key(key)
     }
 
+    /// Every entry, in no particular order and without affecting what gets evicted next.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.entries.iter().map(|(key, entry)| (key, &entry.value))
+    }
+
     /// Stores `value`, then evicts the least recently used entries until the budget holds. The
     /// entry just stored is never evicted, so one oversized value can still be shown.
     pub fn insert(&mut self, key: K, value: V, bytes: usize) {

@@ -172,3 +172,15 @@ fn zoom_is_shown_as_a_percentage() {
     assert_eq!(format_zoom(0.333), "33%");
     assert_eq!(format_zoom(0.05), "5.0%");
 }
+
+#[test]
+fn a_wheel_scrolls_against_its_delta() {
+    assert_eq!(
+        wheel_scroll(Offset::new(3., -12.), true),
+        Offset::new(-3., 12.)
+    );
+    assert_eq!(
+        wheel_scroll(Offset::new(0., 1.), false),
+        Offset::new(0., -40.)
+    );
+}

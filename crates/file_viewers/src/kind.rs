@@ -18,8 +18,12 @@ const SYSTEM_IMAGE_EXTENSIONS: &[&str] = &["heic", "heif", "avif", "icns"];
 const TABLE_EXTENSIONS: &[&str] = &["csv", "tsv"];
 
 const OFFICE_EXTENSIONS: &[&str] = &[
-    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "rtf", "odt", "pages", "numbers", "key",
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "rtf", "odt", "pages", "numbers",
 ];
+
+/// Extension of Keynote presentations, and of private keys in text form. It only counts as a
+/// document together with the content of one.
+const KEYNOTE_EXTENSION: &str = "key";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewerKind {
@@ -105,8 +109,15 @@ pub fn classify_content(path: &Path, head: &[u8]) -> Option<ViewerKind> {
         return Some(kind);
     }
     let binary = is_binary(head);
+    let is_keynote = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(KEYNOTE_EXTENSION))
+        && head.starts_with(ZIP_MAGIC);
+    if is_keynote && let Some(kind) = ViewerKind::Office.only_on_macos() {
+        return Some(kind);
+    }
     match ViewerKind::for_extension(path) {
-        Some(ViewerKind::Office) => Some(ViewerKind::Office),
+        Some(ViewerKind::Office) if is_document_container(head) => Some(ViewerKind::Office),
         // An image or PDF extension on a text file is a placeholder (a Git LFS pointer, an empty
         // file), which is only readable as text.
         Some(ViewerKind::Image | ViewerKind::Pdf) if binary => ViewerKind::for_extension(path),
@@ -116,10 +127,22 @@ pub fn classify_content(path: &Path, head: &[u8]) -> Option<ViewerKind> {
             | ViewerKind::Pdf
             | ViewerKind::Svg
             | ViewerKind::Table
+            | ViewerKind::Office
             | ViewerKind::Binary,
         )
         | None => binary.then_some(ViewerKind::Binary),
     }
+}
+
+const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
+
+/// Whether `head` starts one of the containers office documents come in: a ZIP archive, an
+/// OLE compound file or rich text. A file named like a document that holds something else is
+/// treated as what it holds.
+fn is_document_container(head: &[u8]) -> bool {
+    head.starts_with(ZIP_MAGIC)
+        || head.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+        || head.starts_with(b"{\\rtf")
 }
 
 fn read_head(path: &Path) -> Option<Vec<u8>> {

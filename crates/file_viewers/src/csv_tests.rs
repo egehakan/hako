@@ -184,3 +184,56 @@ fn a_large_table_is_indexed_without_copying_its_cells() {
     assert_eq!(table.row_count(), 50_000);
     assert_eq!(row(&table, 49_999), vec!["49999", "row 49999"]);
 }
+
+#[test]
+fn rows_scroll_whole() {
+    let mut scroll = GridScroll::default();
+    let scroll_down = |scroll: &mut GridScroll, pixels: f32| {
+        scroll.scroll_by(0., pixels, 20., 100, 10, 0.);
+    };
+
+    scroll_down(&mut scroll, 15.);
+    assert_eq!(scroll.top_row, 0);
+    scroll_down(&mut scroll, 15.);
+    assert_eq!(scroll.top_row, 1);
+    scroll_down(&mut scroll, 50.);
+    assert_eq!(scroll.top_row, 4);
+    scroll_down(&mut scroll, -45.);
+    assert_eq!(scroll.top_row, 2);
+}
+
+#[test]
+fn scrolling_stops_at_the_first_and_last_rows() {
+    let mut scroll = GridScroll::default();
+    scroll.scroll_by(0., -500., 20., 100, 10, 0.);
+    assert_eq!(scroll.top_row, 0);
+    // Nothing is owed after hitting the top: the next scroll down moves at once.
+    scroll.scroll_by(0., 20., 20., 100, 10, 0.);
+    assert_eq!(scroll.top_row, 1);
+
+    scroll.scroll_by(0., 1e6, 20., 100, 10, 0.);
+    assert_eq!(scroll.top_row, 90);
+
+    let mut short_table = GridScroll::default();
+    short_table.scroll_by(0., 400., 20., 3, 10, 0.);
+    assert_eq!(short_table.top_row, 0);
+}
+
+#[test]
+fn horizontal_scroll_is_clamped() {
+    let mut scroll = GridScroll::default();
+    scroll.scroll_by(120., 0., 20., 100, 10, 300.);
+    assert_eq!(scroll.x, 120.);
+    scroll.scroll_by(500., 0., 20., 100, 10, 300.);
+    assert_eq!(scroll.x, 300.);
+    scroll.scroll_by(-900., 0., 20., 100, 10, 300.);
+    assert_eq!(scroll.x, 0.);
+}
+
+#[test]
+fn counts_the_rows_that_fit_under_the_header() {
+    assert_eq!(visible_rows(240., 24.), 9);
+    assert_eq!(visible_rows(250., 24.), 9);
+    assert_eq!(visible_rows(10., 24.), 0);
+    assert_eq!(visible_rows(240., 0.), 0);
+}

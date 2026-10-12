@@ -134,6 +134,41 @@ fn pdf_and_office_files_are_recognised() {
         classify_content(Path::new("book.xlsx"), b"PK\x03\x04\x14\0\x06\0"),
         Some(ViewerKind::Office)
     );
+    assert_eq!(
+        classify_content(
+            Path::new("old.doc"),
+            b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\0\0"
+        ),
+        Some(ViewerKind::Office)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_document_extension_on_other_content_does_not_get_the_document_viewer() {
+    assert_eq!(
+        classify_content(Path::new("notes.docx"), b"just text"),
+        None
+    );
+    assert_eq!(
+        classify_content(Path::new("blob.xlsx"), b"\0\x01\x02\x03"),
+        Some(ViewerKind::Binary)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_key_file_is_a_presentation_only_when_it_holds_one() {
+    let private_key = b"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n";
+    assert_eq!(
+        classify_content(Path::new("id_ed25519.key"), private_key),
+        None
+    );
+    assert_eq!(
+        classify_content(Path::new("deck.key"), b"PK\x03\x04\x14\0\x08\0"),
+        Some(ViewerKind::Office)
+    );
+    assert!(!opens_in_viewer(Path::new("deck.key")));
 }
 
 #[test]

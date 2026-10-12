@@ -238,6 +238,17 @@ pub fn wheel_zoom_factor(delta: f32) -> f32 {
     (delta * WHEEL_ZOOM_RATE).clamp(-1., 1.).exp()
 }
 
+/// How far a notch of a wheel that reports lines scrolls, in logical pixels.
+const WHEEL_LINE: f32 = 40.;
+
+/// The distance to scroll for a wheel event, in logical pixels to the right and down. A wheel
+/// reports how the content should move, which is the opposite way, and a wheel without
+/// precise deltas reports lines.
+pub fn wheel_scroll(delta: Offset, precise: bool) -> Offset {
+    let unit = if precise { 1. } else { WHEEL_LINE };
+    Offset::new(-delta.x * unit, -delta.y * unit)
+}
+
 /// Rounds a logical coordinate to the device pixel grid. Tiles that share an edge get the same
 /// rounded coordinate for it, so no gap opens between them.
 pub fn snap_to_device_pixels(value: f32, device_scale: f32) -> f32 {

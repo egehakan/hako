@@ -321,6 +321,59 @@ pub fn max_scroll_x(widths: &[f32], viewport_width: f32) -> f32 {
     (widths.iter().sum::<f32>() - viewport_width).max(0.)
 }
 
+/// How far a table is scrolled. Rows scroll whole, so that the header and the row numbers
+/// never show a row cut in half.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GridScroll {
+    /// Index of the first row shown.
+    pub top_row: usize,
+    /// Scroll distance not yet amounting to a whole row, in pixels.
+    pending_y: f32,
+    /// Horizontal scroll, in pixels.
+    pub x: f32,
+}
+
+impl GridScroll {
+    /// Scrolls by `delta_x` pixels to the right and `delta_y` pixels down, within a table of
+    /// `row_count` rows of `row_height` pixels of which `visible_rows` fit in the viewport.
+    pub fn scroll_by(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        row_height: f32,
+        row_count: usize,
+        visible_rows: usize,
+        max_x: f32,
+    ) {
+        self.x = (self.x + delta_x).clamp(0., max_x.max(0.));
+        if row_height <= 0. {
+            return;
+        }
+
+        self.pending_y += delta_y;
+        let rows = (self.pending_y / row_height).trunc();
+        self.pending_y -= rows * row_height;
+        let last_top_row = row_count.saturating_sub(visible_rows.max(1)) as f32;
+        let top_row = (self.top_row as f32 + rows).clamp(0., last_top_row);
+        // Distance scrolled into an edge does not have to be scrolled back out of it.
+        let into_top = top_row == 0. && self.pending_y < 0.;
+        let into_bottom = top_row == last_top_row && self.pending_y > 0.;
+        if into_top || into_bottom {
+            self.pending_y = 0.;
+        }
+        self.top_row = top_row as usize;
+    }
+}
+
+/// How many rows of `row_height` pixels are fully visible in `height` pixels under a header
+/// row of the same height.
+pub fn visible_rows(height: f32, row_height: f32) -> usize {
+    if row_height <= 0. {
+        return 0;
+    }
+    ((height / row_height).floor() as usize).saturating_sub(1)
+}
+
 #[cfg(test)]
 #[path = "csv_tests.rs"]
 mod tests;

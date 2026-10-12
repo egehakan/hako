@@ -39,6 +39,17 @@ fn an_oversized_entry_is_kept_alone() {
 }
 
 #[test]
+fn iterates_over_every_entry() {
+    let mut cache = ByteBudgetCache::new(100);
+    cache.insert("a", 1, 10);
+    cache.insert("b", 2, 10);
+
+    let mut entries: Vec<(&str, i32)> = cache.iter().map(|(key, value)| (*key, *value)).collect();
+    entries.sort();
+    assert_eq!(entries, vec![("a", 1), ("b", 2)]);
+}
+
+#[test]
 fn replacing_an_entry_updates_the_accounting() {
     let mut cache = ByteBudgetCache::new(100);
     cache.insert("a", 1, 60);

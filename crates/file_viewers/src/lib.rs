@@ -20,6 +20,7 @@ pub mod pdf;
 #[cfg(target_os = "macos")]
 mod process;
 pub mod quick_look;
+pub mod scene;
 pub mod svg;
 
 /// Runs `work` on its own thread and resolves to its result, or to `None` if it panicked.
