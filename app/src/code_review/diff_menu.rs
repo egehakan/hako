@@ -32,7 +32,7 @@ use crate::editor::{
 };
 use crate::ui_components::icons::Icon;
 
-const MENU_WIDTH: f32 = 420.;
+const MENU_WIDTH: f32 = 480.;
 const MENU_MAX_LIST_HEIGHT: f32 = 320.;
 const MENU_CORNER_RADIUS: f32 = 6.;
 const ROW_HORIZONTAL_PADDING: f32 = 14.;
@@ -47,8 +47,7 @@ const COMPARISON_BUTTON_CORNER_RADIUS: f32 = 4.;
 
 const NO_MATCHES_NOTE: &str = "No matches";
 const LOADING_REVISIONS_NOTE: &str = "Listing remote branches, tags and commits\u{2026}";
-const MERGE_BASE_TOOLTIP: &str =
-    "Changes since the working tree's branch and the picked one diverged (git diff $(git merge-base HEAD <revision>))";
+const MERGE_BASE_TOOLTIP: &str = "Changes since the working tree's branch and the picked one diverged (git diff $(git merge-base HEAD <revision>))";
 const DIRECT_TOOLTIP: &str =
     "Everything that differs from the picked revision itself (git diff <revision>)";
 
@@ -583,9 +582,12 @@ impl CodeReviewDiffMenu {
 
         Container::new(
             Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(caption)
-                .with_child(self.render_comparison_button(RevisionComparison::MergeBase, appearance))
+                .with_child(
+                    self.render_comparison_button(RevisionComparison::MergeBase, appearance),
+                )
                 .with_child(self.render_comparison_button(RevisionComparison::Direct, appearance))
                 .finish(),
         )
@@ -641,24 +643,20 @@ impl CodeReviewDiffMenu {
         let displayed_rows = self.displayed_rows();
         let row_count = displayed_rows.len();
 
-        let list = UniformList::new(
-            self.list_state.clone(),
-            row_count,
-            move |mut range, app| {
-                let appearance = Appearance::as_ref(app);
-                range.end = cmp::min(range.end, row_count);
-                range
-                    .map(|row_index| {
-                        displayed_rows[row_index].render(
-                            row_index,
-                            selected == Some(row_index),
-                            appearance,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            },
-        );
+        let list = UniformList::new(self.list_state.clone(), row_count, move |mut range, app| {
+            let appearance = Appearance::as_ref(app);
+            range.end = cmp::min(range.end, row_count);
+            range
+                .map(|row_index| {
+                    displayed_rows[row_index].render(
+                        row_index,
+                        selected == Some(row_index),
+                        appearance,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+        });
 
         let scrollable = Scrollable::vertical(
             self.scroll_state.clone(),
@@ -694,7 +692,12 @@ enum DisplayedRow {
 impl DisplayedRow {
     /// Every kind of row is one line of text at the same size, which keeps the rows of the list
     /// the same height.
-    fn render(&self, row_index: usize, is_focused: bool, appearance: &Appearance) -> Box<dyn Element> {
+    fn render(
+        &self,
+        row_index: usize,
+        is_focused: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
         let theme = appearance.theme();
         let font_family = appearance.ui_font_family();
         let font_size = appearance.ui_font_size();

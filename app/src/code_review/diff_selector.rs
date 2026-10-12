@@ -167,7 +167,10 @@ pub fn build_diff_targets(sources: DiffTargetSources<'_>) -> Vec<DiffTarget> {
     }
     if let Some(revisions) = revisions {
         let groups = [
-            (&revisions.remote_branches, DiffTargetSection::RemoteBranches),
+            (
+                &revisions.remote_branches,
+                DiffTargetSection::RemoteBranches,
+            ),
             (&revisions.tags, DiffTargetSection::Tags),
             (&revisions.commits, DiffTargetSection::Commits),
         ];
@@ -207,7 +210,12 @@ pub fn build_diff_targets(sources: DiffTargetSources<'_>) -> Vec<DiffTarget> {
                 | DiffTargetBase::Branch(name)
                 | DiffTargetBase::Revision(name) => display_revision(name),
             };
-            targets.push(target(label, None, DiffTargetSection::WorkingTree, base.clone()));
+            targets.push(target(
+                label,
+                None,
+                DiffTargetSection::WorkingTree,
+                base.clone(),
+            ));
         }
     }
     targets.extend(listed);
@@ -228,7 +236,7 @@ pub struct DiffSelectorContent {
     pub is_loading_revisions: bool,
 }
 
-const BUTTON_LABEL_MAX_WIDTH: f32 = 240.;
+const BUTTON_LABEL_MAX_WIDTH: f32 = 320.;
 const RESET_TOOLTIP: &str = "Back to uncommitted changes";
 const MENU_OFFSET_Y: f32 = 4.;
 const BUTTON_CORNER_RADIUS: f32 = 4.;

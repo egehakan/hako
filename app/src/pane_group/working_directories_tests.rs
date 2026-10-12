@@ -10,6 +10,7 @@ use warpui::{App, EntityId};
 
 use super::PaneGroupRepositoryRoots;
 use crate::code::buffer_location::LocalOrRemotePath;
+use crate::code_review::diff_state::{DiffMode, RevisionComparison};
 use crate::pane_group::WorkingDirectoriesModel;
 
 fn local(path: &std::path::Path) -> LocalOrRemotePath {
@@ -548,6 +549,75 @@ fn diff_state_model_is_dropped_when_no_pane_group_references_repo() {
         assert_ne!(
             initial_id, after_id,
             "DiffStateModel should be dropped and re-created when no pane group references the repo"
+        );
+    });
+}
+
+/// A repository's comparison base outlives its `DiffStateModel`: the model created when the
+/// repository is visited again starts in the same diff mode.
+#[test]
+fn diff_mode_is_remembered_after_the_diff_state_model_is_dropped() {
+    App::test((), |mut app| async move {
+        let detected_repos = app.add_singleton_model(|_| DetectedRepositories::default());
+
+        let pane_group = EntityId::new();
+        let terminal = EntityId::new();
+
+        let (_temp_dir, repo_path, canonical_repo, working_directories_handle) =
+            setup_repo(&mut app, &detected_repos);
+
+        let visit = |app: &mut App| {
+            working_directories_handle.update(app, |model, ctx| {
+                model.refresh_working_directories_for_pane_group(
+                    pane_group,
+                    vec![(terminal, LocalOrRemotePath::Local(repo_path.clone()))],
+                    vec![],
+                    Some(terminal),
+                    ctx,
+                );
+                model
+                    .get_or_create_diff_state_model(local(&canonical_repo), None, ctx)
+                    .expect("local diff state model must be created")
+            })
+        };
+        let leave = |app: &mut App| {
+            working_directories_handle.update(app, |model, ctx| {
+                model.refresh_working_directories_for_pane_group(
+                    pane_group,
+                    vec![],
+                    vec![],
+                    None,
+                    ctx,
+                );
+            });
+        };
+
+        let compared_with_tag = DiffMode::Revision {
+            rev: "v1.0".to_string(),
+            comparison: RevisionComparison::Direct,
+        };
+        let first = visit(&mut app);
+        first.update(&mut app, |model, ctx| {
+            model.restore_diff_mode(compared_with_tag.clone(), ctx);
+        });
+        leave(&mut app);
+
+        let second = visit(&mut app);
+        assert_ne!(first.id(), second.id());
+        assert_eq!(
+            second.read(&app, |model, ctx| model.diff_mode(ctx)),
+            compared_with_tag
+        );
+
+        // Going back to the uncommitted changes is remembered as well.
+        second.update(&mut app, |model, ctx| {
+            model.restore_diff_mode(DiffMode::Head, ctx);
+        });
+        leave(&mut app);
+        let third = visit(&mut app);
+        assert_eq!(
+            third.read(&app, |model, ctx| model.diff_mode(ctx)),
+            DiffMode::Head
         );
     });
 }

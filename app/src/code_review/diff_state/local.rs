@@ -1659,10 +1659,7 @@ impl LocalDiffStateModel {
                     .await
             }
             DiffMode::Revision { rev, comparison } => {
-                match Self::resolve_revision_base(&repo_path, &rev, comparison).await {
-                    Ok(base) => Self::diff_state_against_commit(&repo_path, &base).await,
-                    Err(err) => Err(err),
-                }
+                Self::diff_state_against_revision(&repo_path, &rev, comparison).await
             }
         };
 
@@ -2129,6 +2126,17 @@ impl LocalDiffStateModel {
         Self::diff_state_against_commit(repo_path, &merge_base).await
     }
 
+    /// Diff of the working directory against a revision. Unlike a branch whose merge base cannot
+    /// be determined, a revision that does not resolve is an error: it was asked for by name.
+    async fn diff_state_against_revision(
+        repo_path: &Path,
+        rev: &str,
+        comparison: RevisionComparison,
+    ) -> Result<GitDiffWithBaseContent> {
+        let base = Self::resolve_revision_base(repo_path, rev, comparison).await?;
+        Self::diff_state_against_commit(repo_path, &base).await
+    }
+
     /// Diff of the working directory against the commit `base`.
     async fn diff_state_against_commit(
         repo_path: &Path,
@@ -2155,14 +2163,9 @@ impl LocalDiffStateModel {
 
         for (file_path, status) in changed_files {
             let is_binary = binary_files.contains(&file_path);
-            let file_diff = Self::file_diff_for_path(
-                is_binary,
-                repo_path,
-                &file_path,
-                &status,
-                Some(base),
-            )
-            .await?;
+            let file_diff =
+                Self::file_diff_for_path(is_binary, repo_path, &file_path, &status, Some(base))
+                    .await?;
 
             if let Some(file_diff) = file_diff {
                 total_additions += file_diff.file_diff.additions();
