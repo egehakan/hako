@@ -5792,3 +5792,56 @@ fn test_files_from_the_code_review_panel_open_beside_it() {
         ));
     }
 }
+
+#[test]
+fn test_side_panels_are_never_both_open() {
+    assert_eq!(exclusive_side_panels(false, false), (false, false));
+    assert_eq!(exclusive_side_panels(true, false), (true, false));
+    assert_eq!(exclusive_side_panels(false, true), (false, true));
+    assert_eq!(
+        exclusive_side_panels(true, true),
+        (true, false),
+        "a saved state with both open keeps only the tools panel"
+    );
+}
+
+#[test]
+fn test_restored_tools_panel_view_falls_back_to_the_project_explorer() {
+    let search = ToolPanelView::GlobalSearch {
+        entry_focus: GlobalSearchEntryFocus::Results,
+    };
+    let available = [
+        ToolPanelView::ProjectExplorer,
+        search,
+        ToolPanelView::WarpDrive,
+    ];
+
+    assert_eq!(
+        tool_panel_view_to_restore(ToolPanelView::WarpDrive, &available),
+        Some(ToolPanelView::WarpDrive)
+    );
+    assert_eq!(
+        tool_panel_view_to_restore(
+            ToolPanelView::GlobalSearch {
+                entry_focus: GlobalSearchEntryFocus::QueryEditor,
+            },
+            &available
+        ),
+        Some(ToolPanelView::GlobalSearch {
+            entry_focus: GlobalSearchEntryFocus::QueryEditor,
+        })
+    );
+    assert_eq!(
+        tool_panel_view_to_restore(ToolPanelView::ConversationListView, &available),
+        Some(ToolPanelView::ProjectExplorer),
+        "the conversation list is no longer offered as a tools panel view"
+    );
+    assert_eq!(
+        tool_panel_view_to_restore(ToolPanelView::ConversationListView, &[search]),
+        Some(search)
+    );
+    assert_eq!(
+        tool_panel_view_to_restore(ToolPanelView::ConversationListView, &[]),
+        None
+    );
+}

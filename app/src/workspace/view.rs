@@ -821,6 +821,12 @@ pub enum PanelPosition {
     Right,
 }
 
+/// Resolves which of a tab's two side panels are open, as `(tools, code review)`. They are never
+/// shown together, so a state that has both keeps only the tools panel.
+fn exclusive_side_panels(tools_open: bool, code_review_open: bool) -> (bool, bool) {
+    (tools_open, code_review_open && !tools_open)
+}
+
 /// Side of the pane group on which a file gets its split pane, so that it opens next to the
 /// side panel it was picked in: `origin_panel` when the caller names where that panel sits, the
 /// tools panel for a file from the Project Explorer or global search, and otherwise the right.
@@ -4186,7 +4192,13 @@ impl Workspace {
                             self.restore_left_panel_for_tab(&pane_group, left_panel_snapshot, ctx);
                         }
 
-                        if let Some(right_panel_snapshot) = &saved_tab.right_panel {
+                        let (_, restores_code_review) = exclusive_side_panels(
+                            saved_tab.left_panel.is_some(),
+                            saved_tab.right_panel.is_some(),
+                        );
+                        if restores_code_review
+                            && let Some(right_panel_snapshot) = &saved_tab.right_panel
+                        {
                             self.restore_right_panel_for_tab(
                                 &pane_group,
                                 right_panel_snapshot,
@@ -4301,7 +4313,9 @@ impl Workspace {
                 if self.left_panel_visibility_across_tabs_enabled(ctx) {
                     self.left_panel_open = left_panel_open;
                 }
-                if right_panel_open {
+                let (_, restores_code_review) =
+                    exclusive_side_panels(left_panel_open, right_panel_open);
+                if restores_code_review {
                     self.right_panel_view.update(ctx, |rp, ctx| {
                         rp.set_maximized(is_right_panel_maximized, ctx);
                     });
@@ -4415,6 +4429,15 @@ impl Workspace {
             handle.set_size(left_panel_snapshot.width as f32);
         }
 
+        let saved_view = match left_panel_snapshot.left_panel_displayed_tab {
+            LeftPanelDisplayedTab::FileTree => ToolPanelView::ProjectExplorer,
+            LeftPanelDisplayedTab::GlobalSearch => ToolPanelView::GlobalSearch {
+                entry_focus: GlobalSearchEntryFocus::Results,
+            },
+            LeftPanelDisplayedTab::WarpDrive => ToolPanelView::WarpDrive,
+            LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
+        };
+        let active_view = tool_panel_view_to_restore(saved_view, &self.left_panel_views);
         self.left_panel_view.update(ctx, |lp, ctx| {
             // Restore which panel tab was active
             let active_view = match left_panel_snapshot.left_panel_displayed_tab {
@@ -9984,6 +10007,29 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Closes the code review panel of `pane_group` because its tools panel opened: the two are
+    /// never shown together. Focus is left where opening the tools panel put it.
+    fn close_right_panel_for_tools_panel(
+        &mut self,
+        pane_group: &ViewHandle<PaneGroup>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !pane_group.as_ref(ctx).right_panel_open {
+            return;
+        }
+        pane_group.update(ctx, |pane_group, ctx| {
+            pane_group.right_panel_open = false;
+            ctx.notify();
+        });
+        // The panel view is shared by every tab and follows the active one.
+        if pane_group.id() == self.active_tab_pane_group().id() {
+            self.right_panel_view.update(ctx, |view, ctx| {
+                view.close_code_review(ctx);
+            });
+        }
+        ctx.notify();
+    }
+
     fn toggle_right_panel(
         &mut self,
         pane_group_handle: &ViewHandle<PaneGroup>,
@@ -13297,10 +13343,7 @@ impl Workspace {
 
         // If the previous tab's left panel was open, maintain that state with the new tab
         // (unless we're restoring the tab from a persisted snapshot).
-        if FeatureFlag::AgentViewConversationListView.is_enabled()
-            && !is_restoration
-            && left_panel_was_open
-        {
+        if !is_restoration && left_panel_was_open {
             self.active_tab_pane_group().update(ctx, |pg, ctx| {
                 pg.set_left_panel_open(true, ctx);
             });
@@ -17547,6 +17590,9 @@ impl Workspace {
                 self.open_lsp_logs(log_path, ctx);
             }
             pane_group::Event::LeftPanelToggled { is_open } => {
+                if *is_open {
+                    self.close_right_panel_for_tools_panel(&pane_group, ctx);
+                }
                 // Only handle visibility changes from the active pane group.
                 if pane_group.id() == self.active_tab_pane_group().id() {
                     self.left_panel_open = *is_open;
