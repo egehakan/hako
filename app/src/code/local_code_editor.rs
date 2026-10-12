@@ -1380,6 +1380,9 @@ impl LocalCodeEditorView {
         ctx.subscribe_to_model(&Appearance::handle(ctx), |me, _, _, ctx| {
             me.schedule_inline_blame(ctx);
         });
+        ctx.subscribe_to_model(&CodeSettings::handle(ctx), |me, _, _, ctx| {
+            me.update_inline_blame(ctx);
+        });
 
         self.inline_blame = Some(InlineBlame {
             debounce_tx,
@@ -1469,7 +1472,7 @@ impl LocalCodeEditorView {
 
     fn inline_blame_annotation(&mut self, ctx: &mut ViewContext<Self>) -> Option<TrailingAnnotation> {
         let inline_blame = self.inline_blame.as_ref()?;
-        if !inline_blame.activated {
+        if !inline_blame.activated || !*CodeSettings::as_ref(ctx).show_inline_blame {
             return None;
         }
         let mouse_state = inline_blame.annotation_mouse_state.clone();

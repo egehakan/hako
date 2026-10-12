@@ -27357,6 +27357,9 @@ impl View for Workspace {
         if *CodeSettings::as_ref(app).open_files_in_preview_mode {
             context.set.insert(flags::OPEN_FILES_IN_PREVIEW_MODE);
         }
+        if *CodeSettings::as_ref(app).show_inline_blame {
+            context.set.insert(flags::SHOW_INLINE_BLAME);
+        }
 
         if self.team_uid(app).is_some() {
             context.set.insert("WarpDrive_BelongsToTeam");

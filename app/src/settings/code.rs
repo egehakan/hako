@@ -112,4 +112,16 @@ define_settings_group!(CodeSettings, settings: [
         toml_path: "code.editor.auto_save",
         description: "Whether the Warp text editor automatically saves changes as you type and when the editor loses focus.",
     },
+    // Controls whether the Warp text editor shows, after the line the cursor is on, who last
+    // changed that line according to git.
+    show_inline_blame: ShowInlineBlame {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "code.editor.show_inline_blame",
+        description: "Whether the Warp text editor shows who last changed the line the cursor is on, as recorded by git.",
+    },
 ]);

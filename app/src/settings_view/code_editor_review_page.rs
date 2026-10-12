@@ -90,6 +90,7 @@ impl EditorAndCodeReviewPageView {
             Box::new(OpenFilesInPreviewModeToggleWidget::default()),
             Box::new(FormatOnSaveToggleWidget::default()),
             Box::new(AutoSaveToggleWidget::default()),
+            Box::new(InlineBlameToggleWidget::default()),
         ]);
 
         PageType::new_uncategorized(widgets, Some(PageTitle::new(PAGE_TITLE)))
@@ -157,6 +158,7 @@ pub enum EditorAndCodeReviewPageAction {
     ToggleOpenFilesInPreviewMode,
     ToggleFormatOnSave,
     ToggleAutoSave,
+    ToggleInlineBlame,
     SetCodeEditorLineNumberMode(CodeEditorLineNumberMode),
 }
 
@@ -218,6 +220,12 @@ impl TypedActionView for EditorAndCodeReviewPageView {
             EditorAndCodeReviewPageAction::ToggleAutoSave => {
                 CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.auto_save.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            EditorAndCodeReviewPageAction::ToggleInlineBlame => {
+                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.show_inline_blame.toggle_and_save_value(ctx));
                 });
                 ctx.notify();
             }
@@ -353,6 +361,14 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 context,
                 flags::OPEN_FILES_IN_PREVIEW_MODE,
+            ),
+            ToggleSettingActionPair::new(
+                "inline blame for the current line",
+                builder(SettingsAction::EditorAndCodeReview(
+                    EditorAndCodeReviewPageAction::ToggleInlineBlame,
+                )),
+                context,
+                flags::SHOW_INLINE_BLAME,
             ),
         ],
         app,
@@ -760,6 +776,49 @@ impl SettingsWidget for AutoSaveToggleWidget {
                 .finish(),
             Some(
                 "Automatically saves changes in the Warp text editor as you type and when the editor loses focus."
+                    .into(),
+            ),
+        )
+    }
+}
+
+#[derive(Default)]
+struct InlineBlameToggleWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for InlineBlameToggleWidget {
+    type View = EditorAndCodeReviewPageView;
+
+    fn search_terms(&self) -> &str {
+        "inline blame git author commit current line annotation history gitlens editor"
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let code_settings = CodeSettings::as_ref(app);
+
+        render_body_item::<EditorAndCodeReviewPageAction>(
+            "Show inline blame for the current line".into(),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*code_settings.show_inline_blame)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(EditorAndCodeReviewPageAction::ToggleInlineBlame);
+                })
+                .finish(),
+            Some(
+                "In the Warp text editor, shows after the line the cursor is on who last changed it and in which commit, for files tracked by git."
                     .into(),
             ),
         )
