@@ -77,12 +77,40 @@ pub(crate) struct ClaudeLocalContinuation {
     pub(crate) command: String,
 }
 
-/// Encode a filesystem path as a Claude config directory name, matching the
-/// Claude CLI convention of replacing every `/` with `-`.
-///
-/// Example: `/Users/ben/src/foo` → `-Users-ben-src-foo`
+/// Encode a working directory as Claude Code's project-directory key.
 pub(crate) fn encode_cwd(cwd: &Path) -> String {
-    cwd.to_string_lossy().replace(['/', '.'], "-")
+    let cwd = cwd.to_string_lossy();
+    let mut encoded = String::with_capacity(cwd.len());
+    let mut hash = 0i32;
+
+    // Claude's JavaScript encoder treats a non-BMP character as two UTF-16 units.
+    for unit in cwd.encode_utf16() {
+        let character = match unit {
+            0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a => char::from(unit as u8),
+            _ => '-',
+        };
+        encoded.push(character);
+        hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+    }
+
+    if encoded.len() > 200 {
+        encoded.truncate(200);
+        encoded.push('-');
+        let mut value = hash.unsigned_abs();
+        let mut suffix = Vec::new();
+        loop {
+            suffix.push(char::from(
+                b"0123456789abcdefghijklmnopqrstuvwxyz"[(value % 36) as usize],
+            ));
+            value /= 36;
+            if value == 0 {
+                break;
+            }
+        }
+        encoded.extend(suffix.into_iter().rev());
+    }
+
+    encoded
 }
 
 /// Resolve the Claude config directory.
