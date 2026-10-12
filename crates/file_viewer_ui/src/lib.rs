@@ -33,7 +33,7 @@ use warp_core::ui::theme::color::internal_colors as blended_colors;
 use warpui::r#async::Timer;
 use warpui::elements::{
     Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Expanded, Flex,
-    MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Shrinkable, Text,
+    MainAxisSize, MouseStateHandle, ParentElement, Shrinkable, Text, Wrap,
 };
 use warpui::image_cache::StaticImage;
 use warpui::keymap::{EditableBinding, FixedBinding};
@@ -869,7 +869,7 @@ impl FileViewerView {
         action: FileViewerAction,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
-        Container::new(
+        let button = Container::new(
             appearance
                 .ui_builder()
                 .button(ButtonVariant::Text, mouse_state.clone())
@@ -879,6 +879,17 @@ impl FileViewerView {
                 .finish(),
         )
         .with_margin_right(4.)
+        .finish();
+        // Every button takes the height of a header row, so that each row the buttons wrap
+        // onto is one row high.
+        ConstrainedBox::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(button)
+                .finish(),
+        )
+        .with_height(HEADER_ROW_HEIGHT)
         .finish()
     }
 
@@ -910,9 +921,10 @@ impl FileViewerView {
             .with_child(Shrinkable::new(1., info).finish())
             .finish();
 
-        let mut controls = Flex::row()
+        // The buttons wrap onto further rows in a pane too narrow for one.
+        let mut controls = Wrap::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Min);
+            .with_main_axis_size(MainAxisSize::Max);
         let button = |label, mouse_state, action| {
             Self::render_button(label, mouse_state, action, appearance)
         };
@@ -948,43 +960,31 @@ impl FileViewerView {
             ));
         }
 
-        let mut actions = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Min);
-        actions.add_child(button(
+        controls.add_child(button(
             "Open in default app",
             &self.buttons.open,
             FileViewerAction::OpenInDefaultApp,
         ));
-        actions.add_child(button(
+        controls.add_child(button(
             reveal_label(),
             &self.buttons.reveal,
             FileViewerAction::RevealInFileManager,
         ));
         if quick_look::is_available() {
-            actions.add_child(button(
+            controls.add_child(button(
                 "Quick Look",
                 &self.buttons.quick_look,
                 FileViewerAction::QuickLook,
             ));
         }
-        let button_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_child(controls.finish())
-            .with_child(actions.finish())
+        let title_row = ConstrainedBox::new(Clipped::new(title_row).finish())
+            .with_height(HEADER_ROW_HEIGHT)
             .finish();
-
-        let row = |content: Box<dyn Element>| {
-            ConstrainedBox::new(Clipped::new(content).finish())
-                .with_height(HEADER_ROW_HEIGHT)
-                .finish()
-        };
         Container::new(
             Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(row(title_row))
-                .with_child(row(button_row))
+                .with_child(title_row)
+                .with_child(controls.finish())
                 .finish(),
         )
         .with_horizontal_padding(12.)
