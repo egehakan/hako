@@ -5116,6 +5116,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "file_viewer_ui"
+version = "0.1.0"
+dependencies = [
+ "file_viewers",
+ "image",
+ "instant",
+ "log",
+ "parking_lot",
+ "pathfinder_color",
+ "pathfinder_geometry",
+ "warp_core",
+ "warpui",
+]
+
+[[package]]
 name = "file_viewers"
 version = "0.1.0"
 dependencies = [
@@ -15425,6 +15440,8 @@ dependencies = [
  "env_logger",
  "event-listener",
  "field_mask",
+ "file_viewer_ui",
+ "file_viewers",
  "firebase",
  "float-cmp",
  "freedesktop-desktop-entry",

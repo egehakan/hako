@@ -1,0 +1,19 @@
+[package]
+name = "file_viewer_ui"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+description = "The view that shows images, documents and tables inside an editor tab"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+file_viewers.workspace = true
+image.workspace = true
+instant.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+pathfinder_color.workspace = true
+pathfinder_geometry.workspace = true
+warp_core.workspace = true
+warpui.workspace = true
