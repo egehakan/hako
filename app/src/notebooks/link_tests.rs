@@ -406,6 +406,13 @@ fn test_open_markdown_file_uses_viewer_when_preferred() {
     App::test((), |mut app| async move {
         let links = init_link_model(&mut app, Some(&root));
 
+        EditorSettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .prefer_markdown_viewer
+                .set_value(true, ctx)
+                .unwrap();
+        });
+
         let events = Arc::new(Mutex::new(vec![]));
         {
             let events = events.clone();

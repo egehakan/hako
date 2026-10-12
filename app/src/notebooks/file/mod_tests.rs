@@ -476,3 +476,31 @@ fn test_file_notebook_mermaid_context_menu_does_not_show_copy_image() {
         });
     });
 }
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_show_file_content_renders_the_given_text_without_reading_the_file() {
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        let (_, handle) = app.add_window(WindowStyle::NotStealFocus, FileNotebookView::new);
+        // Nothing exists at this path, so only the text handed over can end up rendered.
+        let location = LocalOrRemotePath::Local(Path::new("/nowhere/NOTES.md").to_path_buf());
+
+        handle.update(&mut app, |file_notebook, ctx| {
+            file_notebook.show_file_content(&location, "# Draft\n\nnot saved yet", ctx);
+
+            assert!(file_notebook.file_id.is_none());
+            assert!(matches!(file_notebook.file_state, FileState::Loaded(_)));
+            assert_eq!(file_notebook.path(), Some(&location));
+            let markdown = file_notebook.editor.as_ref(ctx).markdown(ctx);
+            assert!(markdown.contains("not saved yet"), "{markdown}");
+
+            file_notebook.show_file_content(&location, "# Draft\n\nedited again", ctx);
+            let markdown = file_notebook.editor.as_ref(ctx).markdown(ctx);
+            assert!(markdown.contains("edited again"), "{markdown}");
+            assert!(!markdown.contains("not saved yet"), "{markdown}");
+        });
+    });
+}

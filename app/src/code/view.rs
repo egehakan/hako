@@ -21,7 +21,7 @@ use warpui::elements::{
     SavePosition, Shrinkable, Stack, Text,
 };
 use warpui::fonts::{Properties, Style, Weight};
-use warpui::keymap::EditableBinding;
+use warpui::keymap::{self, EditableBinding};
 use warpui::text::point::Point;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::button::ButtonVariant;
@@ -45,7 +45,13 @@ use crate::code::{EditorTabBarDropTargetData, ImmediateSaveError, SaveOutcome, S
 use crate::editor::InteractionState;
 use crate::input::Vector2F;
 use crate::menu::{MenuItem, MenuItemFields};
-use crate::notebooks::file::{MarkdownDisplayMode, renders_in_warp_notebook_viewer};
+#[cfg(feature = "local_fs")]
+use crate::notebooks::file::FileNotebookEvent;
+use crate::notebooks::file::{
+    FileNotebookView, MarkdownDisplayMode, renders_in_warp_notebook_viewer,
+};
+#[cfg(feature = "local_fs")]
+use crate::notebooks::link::NotebookLinks;
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::pane::view::header::components::{
     CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text,
@@ -123,7 +129,19 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("CodeEditorView"))
         .with_key_binding("cmdorctrl-r u"),
     ]);
+    #[cfg(feature = "local_fs")]
+    app.register_editable_bindings([EditableBinding::new(
+        "code_view:toggle_markdown_preview",
+        "Toggle Markdown preview",
+        CodeViewAction::ToggleRenderedMarkdown,
+    )
+    .with_context_predicate(id!(CodeView::ui_name()) & id!(MARKDOWN_TAB_CONTEXT))
+    .with_mac_key_binding("shift-cmd-V")]);
 }
+
+/// Keymap context of a code view whose active tab holds a file that has a rendered form.
+#[cfg(feature = "local_fs")]
+const MARKDOWN_TAB_CONTEXT: &str = "CodeView_MarkdownTab";
 
 const PADDING: f32 = 4.;
 
@@ -163,6 +181,10 @@ pub enum CodeViewAction {
     RevealInFinder,
     #[cfg(feature = "local_fs")]
     RenderMarkdown,
+    #[cfg(feature = "local_fs")]
+    ShowMarkdownSource,
+    #[cfg(feature = "local_fs")]
+    ToggleRenderedMarkdown,
     DragOverIndex {
         target: usize,
         drag_position: RectF,
@@ -193,6 +215,18 @@ pub enum CodeViewEvent {
     OpenLspLogs {
         log_path: PathBuf,
     },
+    /// A tab started showing the rendered form of its file. `links` resolves the links followed
+    /// from it.
+    #[cfg(feature = "local_fs")]
+    RenderedMarkdownOpened {
+        links: ModelHandle<NotebookLinks>,
+    },
+    /// A command block of a rendered file was run.
+    #[cfg(feature = "local_fs")]
+    RunRenderedMarkdownWorkflow {
+        workflow: std::sync::Arc<crate::workflows::WorkflowType>,
+        source: crate::workflows::WorkflowSource,
+    },
 }
 
 #[derive(Default, Clone)]
@@ -210,6 +244,9 @@ pub struct TabData {
     editor_view: ViewHandle<LocalCodeEditorView>,
     mouse_state_handles: TabDataMouseStateHandles,
     preview: bool,
+    /// Rendered form of the tab's file, shown in place of its editor while present. The editor
+    /// keeps the buffer, so nothing typed in it depends on this view.
+    rendered_markdown: Option<ViewHandle<FileNotebookView>>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,39 +314,170 @@ impl CodeView {
         view
     }
 
+    /// Whether the active tab holds a file that has a rendered form.
     #[cfg(feature = "local_fs")]
-    fn update_markdown_mode_segmented_control(&mut self, ctx: &mut ViewContext<Self>) {
-        let renders_in_notebook_viewer = self
-            .tab_at(self.active_tab_index)
+    fn active_tab_renders_as_markdown(&self) -> bool {
+        self.tab_at(self.active_tab_index)
             .and_then(|t| t.location.as_ref())
             .map(|loc| renders_in_warp_notebook_viewer(std::path::Path::new(&loc.display_path())))
-            .unwrap_or(false);
+            .unwrap_or(false)
+    }
 
-        if !renders_in_notebook_viewer {
+    #[cfg(feature = "local_fs")]
+    fn active_tab_shows_rendered_markdown(&self) -> bool {
+        self.tab_at(self.active_tab_index)
+            .is_some_and(|tab| tab.rendered_markdown.is_some())
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn update_markdown_mode_segmented_control(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.active_tab_renders_as_markdown() {
             self.markdown_mode_segmented_control = None;
             ctx.notify();
             return;
         }
 
-        if self.markdown_mode_segmented_control.is_none() {
-            let handle = ctx.add_typed_action_view(|ctx| {
-                MarkdownToggleView::new(MarkdownDisplayMode::Raw, ctx)
-            });
+        let mode = if self.active_tab_shows_rendered_markdown() {
+            MarkdownDisplayMode::Rendered
+        } else {
+            MarkdownDisplayMode::Raw
+        };
+        match &self.markdown_mode_segmented_control {
+            Some(handle) => handle.update(ctx, |control, ctx| {
+                control.set_selected_mode(mode, ctx);
+            }),
+            None => {
+                let handle = ctx.add_typed_action_view(|ctx| MarkdownToggleView::new(mode, ctx));
 
-            ctx.subscribe_to_view(&handle, |view, _, event, ctx| {
-                let MarkdownToggleEvent::ModeSelected(mode) = event;
-                match mode {
-                    MarkdownDisplayMode::Rendered => {
-                        view.handle_action(&CodeViewAction::RenderMarkdown, ctx);
+                ctx.subscribe_to_view(&handle, |view, _, event, ctx| {
+                    let MarkdownToggleEvent::ModeSelected(mode) = event;
+                    match mode {
+                        MarkdownDisplayMode::Rendered => {
+                            view.handle_action(&CodeViewAction::RenderMarkdown, ctx);
+                        }
+                        MarkdownDisplayMode::Raw => {
+                            view.handle_action(&CodeViewAction::ShowMarkdownSource, ctx);
+                        }
                     }
-                    MarkdownDisplayMode::Raw => {}
-                }
-            });
+                });
 
-            self.markdown_mode_segmented_control = Some(handle);
+                self.markdown_mode_segmented_control = Some(handle);
+            }
         }
 
         ctx.notify();
+    }
+
+    /// Shows the rendered form of the active tab's file in place of its editor, from the text
+    /// in the editor rather than the file on disk.
+    #[cfg(feature = "local_fs")]
+    fn show_rendered_markdown(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.active_tab_renders_as_markdown() || self.active_tab_shows_rendered_markdown() {
+            return;
+        }
+        let Some(tab) = self.tab_group.get(self.active_tab_index) else {
+            return;
+        };
+        let Some(location) = tab.location.clone() else {
+            return;
+        };
+        let content = tab.editor_view.as_ref(ctx).editor().as_ref(ctx).text(ctx);
+        let scroll_fraction = self.scroll_fraction(ctx);
+
+        let rendered = ctx.add_typed_action_view(|ctx| {
+            let mut view = FileNotebookView::new(ctx);
+            view.set_pending_scroll_fraction(scroll_fraction);
+            view.show_file_content(&location, content.as_str(), ctx);
+            view
+        });
+        ctx.subscribe_to_view(&rendered, |me, _, event, ctx| {
+            me.handle_rendered_markdown_event(event, ctx);
+        });
+        ctx.emit(CodeViewEvent::RenderedMarkdownOpened {
+            links: rendered.as_ref(ctx).links(),
+        });
+
+        if let Some(tab) = self.tab_group.get_mut(self.active_tab_index) {
+            tab.rendered_markdown = Some(rendered);
+        }
+        self.update_markdown_mode_segmented_control(ctx);
+        self.refresh_overflow_menu_and_focus(ctx);
+    }
+
+    /// Puts the editor of the active tab back in place of the rendered form of its file.
+    #[cfg(feature = "local_fs")]
+    fn show_markdown_source(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(tab) = self.tab_group.get_mut(self.active_tab_index) else {
+            return;
+        };
+        let Some(rendered) = tab.rendered_markdown.take() else {
+            return;
+        };
+        let scroll_fraction = rendered.as_ref(ctx).scroll_fraction(ctx);
+        if let Some(fraction) = scroll_fraction {
+            self.set_pending_scroll_fraction(fraction, ctx);
+        }
+        self.update_markdown_mode_segmented_control(ctx);
+        self.refresh_overflow_menu_and_focus(ctx);
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn refresh_overflow_menu_and_focus(&mut self, ctx: &mut ViewContext<Self>) {
+        self.pane_configuration.update(ctx, |pane_config, ctx| {
+            pane_config.refresh_pane_header_overflow_menu_items(ctx);
+        });
+        self.focus(ctx);
+        ctx.notify();
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_rendered_markdown_event(
+        &mut self,
+        event: &FileNotebookEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            FileNotebookEvent::Pane(PaneEvent::FocusSelf) => {
+                ctx.emit(CodeViewEvent::Pane(PaneEvent::FocusSelf));
+            }
+            FileNotebookEvent::RunWorkflow { workflow, source } => {
+                ctx.emit(CodeViewEvent::RunRenderedMarkdownWorkflow {
+                    workflow: workflow.clone(),
+                    source: *source,
+                });
+            }
+            // The rendered form lives inside a tab: its pane-level requests, title and
+            // persistence belong to the code view around it.
+            FileNotebookEvent::Pane(_)
+            | FileNotebookEvent::TitleUpdated
+            | FileNotebookEvent::FileLoaded
+            | FileNotebookEvent::OpenFileWithTarget { .. } => {}
+        }
+    }
+
+    /// Re-renders the rendered form of the tab that `editor` belongs to after its text changed.
+    #[cfg(feature = "local_fs")]
+    fn refresh_rendered_markdown(
+        &mut self,
+        editor: &ViewHandle<CodeEditorView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(tab) = self
+            .tab_group
+            .iter()
+            .find(|tab| tab.editor_view.as_ref(ctx).editor().id() == editor.id())
+        else {
+            return;
+        };
+        let (Some(rendered), Some(location)) =
+            (tab.rendered_markdown.clone(), tab.location.clone())
+        else {
+            return;
+        };
+        let content = editor.as_ref(ctx).text(ctx);
+        rendered.update(ctx, |view, ctx| {
+            view.show_file_content(&location, content.as_str(), ctx);
+        });
     }
 
     /// Restore a code view from a persisted multi-tab snapshot.
@@ -472,13 +640,15 @@ impl CodeView {
 
         let editor = code_editor.as_ref(ctx).editor().clone();
 
-        ctx.subscribe_to_view(&editor, |me, _, event, ctx| match event {
+        ctx.subscribe_to_view(&editor, |me, editor, event, ctx| match event {
             CodeEditorEvent::Focused => {
                 me.promote_if_preview(ctx);
                 ctx.emit(CodeViewEvent::Pane(PaneEvent::FocusSelf));
             }
             CodeEditorEvent::ContentChanged { .. } => {
                 me.set_title_after_content_update(ctx);
+                #[cfg(feature = "local_fs")]
+                me.refresh_rendered_markdown(&editor, ctx);
             }
             _ => {}
         });
@@ -619,6 +789,7 @@ impl CodeView {
             editor_view: code_editor,
             mouse_state_handles: Default::default(),
             preview,
+            rendered_markdown: None,
         }
     }
 
@@ -662,7 +833,10 @@ impl CodeView {
 
     pub fn focus(&self, ctx: &mut ViewContext<Self>) {
         if let Some(tab) = self.tab_at(self.active_tab_index) {
-            ctx.focus(&tab.editor_view);
+            match &tab.rendered_markdown {
+                Some(rendered) => rendered.update(ctx, |rendered, ctx| rendered.focus(ctx)),
+                None => ctx.focus(&tab.editor_view),
+            }
         }
     }
 
@@ -1959,16 +2133,24 @@ impl CodeView {
             .as_ref()
             .is_some_and(|h| h.is_in_split_pane(app));
 
-        let buttons = render_pane_header_buttons::<CodeViewAction, CodeViewAction>(
-            header_ctx,
-            appearance,
-            show_close_button,
-            None,
-            None,
+        let mut buttons = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        if let Some(segmented) = &self.markdown_mode_segmented_control {
+            buttons.add_child(ChildView::new(segmented).finish());
+        }
+        buttons.add_child(
+            render_pane_header_buttons::<CodeViewAction, CodeViewAction>(
+                header_ctx,
+                appearance,
+                show_close_button,
+                None,
+                None,
+            ),
         );
 
         header_row.add_child(
-            Container::new(Align::new(buttons).finish())
+            Container::new(Align::new(buttons.finish()).finish())
                 .with_padding_right(4.)
                 .with_border(
                     Border::bottom(TAB_BAR_BORDER_HEIGHT).with_border_fill(theme.outline()),
@@ -2184,9 +2366,14 @@ impl CodeView {
                         .unwrap_or(false)
                 });
             if renders_in_notebook_viewer {
+                let (label, action) = if self.active_tab_shows_rendered_markdown() {
+                    ("Edit Markdown source", CodeViewAction::ShowMarkdownSource)
+                } else {
+                    ("View Markdown preview", CodeViewAction::RenderMarkdown)
+                };
                 items.push(
-                    MenuItemFields::new("View Markdown preview")
-                        .with_on_select_action(CodeViewAction::RenderMarkdown)
+                    MenuItemFields::new(label)
+                        .with_on_select_action(action)
                         .into_item(),
                 );
             }
@@ -2242,17 +2429,28 @@ impl View for CodeView {
         "CodeView"
     }
 
+    fn keymap_context(&self, _: &AppContext) -> keymap::Context {
+        let mut context = Self::default_keymap_context();
+        #[cfg(feature = "local_fs")]
+        if self.active_tab_renders_as_markdown() {
+            context.set.insert(MARKDOWN_TAB_CONTEXT);
+        }
+        context
+    }
+
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let tab = self.tab_at(self.active_tab_index);
         let body = if let Some(tab) = tab {
+            let content = match &tab.rendered_markdown {
+                Some(rendered) => ChildView::new(rendered).finish(),
+                None => ChildView::new(&tab.editor_view).finish(),
+            };
             match self.source {
                 CodeSource::AIAction { .. } => Flex::column()
                     .with_child(self.render_request_edit_action_header(tab, app))
-                    .with_child(
-                        Shrinkable::new(1., ChildView::new(&tab.editor_view).finish()).finish(),
-                    )
+                    .with_child(Shrinkable::new(1., content).finish())
                     .finish(),
-                _ => ChildView::new(&tab.editor_view).finish(),
+                _ => content,
             }
         } else {
             Empty::new().finish()
@@ -2355,36 +2553,15 @@ impl TypedActionView for CodeView {
                 }
             }
             #[cfg(feature = "local_fs")]
-            CodeViewAction::RenderMarkdown => {
-                let lor_path = self
-                    .tab_at(self.active_tab_index)
-                    .and_then(|t| t.location.clone());
-
-                if let Some(lor_path) = lor_path {
-                    let source = self.source.clone();
-                    let scroll_fraction =
-                        self.scroll_fraction(ctx).map(ordered_float::OrderedFloat);
-                    if self.active_tab_has_unsaved_changes(ctx) {
-                        self.save_local(
-                            self.active_tab_index,
-                            Some(Box::new(move |outcome, _me, ctx| {
-                                if outcome != SaveOutcome::Canceled {
-                                    ctx.emit(CodeViewEvent::Pane(PaneEvent::ReplaceWithFilePane {
-                                        path: lor_path.clone(),
-                                        source: Some(source.clone()),
-                                        scroll_fraction,
-                                    }));
-                                }
-                            })),
-                            ctx,
-                        );
-                    } else {
-                        ctx.emit(CodeViewEvent::Pane(PaneEvent::ReplaceWithFilePane {
-                            path: lor_path,
-                            source: Some(source),
-                            scroll_fraction,
-                        }));
-                    }
+            CodeViewAction::RenderMarkdown => self.show_rendered_markdown(ctx),
+            #[cfg(feature = "local_fs")]
+            CodeViewAction::ShowMarkdownSource => self.show_markdown_source(ctx),
+            #[cfg(feature = "local_fs")]
+            CodeViewAction::ToggleRenderedMarkdown => {
+                if self.active_tab_shows_rendered_markdown() {
+                    self.show_markdown_source(ctx);
+                } else {
+                    self.show_rendered_markdown(ctx);
                 }
             }
 

@@ -27,6 +27,30 @@ fn test_open_code_panels_file_editor_default_is_warp() {
 
 #[test]
 #[cfg(feature = "local_fs")]
+fn test_markdown_opens_like_any_other_file_by_default() {
+    use crate::util::file::external_editor::settings::{
+        OpenCodePanelsFileEditor, OpenFileLayout, PreferMarkdownViewer,
+    };
+
+    let target_of = |path: &str| {
+        resolve_file_target_with_editor_choice(
+            Path::new(path),
+            OpenCodePanelsFileEditor::default_value(),
+            PreferMarkdownViewer::default_value(),
+            OpenFileLayout::default_value(),
+            None,
+        )
+    };
+
+    let other_file = target_of("notes.txt");
+    assert_eq!(other_file, FileTarget::CodeEditor(EditorLayout::SplitPane));
+    for markdown in ["README.md", "docs/guide.markdown", "page.mdx"] {
+        assert_eq!(target_of(markdown), other_file, "{markdown}");
+    }
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
 fn test_resolve_file_target_markdown_viewer_precedence() {
     let target = resolve_file_target_with_editor_choice(
         Path::new("README.md"),

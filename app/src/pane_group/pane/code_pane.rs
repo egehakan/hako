@@ -156,6 +156,20 @@ impl PaneContent for CodePane {
                 }
                 #[cfg(target_family = "wasm")]
                 CodeViewEvent::OpenLspLogs { .. } => {}
+                #[cfg(feature = "local_fs")]
+                CodeViewEvent::RenderedMarkdownOpened { links } => {
+                    super::notebook_pane::subscribe_to_link_model(pane_id, links, ctx);
+                }
+                #[cfg(feature = "local_fs")]
+                CodeViewEvent::RunRenderedMarkdownWorkflow { workflow, source } => {
+                    ctx.emit(crate::pane_group::Event::RunWorkflow {
+                        workflow: workflow.clone(),
+                        workflow_source: *source,
+                        workflow_selection_source:
+                            crate::workflows::WorkflowSelectionSource::Notebook,
+                        argument_override: None,
+                    });
+                }
             },
         );
 

@@ -320,7 +320,7 @@ impl FileNotebookView {
 
     /// The current vertical scroll fraction of the rendered editor, in `0..=1`.
     #[cfg_attr(not(feature = "local_fs"), expect(dead_code))]
-    fn scroll_fraction(&self, ctx: &AppContext) -> Option<f32> {
+    pub(crate) fn scroll_fraction(&self, ctx: &AppContext) -> Option<f32> {
         Some(
             self.editor
                 .as_ref(ctx)
@@ -582,6 +582,31 @@ impl FileNotebookView {
             pane_config.refresh_pane_header_overflow_menu_items(ctx);
         });
         self.file_state = FileState::Loaded(SourceFile::Static { title });
+    }
+
+    /// Shows `content` as the rendered form of the file at `location` without reading or
+    /// watching the file, for a caller that holds the file's current text itself.
+    #[cfg(feature = "local_fs")]
+    pub fn show_file_content(
+        &mut self,
+        location: &LocalOrRemotePath,
+        content: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.release_file_model(ctx);
+        let session = ActiveSession::as_ref(ctx)
+            .session(ctx.window_id())
+            .filter(|session| session.is_local());
+        if let (Some(path), Some(session)) = (location.to_local_path(), &session) {
+            self.set_context(path, session.clone(), ctx);
+        }
+        // Set before the content so that relative images in it resolve against the file.
+        self.file_state = FileState::Loaded(SourceFile::FileBased {
+            path: location.clone(),
+            session,
+        });
+        self.set_content(content, ctx);
+        ctx.notify();
     }
 
     fn send_telemetry_action(&self, action: NotebookTelemetryAction, ctx: &mut ViewContext<Self>) {
