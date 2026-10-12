@@ -205,6 +205,39 @@ fn formats_on_a_background_thread() {
 }
 
 #[test]
+fn a_formatter_selected_ahead_of_time_runs_in_the_background() {
+    let project = prettier_project(UPPERCASE);
+    let Selection::External(invocation) = select(
+        &project.path("src/a.ts"),
+        Some(&project.root()),
+        None,
+        &Preference::Auto,
+    ) else {
+        panic!("expected a project formatter");
+    };
+
+    let format = |text: &str| {
+        futures_lite::future::block_on(format_with_in_background(
+            invocation.clone(),
+            text.to_owned(),
+            None,
+            Limits::default(),
+        ))
+    };
+    assert!(matches!(
+        format("keep\nchange\n"),
+        FormatOutcome::Formatted { tool: Tool::Prettier, text, edits }
+            if text == "KEEP\nCHANGE\n" && edits.len() == 1
+    ));
+    assert_eq!(
+        format("DONE\n"),
+        FormatOutcome::Unchanged {
+            tool: Tool::Prettier
+        }
+    );
+}
+
+#[test]
 fn a_failure_is_reported_once_per_file() {
     let reported = ReportedFailures::default();
     let (first, second) = (Path::new("/p/a.ts"), Path::new("/p/b.ts"));

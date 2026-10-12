@@ -113,24 +113,35 @@ pub fn format(request: &FormatRequest) -> FormatOutcome {
         }
         Selection::External(invocation) => invocation,
     };
-    let tool = invocation.tool;
-    match run(
+    format_with(
         &invocation,
         &request.text,
         request.path_env.as_deref(),
         &request.limits,
-    ) {
-        Ok(text) if text == request.text => FormatOutcome::Unchanged { tool },
-        Ok(text) => FormatOutcome::Formatted {
+    )
+}
+
+/// Formats `text` with a formatter that [`select`] already chose. This blocks on the formatter
+/// process, for up to the timeout in `limits`.
+pub fn format_with(
+    invocation: &Invocation,
+    text: &str,
+    path_env: Option<&str>,
+    limits: &Limits,
+) -> FormatOutcome {
+    let tool = invocation.tool;
+    match run(invocation, text, path_env, limits) {
+        Ok(formatted) if formatted == text => FormatOutcome::Unchanged { tool },
+        Ok(formatted) => FormatOutcome::Formatted {
             tool,
-            edits: minimal_edits(&request.text, &text),
-            text,
+            edits: minimal_edits(text, &formatted),
+            text: formatted,
         },
         Err(error) => {
             log::warn!(
                 "{} failed to format {}: {error:?}",
                 tool.name(),
-                request.file.display()
+                invocation.file.display()
             );
             FormatOutcome::Failed(FormatFailure {
                 tool: tool.name().to_owned(),
@@ -145,9 +156,25 @@ pub fn format(request: &FormatRequest) -> FormatOutcome {
 pub fn format_in_background(
     request: FormatRequest,
 ) -> impl Future<Output = FormatOutcome> + Send + 'static {
+    in_background(move || format(&request))
+}
+
+/// Runs [`format_with`] on its own thread, like [`format_in_background`].
+pub fn format_with_in_background(
+    invocation: Invocation,
+    text: String,
+    path_env: Option<String>,
+    limits: Limits,
+) -> impl Future<Output = FormatOutcome> + Send + 'static {
+    in_background(move || format_with(&invocation, &text, path_env.as_deref(), &limits))
+}
+
+fn in_background(
+    work: impl FnOnce() -> FormatOutcome + Send + 'static,
+) -> impl Future<Output = FormatOutcome> + Send + 'static {
     let (sender, receiver) = async_channel::bounded(1);
     thread::spawn(move || {
-        let _ = sender.try_send(format(&request));
+        let _ = sender.try_send(work());
     });
     async move {
         receiver.recv().await.unwrap_or_else(|_| {
