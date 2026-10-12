@@ -316,6 +316,48 @@ fn test_character_bounds() {
 }
 
 #[test]
+fn test_line_end_bounds_are_on_the_last_soft_wrapped_row() {
+    let mut model =
+        RenderState::new_for_test(TEST_STYLES.clone(), 40.0.into_pixels(), 60.0.into_pixels());
+    let mut content = SumTree::new();
+    // Soft-wraps to the rows "ABCD" and "EFG".
+    content.push(laid_out_paragraph(
+        "ABCDEFG\n",
+        &TEST_STYLES,
+        model.viewport.width().as_f32(),
+    ));
+    // Fits on one row.
+    content.push(laid_out_paragraph(
+        "HI\n",
+        &TEST_STYLES,
+        model.viewport.width().as_f32(),
+    ));
+    model.set_content(content);
+
+    let wrapped = model
+        .line_end_bounds_in_viewport(LineCount(0))
+        .expect("the first paragraph starts at row 0");
+    assert_eq!((wrapped.max_x(), wrapped.origin_y()), (30., 12.));
+    assert_eq!(wrapped.height(), 10.);
+
+    // Row 1 continues the first paragraph, so nothing starts there.
+    assert_eq!(model.line_end_bounds_in_viewport(LineCount(1)), None);
+
+    let single = model
+        .line_end_bounds_in_viewport(LineCount(2))
+        .expect("the second paragraph starts at row 2");
+    let first_character = model
+        .character_bounds(8.into())
+        .expect("the second paragraph starts at offset 8");
+    assert_eq!(
+        (single.max_x(), single.origin_y()),
+        (20., first_character.origin_y())
+    );
+
+    assert_eq!(model.line_end_bounds_in_viewport(LineCount(40)), None);
+}
+
+#[test]
 fn test_non_empty_content_can_hide_final_trailing_newline() {
     let mut model = RenderState::new_for_test(
         TEST_STYLES.clone(),

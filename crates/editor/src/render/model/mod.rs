@@ -4111,6 +4111,23 @@ impl RenderState {
         Some(RectF::new(viewport_origin, bounds.size()))
     }
 
+    /// The bounds, relative to the viewport, of the last character of the block that starts at
+    /// `line`, which sits on the block's last visual row. `None` when no laid-out text starts at
+    /// that line.
+    pub fn line_end_bounds_in_viewport(&self, line: LineCount) -> Option<RectF> {
+        let last_offset = {
+            let content = self.content.borrow();
+            let mut cursor = content.cursor::<LineCount, LayoutSummary>();
+            cursor.seek(&line, SeekBias::Right);
+            let block = cursor.positioned_item()?;
+            if block.start_line != line || block.item.content_length() == CharOffset::zero() {
+                return None;
+            }
+            block.end_char_offset() - 1
+        };
+        self.character_bounds_in_viewport(last_offset)
+    }
+
     /// Saves the text selection bounding box into the position cache.
     pub(super) fn record_text_selection(&self, ctx: &mut RenderContext) {
         // Todo (kc CLD-1018): Save all positions, and not just one.

@@ -59,7 +59,7 @@ use crate::code::editor::comments::PendingComment;
 use crate::code::editor::diff::DiffStatus;
 use crate::code::editor::element::{
     AddAsContextButton, CommentButton, EditorWrapper, EditorWrapperStateHandle, GutterHoverTarget,
-    GutterRange, InnerEditor, LineNumberConfig, RevertHunkButton,
+    GutterRange, InnerEditor, LineNumberConfig, RevertHunkButton, TrailingAnnotation,
 };
 use crate::code::editor::find::view::{CodeEditorFind as Find, Event as FindViewEvent};
 use crate::code::editor::goto_line::view::{Event as GoToLineEvent, GoToLineView};
@@ -153,6 +153,10 @@ pub enum CodeEditorEvent {
     VimGotoDefinition,
     VimFindReferences,
     VimShowHover,
+    /// The mouse entered or left the annotation drawn after a line.
+    TrailingAnnotationHovered {
+        hovered: bool,
+    },
 }
 
 /// Store all states related to displaying the editor content.
@@ -283,6 +287,7 @@ pub struct CodeEditorView {
     show_find_references_provider: Box<dyn ShowFindReferencesCardProvider>,
     /// The offset where find references card is anchored (if showing).
     find_references_anchor_offset: Option<CharOffset>,
+    trailing_annotation: Option<TrailingAnnotation>,
     window_id: WindowId,
 }
 
@@ -430,6 +435,7 @@ impl CodeEditorView {
             ),
             show_find_references_provider: render_options.show_find_references_provider,
             find_references_anchor_offset: None,
+            trailing_annotation: None,
             window_id: ctx.window_id(),
         }
     }
@@ -846,6 +852,58 @@ impl CodeEditorView {
         });
     }
 
+    /// Sets the text drawn after the end of a line, or removes it.
+    pub fn set_trailing_annotation(
+        &mut self,
+        annotation: Option<TrailingAnnotation>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let unchanged = match (&self.trailing_annotation, &annotation) {
+            (Some(current), Some(new)) => current.looks_like(new),
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.trailing_annotation = annotation;
+        ctx.notify();
+    }
+
+    /// The line, counted from zero, of the first cursor. `None` while that cursor has a
+    /// selection.
+    pub fn primary_cursor_line(&self, app: &AppContext) -> Option<LineCount> {
+        let selection_model = self.model.as_ref(app).buffer_selection_model().as_ref(app);
+        if !selection_model.first_selection_is_single_cursor() {
+            return None;
+        }
+        let buffer = self.model.as_ref(app).buffer().as_ref(app);
+        let row = selection_model
+            .first_selection_head()
+            .to_buffer_point(buffer)
+            .row;
+        // TODO(CLD-558) Buffer rows are 1-indexed.
+        Some(LineCount::from(row.saturating_sub(1) as usize))
+    }
+
+    /// Where `line`, counted from zero, ends on its last visual row, relative to this view.
+    pub fn line_end_bounds_in_viewport(&self, line: LineCount, app: &AppContext) -> Option<RectF> {
+        let render_state = self.model.as_ref(app).render_state().as_ref(app);
+        let bounds = render_state.line_end_bounds_in_viewport(line)?;
+        Some(RectF::new(
+            bounds.origin() + vec2f(self.gutter_width(), 0.0),
+            bounds.size(),
+        ))
+    }
+
+    fn gutter_width(&self) -> f32 {
+        if self.display_options.show_line_numbers {
+            super::element::GUTTER_WIDTH
+        } else {
+            0.0
+        }
+    }
+
     pub fn character_bounds_in_viewport(
         &self,
         offset: CharOffset,
@@ -859,14 +917,8 @@ impl CodeEditorView {
         // The render_state bounds are relative to the editor content area, but the
         // CodeEditorView also includes a gutter (line numbers). We need to offset
         // the bounds by the gutter width when line numbers are shown.
-        let gutter_offset = if self.display_options.show_line_numbers {
-            super::element::GUTTER_WIDTH
-        } else {
-            0.0
-        };
-
         Some(RectF::new(
-            bounds.origin() + vec2f(gutter_offset, 0.0),
+            bounds.origin() + vec2f(self.gutter_width(), 0.0),
             bounds.size(),
         ))
     }
@@ -2313,6 +2365,7 @@ impl View for CodeEditorView {
             self.comment_save_position_id.clone(),
             self.find_references_save_position_id.clone(),
         );
+        code_editor.set_trailing_annotation(self.trailing_annotation.clone());
 
         let pending_comment = &self
             .model

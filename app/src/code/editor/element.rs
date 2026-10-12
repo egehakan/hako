@@ -26,6 +26,7 @@ use warpui::elements::{
 };
 use warpui::event::DispatchedEvent;
 use warpui::fonts::FamilyId;
+use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::UiComponent;
 use warpui::units::{IntoPixels, Pixels};
 use warpui::{
@@ -44,6 +45,12 @@ use crate::view_components::action_button::{ActionButtonTheme, SecondaryTheme};
 pub const GUTTER_WIDTH: f32 = 94.;
 const VERTICAL_DIFF_HUNK_INDICATOR_WIDTH: f32 = 3.;
 const VERTICAL_DIFF_HUNK_INDICATOR_HOVERED_WIDTH: f32 = 8.;
+/// Space between the end of a line and the annotation drawn after it.
+const TRAILING_ANNOTATION_GAP: f32 = 32.;
+/// A trailing annotation with less room than this is left out rather than squeezed in.
+const TRAILING_ANNOTATION_MIN_WIDTH: f32 = 96.;
+/// Kept clear at the right edge of the editor, where the vertical scrollbar is.
+const TRAILING_ANNOTATION_RIGHT_MARGIN: f32 = 16.;
 
 fn highlight_element(appearance: &Appearance) -> Box<dyn Element> {
     let border_color = appearance.theme().accent();
@@ -377,6 +384,46 @@ struct CommentBox {
     line: EditorLineLocation,
 }
 
+/// Text drawn after the end of a line. It is not part of the buffer: it takes no room in the
+/// layout, cannot be selected and does not widen what the editor scrolls over.
+#[derive(Clone)]
+pub struct TrailingAnnotation {
+    /// The line the text follows, counted from zero.
+    pub line: LineCount,
+    pub text: String,
+    pub color: ColorU,
+    pub mouse_state: MouseStateHandle,
+}
+
+impl TrailingAnnotation {
+    /// Whether both draw the same thing in the same place.
+    pub fn looks_like(&self, other: &Self) -> bool {
+        self.line == other.line && self.text == other.text && self.color == other.color
+    }
+}
+
+struct LaidOutTrailingAnnotation {
+    element: Box<dyn Element>,
+    /// Relative to the origin of the editor's content, which starts right of the gutter.
+    origin: Vector2F,
+}
+
+/// Where a trailing annotation starts and how wide it may be, in the coordinates of `line_end`.
+/// `line_end` is the last character of the line on its last visual row, so the annotation follows
+/// the end of a soft-wrapped line rather than its first row. Returns `None` when less than
+/// `min_width` is left before `right_edge`: the annotation is then hidden instead of covering
+/// the line.
+pub(super) fn trailing_annotation_placement(
+    line_end: RectF,
+    right_edge: f32,
+    gap: f32,
+    min_width: f32,
+) -> Option<(Vector2F, f32)> {
+    let x = line_end.max_x() + gap;
+    let max_width = right_edge - x;
+    (max_width >= min_width).then(|| (vec2f(x, line_end.origin_y()), max_width))
+}
+
 pub struct EditorWrapper<V: EditorView> {
     editor: InnerEditor<V>,
     element_size: Option<Vector2F>,
@@ -418,6 +465,8 @@ pub struct EditorWrapper<V: EditorView> {
     find_references_save_position_id: String,
     /// The line where find references card is anchored (if active).
     find_references_anchor: Option<EditorLineLocation>,
+    trailing_annotation: Option<TrailingAnnotation>,
+    laid_out_trailing_annotation: Option<LaidOutTrailingAnnotation>,
 }
 
 impl<V: EditorView> EditorWrapper<V> {
@@ -540,7 +589,70 @@ impl<V: EditorView> EditorWrapper<V> {
             comment_save_position_id,
             find_references_save_position_id,
             find_references_anchor: None,
+            trailing_annotation: None,
+            laid_out_trailing_annotation: None,
         }
+    }
+
+    pub fn set_trailing_annotation(&mut self, annotation: Option<TrailingAnnotation>) {
+        self.trailing_annotation = annotation;
+    }
+
+    fn layout_trailing_annotation(
+        &self,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Option<LaidOutTrailingAnnotation> {
+        let annotation = self.trailing_annotation.as_ref()?;
+        // A lens shows a slice of the buffer at offsets of its own, which the viewport-relative
+        // bounds used here do not describe.
+        let InnerEditor::FullEditor(_) = &self.editor else {
+            return None;
+        };
+
+        let model = self.model().as_ref(app);
+        let viewport = model.viewport();
+        let line_end = model.line_end_bounds_in_viewport(annotation.line)?;
+        if line_end.max_y() <= 0. || line_end.origin_y() >= viewport.height().as_f32() {
+            return None;
+        }
+        let (origin, max_width) = trailing_annotation_placement(
+            line_end,
+            viewport.width().as_f32() - TRAILING_ANNOTATION_RIGHT_MARGIN,
+            TRAILING_ANNOTATION_GAP,
+            TRAILING_ANNOTATION_MIN_WIDTH,
+        )?;
+
+        let base_text = &model.styles().base_text;
+        let text = Text::new_inline(
+            annotation.text.clone(),
+            base_text.font_family,
+            base_text.font_size,
+        )
+        .with_color(annotation.color)
+        .with_clip(ClipConfig::ellipsis())
+        .finish();
+        let mut element = Hoverable::new(annotation.mouse_state.clone(), |_| text)
+            .on_hover(|is_hovered, ctx, _, _| {
+                ctx.dispatch_typed_action(CodeEditorViewAction::TrailingAnnotationHovered(
+                    is_hovered,
+                ));
+            })
+            .finish();
+        let size = element.layout(
+            SizeConstraint::new(
+                Vector2F::zero(),
+                vec2f(max_width, viewport.height().as_f32()),
+            ),
+            ctx,
+            app,
+        );
+        let vertical_centering = ((line_end.height() - size.y()) / 2.).max(0.);
+
+        Some(LaidOutTrailingAnnotation {
+            element,
+            origin: origin + vec2f(0., vertical_centering),
+        })
     }
 
     /// Set the comment box to be displayed at a specific line
@@ -1352,12 +1464,16 @@ impl<V: EditorView> Element for EditorWrapper<V> {
         }
 
         self.gutter_elements = gutter_elements;
+        self.laid_out_trailing_annotation = self.layout_trailing_annotation(ctx, app);
         self.element_size = Some(size);
         size
     }
 
     fn after_layout(&mut self, ctx: &mut AfterLayoutContext, app: &AppContext) {
         self.editor.after_layout(ctx, app);
+        if let Some(annotation) = &mut self.laid_out_trailing_annotation {
+            annotation.element.after_layout(ctx, app);
+        }
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
@@ -1404,6 +1520,22 @@ impl<V: EditorView> Element for EditorWrapper<V> {
         ctx.scene.stop_layer();
 
         self.editor.paint(origin + size_buffer, ctx, app);
+
+        if let Some(annotation) = &mut self.laid_out_trailing_annotation {
+            let content_origin = origin + size_buffer;
+            // Clipped to the content area so that a line scrolled out to the left does not draw
+            // its annotation over the gutter.
+            let content_bounds = RectF::new(
+                content_origin,
+                (wrapper_size - size_buffer).max(Vector2F::zero()),
+            );
+            ctx.scene
+                .start_layer(ClipBounds::BoundedByActiveLayerAnd(content_bounds));
+            annotation
+                .element
+                .paint(content_origin + annotation.origin, ctx, app);
+            ctx.scene.stop_layer();
+        }
 
         let diff_hunks_are_expanded = self.diff_hunks_are_expanded();
         let gutter_width = self.size_buffer().x();
@@ -1657,6 +1789,10 @@ impl<V: EditorView> Element for EditorWrapper<V> {
             }
             _ => (),
         };
+
+        if let Some(annotation) = &mut self.laid_out_trailing_annotation {
+            annotation.element.dispatch_event(event, ctx, app);
+        }
 
         let dispatch_to_editor = self.editor.dispatch_event(event, ctx, app);
 
