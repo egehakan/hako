@@ -27054,6 +27054,32 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
+            OpenGlobalSearchReplace => {
+                if FeatureFlag::GlobalSearch.is_enabled()
+                    && *CodeSettings::as_ref(ctx).show_global_search
+                {
+                    if let Some(global_search_view) = self
+                        .left_panel_view
+                        .as_ref(ctx)
+                        .active_global_search_view(ctx)
+                    {
+                        let selected_text = self.get_selected_text_from_focused_view(ctx);
+                        global_search_view.update(ctx, |view, ctx| {
+                            if let Some(selected_text) = selected_text {
+                                view.set_initial_query(selected_text, ctx);
+                            }
+                            view.show_replace(ctx);
+                        });
+                    }
+
+                    self.open_left_panel_view(
+                        &LeftPanelAction::GlobalSearch {
+                            entry_focus: GlobalSearchEntryFocus::QueryEditor,
+                        },
+                        ctx,
+                    );
+                }
+            }
             ToggleConversationListView => {
                 if FeatureFlag::AgentViewConversationListView.is_enabled() {
                     let is_showing = self.left_panel_view.as_ref(ctx).active_view()

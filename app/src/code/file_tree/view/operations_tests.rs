@@ -77,7 +77,8 @@ async fn open_tree(app: &mut App, tree: &Path) -> Fixture {
             FileTreeEvent::AttachAsContext { .. }
             | FileTreeEvent::OpenFile { .. }
             | FileTreeEvent::CDToDirectory { .. }
-            | FileTreeEvent::OpenDirectoryInNewTab { .. } => {}
+            | FileTreeEvent::OpenDirectoryInNewTab { .. }
+            | FileTreeEvent::SearchInFolder { .. } => {}
         });
         let (recorded_errors, recorded_messages) = (errors.clone(), messages.clone());
         ctx.subscribe_to_model(&ToastStack::handle(ctx), move |_, event, _| {

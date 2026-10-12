@@ -176,6 +176,12 @@ pub enum FileTreeAction {
     CDToDirectory {
         id: FileTreeIdentifier,
     },
+    /// Opens global search limited to the folder at `id`, with its replacement field when
+    /// `replace` is set.
+    SearchInFolder {
+        id: FileTreeIdentifier,
+        replace: bool,
+    },
     DismissEditor,
     ItemDroppedOnInput {
         id: FileTreeIdentifier,
@@ -2686,6 +2692,7 @@ impl FileTreeView {
         &self,
         item: &FileTreeItem,
         id: &FileTreeIdentifier,
+        can_search_in_folder: bool,
     ) -> Vec<MenuItem<FileTreeAction>> {
         let is_remote = self.is_remote_item(id);
 
@@ -2738,6 +2745,22 @@ impl FileTreeView {
                             .with_on_select_action(FileTreeAction::OpenInNewTab { id: id.clone() })
                             .into_item(),
                     );
+                    if can_search_in_folder {
+                        items.extend([
+                            MenuItemFields::new("Search in folder")
+                                .with_on_select_action(FileTreeAction::SearchInFolder {
+                                    id: id.clone(),
+                                    replace: false,
+                                })
+                                .into_item(),
+                            MenuItemFields::new("Replace in folder")
+                                .with_on_select_action(FileTreeAction::SearchInFolder {
+                                    id: id.clone(),
+                                    replace: true,
+                                })
+                                .into_item(),
+                        ]);
+                    }
                 }
             };
 
@@ -2964,6 +2987,19 @@ impl FileTreeView {
         }
 
         ctx.emit(FileTreeEvent::CDToDirectory { path });
+    }
+
+    fn search_in_folder(
+        &mut self,
+        id: &FileTreeIdentifier,
+        replace: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(item) = self.item_at(id) else {
+            return;
+        };
+        let path = item.path().to_local_path_lossy();
+        ctx.emit(FileTreeEvent::SearchInFolder { path, replace });
     }
 
     fn rename_item(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
@@ -3311,6 +3347,9 @@ pub enum FileTreeEvent {
     CDToDirectory { path: PathBuf },
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     OpenDirectoryInNewTab { path: PathBuf },
+    /// Search the folder at `path`, with the replacement field showing when `replace` is set.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    SearchInFolder { path: PathBuf, replace: bool },
 }
 
 impl Entity for FileTreeView {
@@ -3480,7 +3519,9 @@ impl TypedActionView for FileTreeView {
                 self.context_menu_state = Some(ContextMenuState {
                     position: *position,
                 });
-                let menu_items = self.context_menu_items(item, id);
+                let can_search_in_folder = FeatureFlag::GlobalSearch.is_enabled()
+                    && *CodeSettings::as_ref(ctx).show_global_search;
+                let menu_items = self.context_menu_items(item, id, can_search_in_folder);
                 let is_in_multi_selection = self.multi_selection.contains(item.path());
                 self.context_menu.update(ctx, move |menu, ctx| {
                     menu.set_items(menu_items, ctx);
@@ -3560,6 +3601,12 @@ impl TypedActionView for FileTreeView {
             FileTreeAction::CDToDirectory { id } => {
                 if !self.is_remote_item(id) {
                     self.cd_to_directory(id, ctx);
+                }
+                self.context_menu_state.take();
+            }
+            FileTreeAction::SearchInFolder { id, replace } => {
+                if !self.is_remote_item(id) {
+                    self.search_in_folder(id, *replace, ctx);
                 }
                 self.context_menu_state.take();
             }

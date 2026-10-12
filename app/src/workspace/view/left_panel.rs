@@ -1098,6 +1098,25 @@ impl LeftPanelView {
                     pane_group::Event::OpenDirectoryInNewTab { path: path.clone() },
                 ));
             }
+            FileTreeEvent::SearchInFolder { path, replace } => {
+                let Some(global_search_view) = self.active_global_search_view(ctx) else {
+                    return;
+                };
+                global_search_view.update(ctx, |view, ctx| {
+                    view.search_in_folder(path, ctx);
+                    if *replace {
+                        view.show_replace(ctx);
+                    }
+                });
+                self.handle_action_with_force_open(
+                    &LeftPanelAction::GlobalSearch {
+                        entry_focus: GlobalSearchEntryFocus::QueryEditor,
+                    },
+                    false,
+                    ctx,
+                );
+                self.focus_active_view_on_entry(ctx);
+            }
         }
     }
 }

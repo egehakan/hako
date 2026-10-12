@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_channel::Sender;
 use instant::Instant;
 use pathfinder_geometry::vector::vec2f;
+use project_replace::engine::SearchSpec;
 use project_replace::scope::{ScopeGlobs, folder_pattern};
 use remote_server::HostId;
 use string_offset::{ByteOffset, CharCounter};
@@ -62,9 +63,12 @@ use crate::workspace::view::global_search::name_groups::{
     NameGroup, NameGroupRow, NameMatchEntry, NameMatchLabel, SectionCounts, SectionRow,
     name_match_summary,
 };
+use crate::workspace::view::global_search::view::replace::ReplaceUi;
 use crate::workspace::view::global_search::{
     GlobalSearchMatch, NameMatchKind, NameSearchResults, SearchConfig, SearchOptions,
 };
+
+mod replace;
 
 const BORDER_RADIUS: f32 = 6.;
 const BORDER_WIDTH: f32 = 1.;
@@ -132,6 +136,19 @@ pub enum GlobalSearchAction {
     ToggleWholeWord,
     /// Shows or hides the fields that limit the search to some files.
     ToggleScopeOpen,
+    /// Shows or hides the replacement field.
+    ToggleReplaceOpen,
+    TogglePreserveCase,
+    /// Sets a text match aside from replacing, or takes it back in.
+    ToggleMatchDismissed {
+        location: LocalOrRemotePath,
+        line_number: u32,
+        column: usize,
+    },
+    /// Sets every text match of a file aside from replacing, or takes them back in.
+    ToggleFileDismissed {
+        location: LocalOrRemotePath,
+    },
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -316,6 +333,7 @@ struct MatchedPath {
     path: LocalOrRemotePath,
     is_collapsed: bool,
     mouse_state: MouseStateHandle,
+    dismiss_mouse_state: MouseStateHandle,
     matches: Vec<Match>,
 }
 
@@ -325,6 +343,7 @@ impl MatchedPath {
             path,
             is_collapsed: false,
             mouse_state: MouseStateHandle::default(),
+            dismiss_mouse_state: MouseStateHandle::default(),
             matches: Vec::new(),
         }
     }
@@ -348,6 +367,7 @@ struct Match {
     column_num: Option<usize>,
     submatches: Vec<Submatch>,
     mouse_state: MouseStateHandle,
+    dismiss_mouse_state: MouseStateHandle,
 }
 
 impl Match {
@@ -363,6 +383,7 @@ impl Match {
             column_num,
             submatches,
             mouse_state: MouseStateHandle::default(),
+            dismiss_mouse_state: MouseStateHandle::default(),
         }
     }
 }
@@ -412,6 +433,9 @@ pub struct GlobalSearchView {
     scope_button: ViewHandle<ActionButton>,
     /// What narrowed the last search, to search again once it changes.
     last_searched_options: Option<SearchOptions>,
+    /// What the search that found the current results looked for.
+    searched_spec: Option<SearchSpec>,
+    replace: ReplaceUi,
 }
 
 impl Entity for GlobalSearchView {
@@ -557,6 +581,16 @@ impl TypedActionView for GlobalSearchView {
                 self.is_scope_open = !self.is_scope_open;
                 self.update_scope_button(ctx);
                 ctx.notify();
+            }
+            GlobalSearchAction::ToggleReplaceOpen => self.toggle_replace_open(ctx),
+            GlobalSearchAction::TogglePreserveCase => self.toggle_preserve_case(ctx),
+            GlobalSearchAction::ToggleMatchDismissed {
+                location,
+                line_number,
+                column,
+            } => self.toggle_match_dismissed(location, *line_number, *column, ctx),
+            GlobalSearchAction::ToggleFileDismissed { location } => {
+                self.toggle_file_dismissed(location, ctx);
             }
         }
     }
@@ -821,6 +855,7 @@ impl GlobalSearchView {
         ctx.subscribe_to_model(&find_model, |me, _handle, event, ctx| {
             me.handle_find_model_event(event, ctx);
         });
+        let replace = ReplaceUi::new(ctx);
         let handle = ctx.handle();
 
         GlobalSearchView {
@@ -861,6 +896,8 @@ impl GlobalSearchView {
             is_scope_open: false,
             scope_button,
             last_searched_options: None,
+            searched_spec: None,
+            replace,
         }
     }
 
@@ -1121,10 +1158,13 @@ impl GlobalSearchView {
         self.selected_row = None;
         self.last_error = None;
         self.uniform_list_state = UniformListState::new();
+        self.replace.dismissals.clear();
 
         if clear_last_pattern {
             self.last_searched_pattern = None;
             self.last_searched_options = None;
+            self.searched_spec = None;
+            self.replace.previewer = None;
         }
     }
 
@@ -1157,6 +1197,12 @@ impl GlobalSearchView {
 
         self.last_searched_pattern = Some(pattern.clone());
         self.last_searched_options = Some(options.clone());
+        self.searched_spec = Some(SearchSpec {
+            pattern: pattern.clone(),
+            use_regex: self.regex_search_enabled,
+            case_sensitive: self.case_sensitivity_enabled,
+            whole_word: options.whole_word,
+        });
 
         let roots = self.search_roots.clone();
         self.find_model.update(ctx, |model, model_ctx| {
@@ -1189,7 +1235,7 @@ impl GlobalSearchView {
 
                 self.is_search_in_progress = true;
                 self.reset_search_state(false);
-                ctx.notify();
+                self.refresh_replace_preview(ctx);
             }
             GlobalSearchEvent::NameMatches { search_id, results } => {
                 if Some(*search_id) != self.pending_name_search_id {
@@ -1443,6 +1489,16 @@ impl GlobalSearchView {
         let file_mouse_state = matched_path.mouse_state.clone();
         let file_path = matched_path.path.clone();
         let match_count = matched_path.matches.len();
+        let is_dismissed = self.is_file_dismissed(matched_path);
+        // Shown while replacing, for a file a replace can reach.
+        let dismiss = (self.replace.is_open && file_path.is_local()).then(|| {
+            (
+                matched_path.dismiss_mouse_state.clone(),
+                GlobalSearchAction::ToggleFileDismissed {
+                    location: file_path.clone(),
+                },
+            )
+        });
 
         let directory_path_for_select = directory_path.clone();
         let file_path_clone = file_path.clone();
@@ -1477,6 +1533,9 @@ impl GlobalSearchView {
             let tooltip_text = file_path.display_path();
 
             let header_text_fill = match list_highlight_state {
+                ItemHighlightState::None | ItemHighlightState::Hovered if is_dismissed => {
+                    ThemeFill::Solid(blended_colors::text_disabled(theme, theme.background()))
+                }
                 ItemHighlightState::None => {
                     ThemeFill::Solid(blended_colors::text_sub(theme, theme.background()))
                 }
@@ -1532,12 +1591,27 @@ impl GlobalSearchView {
                 .with_child(Shrinkable::new(1.0, left_container).finish())
                 .finish();
 
+            let mut trailing = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(count_badge);
+            if let Some((dismiss_mouse_state, dismiss_action)) = dismiss
+                && (mouse_state.is_hovered() || is_selected)
+            {
+                let icon = if is_dismissed { Icon::Plus } else { Icon::X };
+                trailing.add_child(Self::render_row_button(
+                    icon,
+                    dismiss_mouse_state,
+                    dismiss_action,
+                    appearance,
+                ));
+            }
+
             let header_row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(Shrinkable::new(1.0, left_row).finish())
-                .with_child(count_badge)
+                .with_child(trailing.finish())
                 .finish();
 
             let mut row_with_padding =
@@ -1578,6 +1652,7 @@ impl GlobalSearchView {
             }
         })
         .with_cursor(Cursor::PointingHand)
+        .with_defer_events_to_children()
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(GlobalSearchAction::SelectRow {
                 directory_path: directory_path_for_select.clone(),
@@ -1609,6 +1684,24 @@ impl GlobalSearchView {
         let line_text = matched.line_text.clone();
         let submatches = matched.submatches.clone();
         let mouse_state = matched.mouse_state.clone();
+        let preview = self.replace_preview(matched_path, matched);
+        let is_dismissed = self.is_match_dismissed(matched_path, matched);
+        // Shown while replacing, for a match a replace can reach.
+        let dismiss = self
+            .replace
+            .is_open
+            .then(|| Self::replaceable_key(matched_path, matched))
+            .flatten()
+            .map(|(_, column)| {
+                (
+                    matched.dismiss_mouse_state.clone(),
+                    GlobalSearchAction::ToggleMatchDismissed {
+                        location: matched_path.path.clone(),
+                        line_number,
+                        column,
+                    },
+                )
+            });
 
         let directory_path_for_select = directory_path.clone();
         let file_path_for_select = matched_path.path.clone();
@@ -1619,34 +1712,84 @@ impl GlobalSearchView {
             let list_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
 
             let text_color = match list_highlight_state {
+                ItemHighlightState::None | ItemHighlightState::Hovered if is_dismissed => {
+                    blended_colors::text_disabled(theme, theme.background())
+                }
                 ItemHighlightState::None => blended_colors::text_sub(theme, theme.background()),
                 ItemHighlightState::Hovered => blended_colors::text_main(theme, theme.background()),
                 ItemHighlightState::Selected => theme.foreground().into(),
             };
+            let font_size = appearance.ui_font_size() + 2.;
+            let overlay = |color: AnsiColorIdentifier| {
+                theme.ansi_overlay_2(color.to_ansi_color(&theme.terminal_colors().normal))
+            };
 
-            let highlight_indices =
-                GlobalSearchView::highlight_indices_from_submatches(&line_text, &submatches);
+            let match_text = match preview {
+                // The matched text is struck out and followed by what replaces it.
+                Some(preview) => {
+                    let removed = Highlight::new().with_text_style(
+                        TextStyle::new()
+                            .with_background_color(overlay(AnsiColorIdentifier::Red))
+                            .with_show_strikethrough(true),
+                    );
+                    let inserted = Highlight::new().with_text_style(
+                        TextStyle::new().with_background_color(overlay(AnsiColorIdentifier::Green)),
+                    );
+                    let mut text =
+                        Text::new_inline(preview.text, appearance.ui_font_family(), font_size)
+                            .with_color(text_color);
+                    if !preview.removed.is_empty() {
+                        text = text.with_single_highlight(removed, preview.removed.collect());
+                    }
+                    if !preview.inserted.is_empty() {
+                        text = text.with_single_highlight(inserted, preview.inserted.collect());
+                    }
+                    text
+                }
+                None => {
+                    let highlight_indices = GlobalSearchView::highlight_indices_from_submatches(
+                        &line_text,
+                        &submatches,
+                    );
+                    let (display_text, display_highlight_indices) =
+                        GlobalSearchView::elide_match_text(&line_text, highlight_indices);
 
-            let (display_text, display_highlight_indices) =
-                GlobalSearchView::elide_match_text(&line_text, highlight_indices);
+                    let mut text =
+                        Text::new_inline(display_text, appearance.ui_font_family(), font_size)
+                            .with_color(text_color);
+                    if !display_highlight_indices.is_empty() {
+                        let highlight = Highlight::new().with_text_style(
+                            TextStyle::new()
+                                .with_background_color(overlay(AnsiColorIdentifier::Yellow)),
+                        );
+                        text = text.with_single_highlight(highlight, display_highlight_indices);
+                    }
+                    text
+                }
+            };
 
-            let mut match_text = Text::new_inline(
-                display_text,
-                appearance.ui_font_family(),
-                appearance.ui_font_size() + 2.,
-            )
-            .with_color(text_color);
+            let content = match dismiss {
+                Some((dismiss_mouse_state, dismiss_action))
+                    if mouse_state.is_hovered() || is_selected =>
+                {
+                    let icon = if is_dismissed { Icon::Plus } else { Icon::X };
+                    Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(Shrinkable::new(1.0, match_text.finish()).finish())
+                        .with_child(Self::render_row_button(
+                            icon,
+                            dismiss_mouse_state,
+                            dismiss_action,
+                            appearance,
+                        ))
+                        .finish()
+                }
+                Some(_) | None => match_text.finish(),
+            };
 
-            if !display_highlight_indices.is_empty() {
-                let yellow_overlay_2 = theme.ansi_overlay_2(
-                    AnsiColorIdentifier::Yellow.to_ansi_color(&theme.terminal_colors().normal),
-                );
-                let highlight_style = TextStyle::new().with_background_color(yellow_overlay_2);
-                let highlight = Highlight::new().with_text_style(highlight_style);
-                match_text = match_text.with_single_highlight(highlight, display_highlight_indices);
-            }
-
-            let mut row = Container::new(match_text.finish())
+            let mut row = Container::new(content)
                 .with_vertical_padding(4.)
                 .with_padding_left(32.) // 8px file indent + 24px (chevron + margin) to align with file icon
                 .with_padding_right(12.);
@@ -1663,6 +1806,7 @@ impl GlobalSearchView {
             row.finish()
         })
         .with_cursor(Cursor::PointingHand)
+        .with_defer_events_to_children()
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(GlobalSearchAction::SelectRow {
                 directory_path: directory_path_for_select.clone(),
@@ -2888,11 +3032,20 @@ impl View for GlobalSearchView {
             })
             .finish();
 
+        let label_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(self.render_replace_toggle(appearance))
+            .with_child(search_label)
+            .finish();
+
         let mut header_column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_child(search_label)
+            .with_child(label_row)
             .with_child(query_row);
 
+        if self.replace.is_open {
+            header_column.add_child(self.render_replace_row(app));
+        }
         if self.is_scope_open {
             header_column.add_child(self.render_field_row(&self.include_editor, None, app));
             header_column.add_child(self.render_field_row(&self.exclude_editor, None, app));
