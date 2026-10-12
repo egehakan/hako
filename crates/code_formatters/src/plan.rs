@@ -174,7 +174,7 @@ impl Planner<'_> {
             Tool::Biome => self.biome(forced),
             Tool::Dprint => self.dprint(forced),
             Tool::Ruff => self.ruff(forced),
-            Tool::Black => self.black(),
+            Tool::Black => self.black(forced),
             Tool::Terraform => self.terraform(),
             Tool::Shfmt => self.shfmt(),
             Tool::Taplo => self.taplo(),
@@ -254,7 +254,7 @@ impl Planner<'_> {
         if !forced && config.is_none() && config::black_config(&self.scope).is_some() {
             return Err(Skip::NotOptedIn);
         }
-        let program = self.python_bin("ruff")?;
+        let program = self.python_bin("ruff", forced || config.is_some())?;
         let opt_in = opt_in_for(&config);
         Ok(self.planned(
             Tool::Ruff,
@@ -270,9 +270,9 @@ impl Planner<'_> {
         ))
     }
 
-    fn black(&self) -> Result<Planned, Skip> {
+    fn black(&self, forced: bool) -> Result<Planned, Skip> {
         let config = config::black_config(&self.scope);
-        let program = self.python_bin("black")?;
+        let program = self.python_bin("black", forced || config.is_some())?;
         let opt_in = opt_in_for(&config);
         Ok(self.planned(
             Tool::Black,
@@ -419,7 +419,7 @@ impl Planner<'_> {
         if config.is_none() && !forced {
             return Err(Skip::NotOptedIn);
         }
-        let program = self.python_bin("sqlfluff")?;
+        let program = self.python_bin("sqlfluff", true)?;
         Ok(self.planned(
             Tool::Sqlfluff,
             program,
@@ -503,10 +503,18 @@ impl Planner<'_> {
             .map_or_else(|| self.global_bin(name), Ok)
     }
 
-    fn python_bin(&self, name: &str) -> Result<PathBuf, Skip> {
-        self.scope
-            .find_executable(&[&format!(".venv/bin/{name}"), &format!("venv/bin/{name}")])
-            .map_or_else(|| self.global_bin(name), Ok)
+    /// A Python tool from the project's virtual environment, or failing that from a global install
+    /// when `allow_global`. A tool that merely happens to be installed on the machine says nothing
+    /// about how a project wants its files laid out, so a project has to ask for it.
+    fn python_bin(&self, name: &str, allow_global: bool) -> Result<PathBuf, Skip> {
+        let local = self
+            .scope
+            .find_executable(&[&format!(".venv/bin/{name}"), &format!("venv/bin/{name}")]);
+        match local {
+            Some(program) => Ok(program),
+            None if allow_global => self.global_bin(name),
+            None => Err(Skip::NotOptedIn),
+        }
     }
 
     /// A Composer-installed executable together with the project directory that holds `vendor`.

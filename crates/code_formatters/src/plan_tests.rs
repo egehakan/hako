@@ -224,18 +224,19 @@ fn ruff_with_and_without_its_config() {
     let path_env = install_globally(&project, &["ruff", "black"]);
     let file = project.path("pkg/a.py");
 
-    let unconfigured = invocation(auto(&project, "pkg/a.py", Some(&path_env)));
-    assert_eq!(unconfigured.tool, Tool::Ruff);
-    assert_eq!(unconfigured.program, project.path("global/bin/ruff"));
     assert_eq!(
-        args(&unconfigured),
-        ["format", "--stdin-filename", &display(&file), "-"]
+        auto(&project, "pkg/a.py", Some(&path_env)),
+        Selection::LanguageServer
     );
-    assert_eq!(unconfigured.cwd, project.root());
 
     project.write("pkg/ruff.toml", "");
     let configured = invocation(auto(&project, "pkg/a.py", Some(&path_env)));
     assert_eq!(configured.tool, Tool::Ruff);
+    assert_eq!(configured.program, project.path("global/bin/ruff"));
+    assert_eq!(
+        args(&configured),
+        ["format", "--stdin-filename", &display(&file), "-"]
+    );
     assert_eq!(configured.cwd, project.path("pkg"));
 }
 
@@ -261,13 +262,28 @@ fn black_is_used_when_the_project_configures_it_and_not_ruff() {
 }
 
 #[test]
-fn black_alone_formats_python() {
+fn a_python_formatter_that_is_only_installed_globally_is_not_used() {
     let project = Project::new();
     let path_env = install_globally(&project, &["black"]);
     assert_eq!(
-        invocation(auto(&project, "a.py", Some(&path_env))).tool,
+        auto(&project, "a.py", Some(&path_env)),
+        Selection::LanguageServer
+    );
+
+    let black = Preference::Tool("black".to_owned());
+    assert_eq!(
+        invocation(select_with(&project, "a.py", Some(&path_env), &black)).tool,
         Tool::Black
     );
+}
+
+#[test]
+fn a_python_formatter_in_the_project_virtualenv_needs_no_config() {
+    let project = Project::new();
+    let local = project.script(".venv/bin/black", UPPERCASE);
+    let invocation = invocation(auto(&project, "a.py", None));
+    assert_eq!(invocation.tool, Tool::Black);
+    assert_eq!(invocation.program, local);
 }
 
 #[test]
