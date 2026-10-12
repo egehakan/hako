@@ -121,6 +121,8 @@ impl TabGroupCustomizeDialog {
             let appearance = Appearance::as_ref(ctx);
             let options = SingleLineEditorOptions {
                 text: TextOptions::ui_text(Some(13.), appearance),
+                // What is typed replaces the value on display rather than being added to it.
+                select_all_on_focus: true,
                 ..Default::default()
             };
             let mut editor = EditorView::single_line(options, ctx);

@@ -20923,10 +20923,7 @@ impl Workspace {
         let is_being_renamed = self
             .current_workspace_state
             .is_tab_group_being_renamed(group_id);
-        let title = group
-            .name
-            .clone()
-            .unwrap_or_else(|| "New Group".to_string());
+        let title = group.display_name();
         let show_header_pin = FeatureFlag::PinnedTabs.is_enabled() && group.pinned;
         let normal_right_pad = if is_collapsed { 8. } else { 9. };
 
