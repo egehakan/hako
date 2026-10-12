@@ -28,7 +28,7 @@ use warp_editor::render::element::{
 };
 use warp_editor::render::model::{
     AutoScrollMode, BlockSpacing, CODE_EDITOR_HIDDEN_SECTION_EXPANSION_LINES, Decoration,
-    ExpansionType, LineCount, ParagraphStyles, RichTextStyles,
+    ExpansionType, LineCount, ParagraphStyles, RichTextStyles, TextDecorationLayer,
 };
 use warp_editor::search::{MATCH_FILL, SELECTED_MATCH_FILL, SearchEvent, Searcher};
 use warp_util::content_version::ContentVersion;
@@ -738,7 +738,7 @@ impl CodeEditorView {
         };
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render, ctx| {
-                render.set_text_decorations(search_decorations, ctx);
+                render.set_text_decorations(TextDecorationLayer::Search, search_decorations, ctx);
             });
         });
 
@@ -821,7 +821,7 @@ impl CodeEditorView {
 
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render, ctx| {
-                render.set_text_decorations(decorations, ctx);
+                render.set_text_decorations(TextDecorationLayer::Search, decorations, ctx);
             });
         });
     }
@@ -834,7 +834,7 @@ impl CodeEditorView {
     ) {
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render, ctx| {
-                render.set_text_decorations(decorations, ctx);
+                render.set_text_decorations(TextDecorationLayer::Diagnostic, decorations, ctx);
             });
         });
     }

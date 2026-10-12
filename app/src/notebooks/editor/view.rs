@@ -14,7 +14,9 @@ use warp_editor::model::{CoreEditorModel, RichTextEditorModel};
 use warp_editor::render::element::{
     DisplayOptions, DisplayStateHandle, RichTextAction, RichTextElement, VerticalExpansionBehavior,
 };
-use warp_editor::render::model::{BlockItem, HitTestBlockType, Location, RenderState};
+use warp_editor::render::model::{
+    BlockItem, HitTestBlockType, Location, RenderState, TextDecorationLayer,
+};
 use warp_editor::selection::{TextDirection, TextUnit};
 use warp_util::path::LineAndColumnArg;
 use warp_util::user_input::UserInput;
@@ -2579,7 +2581,7 @@ impl RichTextEditorView {
         let search_decorations = self.find_bar.decorations(ctx);
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render, ctx| {
-                render.set_text_decorations(search_decorations, ctx);
+                render.set_text_decorations(TextDecorationLayer::Search, search_decorations, ctx);
             });
         });
     }

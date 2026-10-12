@@ -153,7 +153,9 @@ impl<'a, 'b> RenderContext<'a, 'b> {
         );
 
         paragraph.draw_selection(state, self);
-        self.draw_text_decorations(paragraph, state.decorations().text(), state);
+        for layer in state.decorations().text_layers() {
+            self.draw_text_decorations(paragraph, layer, state);
+        }
     }
 
     /// Helper to draw text decorations over a paragraph. The decorations must be sorted by **end**

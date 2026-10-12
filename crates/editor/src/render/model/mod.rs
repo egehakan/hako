@@ -225,13 +225,52 @@ impl RenderBufferVersion {
 ///   rendering, so they need to be modeled in the buffer.
 #[derive(Default, Debug)]
 pub struct RenderDecoration {
-    text: Vec<Decoration>,
+    diff_text: Vec<Decoration>,
+    diagnostic_text: Vec<Decoration>,
+    search_text: Vec<Decoration>,
     line: Vec<LineDecoration>,
 }
 
+/// What a set of text decorations marks. Each layer is replaced on its own, so that updating one
+/// never drops the decorations of another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDecorationLayer {
+    /// The changed parts of lines in a diff.
+    Diff,
+    Diagnostic,
+    /// Matches of a search.
+    Search,
+}
+
 impl RenderDecoration {
-    pub(super) fn text(&self) -> &[Decoration] {
-        &self.text
+    /// The text decorations of every layer, in the order they are painted: a later layer covers
+    /// an earlier one where they overlap. Each layer is sorted by end offset.
+    pub(super) fn text_layers(&self) -> [&[Decoration]; 3] {
+        [&self.diff_text, &self.diagnostic_text, &self.search_text]
+    }
+
+    pub fn text(&self, layer: TextDecorationLayer) -> &[Decoration] {
+        match layer {
+            TextDecorationLayer::Diff => &self.diff_text,
+            TextDecorationLayer::Diagnostic => &self.diagnostic_text,
+            TextDecorationLayer::Search => &self.search_text,
+        }
+    }
+
+    /// Replaces the decorations of one layer. Returns whether that changed anything.
+    fn set_text(&mut self, layer: TextDecorationLayer, mut decorations: Vec<Decoration>) -> bool {
+        // Callers generally provide already-sorted decorations, in which case the sort is linear.
+        decorations.sort_by_key(|decoration| decoration.end);
+        let current = match layer {
+            TextDecorationLayer::Diff => &mut self.diff_text,
+            TextDecorationLayer::Diagnostic => &mut self.diagnostic_text,
+            TextDecorationLayer::Search => &mut self.search_text,
+        };
+        if *current == decorations {
+            return false;
+        }
+        *current = decorations;
+        true
     }
 
     pub fn line_decoration_ranges(&self) -> &[LineDecoration] {
@@ -3095,16 +3134,13 @@ impl RenderState {
 
     pub fn set_text_decorations(
         &mut self,
+        layer: TextDecorationLayer,
         decorations: impl Into<Vec<Decoration>>,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.decorations.text = decorations.into();
-        // Generally, callers will provide already-sorted decorations, in which case the current
-        // Rust sorting algorithm aims for linear time.
-        self.decorations
-            .text
-            .sort_unstable_by_key(|decoration| decoration.end);
-        ctx.notify();
+        if self.decorations.set_text(layer, decorations.into()) {
+            ctx.notify();
+        }
     }
 
     /// The current render-time decorations, sorted by end offset.
@@ -3239,10 +3275,7 @@ impl RenderState {
                         changed = true;
                     }
 
-                    if text != self.decorations.text {
-                        self.decorations.text = text;
-                        changed = true;
-                    }
+                    changed |= self.decorations.set_text(TextDecorationLayer::Diff, text);
 
                     if changed {
                         ctx.notify();
@@ -5669,6 +5702,7 @@ pub enum UpdateDecorationAfterLayout {
     Line(Vec<LineDecoration>),
     LineAndText {
         line: Vec<LineDecoration>,
+        /// Replaces the [`TextDecorationLayer::Diff`] layer.
         text: Vec<Decoration>,
     },
 }

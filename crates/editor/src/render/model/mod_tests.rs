@@ -28,7 +28,8 @@ use crate::content::text::{
 };
 use crate::render::model::test_utils::{TEST_STYLES, laid_out_paragraph, mock_paragraph};
 use crate::render::model::{
-    ColumnUnit, Height, LayoutSummary, LineCount, RenderedSelection, SoftWrapPoint, TEXT_SPACING,
+    ColumnUnit, Decoration, Height, LayoutSummary, LineCount, RenderDecoration, RenderedSelection,
+    SoftWrapPoint, TEXT_SPACING, TextDecorationLayer,
 };
 
 #[test]
@@ -2123,4 +2124,72 @@ mod char_cell_scroll {
         state.clamp_scroll_offset(CharOffset::from(6), 1, &[]);
         assert_eq!(state.scroll_offset(), 0);
     }
+}
+
+fn text_decoration(start: usize, end: usize) -> Decoration {
+    Decoration::new(CharOffset::from(start), CharOffset::from(end))
+}
+
+#[test]
+fn test_text_decoration_layers_are_replaced_independently() {
+    let mut decorations = RenderDecoration::default();
+    let diff = vec![text_decoration(0, 4), text_decoration(10, 12)];
+    let diagnostics =
+        vec![text_decoration(2, 6).with_dashed_underline(ColorU::new(255, 0, 0, 255))];
+    let search = vec![text_decoration(3, 5)];
+
+    assert!(decorations.set_text(TextDecorationLayer::Diff, diff.clone()));
+    assert!(decorations.set_text(TextDecorationLayer::Diagnostic, diagnostics.clone()));
+    assert!(decorations.set_text(TextDecorationLayer::Search, search.clone()));
+
+    assert_eq!(decorations.text(TextDecorationLayer::Diff), diff);
+    assert_eq!(decorations.text(TextDecorationLayer::Diagnostic), diagnostics);
+    assert_eq!(decorations.text(TextDecorationLayer::Search), search);
+
+    // A new search and a refreshed diff each leave the other two layers alone.
+    let next_search = vec![text_decoration(20, 22)];
+    assert!(decorations.set_text(TextDecorationLayer::Search, next_search.clone()));
+    assert!(decorations.set_text(TextDecorationLayer::Diff, Vec::new()));
+
+    assert!(decorations.text(TextDecorationLayer::Diff).is_empty());
+    assert_eq!(decorations.text(TextDecorationLayer::Diagnostic), diagnostics);
+    assert_eq!(decorations.text(TextDecorationLayer::Search), next_search);
+}
+
+#[test]
+fn test_text_decoration_layers_paint_search_over_diff() {
+    let mut decorations = RenderDecoration::default();
+    let diff = vec![text_decoration(0, 8)];
+    let diagnostics = vec![text_decoration(1, 3)];
+    let search = vec![text_decoration(2, 4)];
+    decorations.set_text(TextDecorationLayer::Search, search.clone());
+    decorations.set_text(TextDecorationLayer::Diagnostic, diagnostics.clone());
+    decorations.set_text(TextDecorationLayer::Diff, diff.clone());
+
+    assert_eq!(
+        decorations.text_layers(),
+        [diff.as_slice(), diagnostics.as_slice(), search.as_slice()]
+    );
+}
+
+#[test]
+fn test_text_decoration_layer_is_sorted_by_end_and_reports_changes() {
+    let mut decorations = RenderDecoration::default();
+    let unsorted = vec![
+        text_decoration(8, 12),
+        text_decoration(0, 3),
+        text_decoration(1, 9),
+    ];
+    assert!(decorations.set_text(TextDecorationLayer::Diff, unsorted.clone()));
+    assert_eq!(
+        decorations.text(TextDecorationLayer::Diff),
+        [
+            text_decoration(0, 3),
+            text_decoration(1, 9),
+            text_decoration(8, 12)
+        ]
+    );
+
+    assert!(!decorations.set_text(TextDecorationLayer::Diff, unsorted));
+    assert!(!decorations.set_text(TextDecorationLayer::Search, Vec::new()));
 }
