@@ -352,6 +352,15 @@ pub enum CodeReviewAction {
     SubmitReviewComments,
 }
 
+/// Something to do in a review view as soon as its diffs are available.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DeferredReviewRequest {
+    /// Bring a changed file into view, given its repository-relative path.
+    RevealFile(String),
+    OpenCommitDialog,
+    OpenPushDialog,
+}
+
 pub struct FileState {
     pub file_diff: FileDiff,
     pub editor_state: Option<CodeReviewEditorState>,
@@ -649,6 +658,7 @@ pub struct CodeReviewView {
     pending_precise_scroll: Option<PendingPreciseScroll>,
     /// Comment to scroll to once the view finishes loading.
     pending_jump_to_comment: Option<CommentId>,
+    deferred_request: Option<DeferredReviewRequest>,
 
     active_comment_model: Option<ModelHandle<ReviewCommentBatch>>,
 
@@ -774,6 +784,7 @@ impl CodeReviewView {
     /// Unsubscribes from the diff state model.
     pub fn on_close(&mut self, ctx: &mut ViewContext<Self>) {
         self.is_open = false;
+        self.deferred_request = None;
 
         if self
             .find_model
@@ -1352,6 +1363,7 @@ impl CodeReviewView {
             comment_composer: None,
             pending_precise_scroll: None,
             pending_jump_to_comment: None,
+            deferred_request: None,
             active_comment_model: None,
             init_project_button,
             #[cfg(not(target_family = "wasm"))]
@@ -2316,6 +2328,7 @@ impl CodeReviewView {
                 diffs,
                 load_duration,
             } => {
+                self.subscribe_to_repo_models_if_missing(ctx);
                 self.invalidate_all(diffs.as_ref().map(|d| d.as_ref()), *load_duration, ctx);
                 if FeatureFlag::GitOperationsInCodeReview.is_enabled() {
                     self.update_git_operations_ui(ctx);
@@ -2347,6 +2360,7 @@ impl CodeReviewView {
                 if FeatureFlag::GitOperationsInCodeReview.is_enabled() {
                     self.update_git_operations_ui(ctx);
                 }
+                self.run_deferred_request(true, ctx);
                 ctx.notify();
             }
             DiffStateModelEvent::ConnectionLost => {
@@ -2576,7 +2590,85 @@ impl CodeReviewView {
             self.handle_jump_to_comment_location(&comment_id, ctx);
         }
 
+        self.run_deferred_request(false, ctx);
+
         ctx.notify();
+    }
+
+    /// Carries out `request` now if the diffs are loaded, and otherwise as soon as they are.
+    pub(crate) fn request_when_loaded(
+        &mut self,
+        request: DeferredReviewRequest,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.deferred_request = Some(request);
+        self.run_deferred_request(false, ctx);
+    }
+
+    /// Carries out the deferred request if the view is ready for it.
+    ///
+    /// A git dialog with nothing to act on stays deferred, because the branch metadata it reads
+    /// may be older than the diffs. `metadata_is_fresh` marks the point where that can no longer
+    /// be the reason, and the request is dropped instead of surfacing at some later time.
+    fn run_deferred_request(&mut self, metadata_is_fresh: bool, ctx: &mut ViewContext<Self>) {
+        // A reload in flight replaces the file list and its scroll position, undoing anything
+        // done before it lands.
+        if !matches!(self.diff_state(ctx), DiffState::Loaded)
+            || !matches!(self.state(), CodeReviewViewState::Loaded(_))
+        {
+            return;
+        }
+        let Some(request) = self.deferred_request.take() else {
+            return;
+        };
+        let action = match &request {
+            DeferredReviewRequest::RevealFile(path) => self
+                .file_index_to_reveal(path)
+                .map(CodeReviewAction::FileSelected),
+            DeferredReviewRequest::OpenCommitDialog => self
+                .has_uncommitted_changes(ctx)
+                .then_some(CodeReviewAction::OpenCommitDialog),
+            DeferredReviewRequest::OpenPushDialog => {
+                let diff_state = self.diff_state_model.as_ref(ctx);
+                if diff_state.unpushed_commits(ctx).is_empty() {
+                    None
+                } else if diff_state.upstream_ref(ctx).is_some() {
+                    Some(CodeReviewAction::OpenPushDialog)
+                } else {
+                    Some(CodeReviewAction::PublishBranch)
+                }
+            }
+        };
+        match (action, &request) {
+            (Some(action), _) => self.handle_action(&action, ctx),
+            (None, DeferredReviewRequest::RevealFile(_)) => {}
+            (
+                None,
+                DeferredReviewRequest::OpenCommitDialog | DeferredReviewRequest::OpenPushDialog,
+            ) => {
+                if !metadata_is_fresh {
+                    self.deferred_request = Some(request);
+                }
+            }
+        }
+    }
+
+    fn file_index_to_reveal(&self, path: &str) -> Option<usize> {
+        let CodeReviewViewState::Loaded(state) = self.state() else {
+            return None;
+        };
+        state.file_states.get_index_of(path).or_else(|| {
+            // Git reports a wholly untracked directory as one entry with a trailing slash, while
+            // the review lists the files inside it.
+            path.ends_with('/')
+                .then(|| {
+                    state
+                        .file_states
+                        .keys()
+                        .position(|key| key.starts_with(path))
+                })
+                .flatten()
+        })
     }
 
     /// Builds view state for the given file diffs, returning the list of newly created file states.
@@ -6436,6 +6528,23 @@ impl CodeReviewView {
             GitHubRepoEvent::RepositoryInfoChanged => {}
         });
         self.github_repo_model = Some(handle);
+    }
+
+    /// Makes the per-repository subscriptions that failed when the view was opened because the
+    /// repository had not been detected yet, which diffs arriving for it show has since happened.
+    fn subscribe_to_repo_models_if_missing(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.is_open
+            || self.repo_is_local() != Some(true)
+            || !matches!(self.diff_state(ctx), DiffState::Loaded)
+        {
+            return;
+        }
+        if self.git_repo_status.is_none() {
+            self.subscribe_to_git_repo_status_model(ctx);
+        }
+        if self.github_repo_model.is_none() {
+            self.subscribe_to_github_repo_model(ctx);
+        }
     }
 
     fn unsubscribe_from_git_repo_status_model(&mut self, ctx: &mut ViewContext<Self>) {

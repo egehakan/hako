@@ -14,6 +14,8 @@ pub mod github_repo_model;
 mod hidden_lines;
 #[cfg(feature = "local_fs")]
 pub(crate) mod nested_repos;
+#[cfg(feature = "local_fs")]
+pub(crate) mod nested_repos_view;
 pub mod telemetry_event;
 #[cfg_attr(not(feature = "local_fs"), allow(unused_imports))]
 pub use telemetry_event::CodeReviewTelemetryEvent;
