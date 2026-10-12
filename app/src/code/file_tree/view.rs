@@ -292,7 +292,7 @@ pub struct FileTreeView {
     show_hidden_files: bool,
 }
 
-/// Directory the file tree wants to focus once its entry becomes available.
+/// Directory or file the file tree wants to focus once its entry becomes available.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingFocusTarget {
     root: StandardizedPath,
@@ -306,6 +306,9 @@ struct PendingFocusTarget {
     /// elsewhere since the initial focus-follow and a late metadata
     /// update must not snap them back.
     scrolled: bool,
+    /// Whether the folders on the way to the target keep being expanded and loaded as the tree
+    /// fills in, for a target deeper than what has been loaded so far.
+    expands_ancestors: bool,
 }
 
 impl FileTreeView {
@@ -554,6 +557,7 @@ impl FileTreeView {
                             }
                         }
 
+                        self.expand_towards_pending_focus_target(&root_paths, ctx);
                         for root_path in &root_paths {
                             self.rebuild_flattened_items_for_root(root_path);
                         }
@@ -795,12 +799,13 @@ impl FileTreeView {
 
     /// Scrolls to show the specified file in the file tree,
     /// ensuring that all parent folders are expanded and loaded.
+    /// Returns whether the file was found in the tree and selected.
     fn scroll_to_file(
         &mut self,
         repository_root: &StandardizedPath,
         file_path: &StandardizedPath,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         self.expand_ancestors_to_path(repository_root, file_path, ctx);
 
         // Create a FileTreeIdentifier to search for the file in the specific root
@@ -820,7 +825,38 @@ impl FileTreeView {
                 index,
             };
             self.select_id(&id, ctx);
+            true
+        } else {
+            false
         }
+    }
+
+    /// Whether one of the roots shown in the tree contains `path`.
+    pub fn has_root_containing(&self, path: &StandardizedPath) -> bool {
+        self.find_deepest_root_for_file(path).is_some()
+    }
+
+    /// Expands the tree down to the file at `file_path` and selects it, loading the folders on
+    /// the way that have not been loaded yet. A file whose entry is not in the tree yet is
+    /// selected once it is. Does nothing when no root shown in the tree contains the file.
+    pub fn reveal_file(&mut self, file_path: &StandardizedPath, ctx: &mut ViewContext<Self>) {
+        let Some(root) = self.find_deepest_root_for_file(file_path) else {
+            return;
+        };
+        // Asking for one file by name overrides the folders collapsed by hand on the way to it,
+        // which the automatic follow of the active file leaves closed.
+        if let Some(collapsed) = self.explicitly_collapsed.get_mut(&root) {
+            collapsed.retain(|folder| !file_path.starts_with(folder));
+        }
+        if !self.scroll_to_file(&root, file_path, ctx) {
+            self.pending_focus_target = Some(PendingFocusTarget {
+                root,
+                path: file_path.clone(),
+                scrolled: false,
+                expands_ancestors: true,
+            });
+        }
+        ctx.notify();
     }
 
     /// Expands the tree down to the directory at `directory_path` and selects it. If the directory
@@ -840,6 +876,7 @@ impl FileTreeView {
             root,
             path: directory_path.clone(),
             scrolled: false,
+            expands_ancestors: false,
         });
         self.apply_pending_focus_target();
         ctx.notify();
@@ -1178,7 +1215,10 @@ impl FileTreeView {
         // user selection (e.g. a file that was just clicked) from being
         // overridden when `DirectoriesChanged` fires as a side effect of
         // the code view opening that file.
-        self.pending_focus_target = None;
+        let unfinished_reveal = self
+            .pending_focus_target
+            .take()
+            .filter(|target| target.expands_ancestors && !target.scrolled);
         if let Some(first_local) = grouping.roots.first()
             && let Some(absorbed) = grouping.absorbed_by_root.get(first_local)
             && let Some(most_recent) = absorbed.first()
@@ -1191,8 +1231,18 @@ impl FileTreeView {
                     root: first_local.clone(),
                     path: most_recent.clone(),
                     scrolled: false,
+                    expands_ancestors: false,
                 });
             }
+        }
+        // A file asked for by name that is still on its way into the tree outlives the change of
+        // roots that opening it causes, and wins over following the working directory.
+        if let Some(reveal) = unfinished_reveal
+            && let Some(root) = self.find_deepest_root_for_file(&reveal.path)
+        {
+            self.expand_ancestors_to_path(&root, &reveal.path, ctx);
+            self.rebuild_flattened_items();
+            self.pending_focus_target = Some(PendingFocusTarget { root, ..reveal });
         }
         self.apply_pending_focus_target();
     }
@@ -1219,7 +1269,7 @@ impl FileTreeView {
             self.pending_focus_target = None;
             return false;
         }
-        let Some(id) = self.find_directory_header_id(&target.root, &target.path) else {
+        let Some(id) = self.find_item_id(&target.root, &target.path) else {
             return false;
         };
         self.selected_item = Some(id.clone());
@@ -1234,6 +1284,26 @@ impl FileTreeView {
             }
         }
         true
+    }
+
+    /// Expands and loads the next folders on the way to a pending target that asked for it, when
+    /// the target sits in one of `updated_roots` and is not in the tree yet.
+    #[cfg(feature = "local_fs")]
+    fn expand_towards_pending_focus_target(
+        &mut self,
+        updated_roots: &[StandardizedPath],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(target) = self.pending_focus_target.clone() else {
+            return;
+        };
+        if !target.expands_ancestors
+            || !updated_roots.contains(&target.root)
+            || self.find_item_id(&target.root, &target.path).is_some()
+        {
+            return;
+        }
+        self.expand_ancestors_to_path(&target.root, &target.path, ctx);
     }
 
     /// Merges per-root state from `absorbed` descendants into their
@@ -1276,18 +1346,19 @@ impl FileTreeView {
         }
     }
 
-    /// Finds the `FileTreeIdentifier` for the directory header at
-    /// `directory_path` inside `root`, if it exists in the root's
-    /// flattened items.
-    fn find_directory_header_id(
+    /// Finds the `FileTreeIdentifier` for the directory header or file at
+    /// `path` inside `root`, if it exists in the root's flattened items.
+    fn find_item_id(
         &self,
         root: &StandardizedPath,
-        directory_path: &StandardizedPath,
+        path: &StandardizedPath,
     ) -> Option<FileTreeIdentifier> {
         let root_dir = self.root_directories.get(root)?;
-        let (index, _) = root_dir.items.iter().enumerate().find(|(_, item)| {
-            matches!(item, FileTreeItem::DirectoryHeader { .. }) && item.path() == directory_path
-        })?;
+        let (index, _) = root_dir
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.path() == path)?;
         Some(FileTreeIdentifier {
             root: root.clone(),
             index,

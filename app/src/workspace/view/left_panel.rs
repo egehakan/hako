@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+#[cfg(feature = "local_fs")]
+use std::path::Path;
 use std::path::PathBuf;
 
 use warp_core::send_telemetry_from_ctx;
@@ -6,6 +8,8 @@ use warp_core::ui::Icon;
 use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
+#[cfg(feature = "local_fs")]
+use warp_util::standardized_path::StandardizedPath;
 use warpui::elements::{
     Align, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DragBarSide, Element, Empty,
     Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Resizable,
@@ -968,11 +972,7 @@ impl LeftPanelView {
         location: &LocalOrRemotePath,
         ctx: &mut ViewContext<Self>,
     ) {
-        let is_project_explorer_available = self
-            .toolbelt_buttons
-            .iter()
-            .any(|button| matches!(button.action, LeftPanelAction::ProjectExplorer));
-        if !is_project_explorer_available {
+        if !self.is_project_explorer_offered() {
             return;
         }
         let Some(file_tree_view) = self.active_file_tree_view(ctx) else {
@@ -985,6 +985,47 @@ impl LeftPanelView {
             view.reveal_directory(&path, ctx);
         });
         ctx.focus(&file_tree_view);
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn is_project_explorer_offered(&self) -> bool {
+        self.toolbelt_buttons
+            .iter()
+            .any(|button| matches!(button.action, LeftPanelAction::ProjectExplorer))
+    }
+
+    /// Whether the Project Explorer is on and one of the roots in the active tab's tree contains
+    /// the file at `path`.
+    #[cfg(feature = "local_fs")]
+    pub fn can_reveal_file_in_file_tree(&self, path: &Path, app: &AppContext) -> bool {
+        self.is_project_explorer_offered()
+            && StandardizedPath::try_from_local(path).is_ok_and(|path| {
+                self.active_file_tree_view(app)
+                    .is_some_and(|view| view.as_ref(app).has_root_containing(&path))
+            })
+    }
+
+    /// Switches to the Project Explorer and selects the file at `path` in its tree. Keyboard
+    /// focus stays where it is, so that an editor opened for the same file keeps it.
+    #[cfg(feature = "local_fs")]
+    pub fn reveal_file_in_file_tree(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+        if !self.can_reveal_file_in_file_tree(path, ctx) {
+            return;
+        }
+        let (Some(file_tree_view), Ok(path)) = (
+            self.active_file_tree_view(ctx),
+            StandardizedPath::try_from_local(path),
+        ) else {
+            return;
+        };
+
+        active_view_state::set(self, ToolPanelView::ProjectExplorer, ctx);
+        // The tree only loads its contents while it is the visible view.
+        self.update_active_file_tree_subscription_state(ctx);
+        file_tree_view.update(ctx, |view, ctx| {
+            view.reveal_file(&path, ctx);
+        });
+        ctx.notify();
     }
 
     #[cfg(feature = "local_fs")]

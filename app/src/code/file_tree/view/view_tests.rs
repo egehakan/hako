@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use repo_metadata::entry::{DirectoryEntry, Entry, FileMetadata};
 use repo_metadata::file_tree_store::FileTreeState;
@@ -10,8 +11,9 @@ use repo_metadata::{RepoMetadataModel, RepositoryIdentifier};
 use settings::Setting;
 use virtual_fs::{Stub, VirtualFS};
 use warp_core::ui::appearance::Appearance;
+use warpui::r#async::Timer;
 use warpui::platform::WindowStyle;
-use warpui::{App, ModelHandle, SingletonEntity};
+use warpui::{App, ModelHandle, SingletonEntity, ViewHandle};
 
 use super::FileTreeView;
 use crate::auth::AuthStateProvider;
@@ -163,6 +165,20 @@ async fn await_directory_loaded(
         .expect("directory load should start or join an in-flight load");
     completion.await.expect("directory should load");
     futures_lite::future::yield_now().await;
+}
+
+/// Waits for the folders between a root and `path` to load and for `path` to become the selection.
+async fn await_selected(app: &mut App, file_tree_view: &ViewHandle<FileTreeView>, path: &Path) {
+    let path = std_path(path);
+    for _ in 0..500 {
+        if file_tree_view.read(app, |view, _ctx| view.selected_item_std_path())
+            == Some(path.clone())
+        {
+            return;
+        }
+        Timer::after(Duration::from_millis(10)).await;
+    }
+    panic!("{path} was never selected");
 }
 
 fn set_show_hidden_files(app: &mut App, show_hidden_files: bool) {
@@ -1215,6 +1231,168 @@ fn absorbed_descendant_is_unregistered_from_lazy_loaded_paths() {
             });
             repository_metadata_model.read(&app, |model, ctx| {
                 assert!(!model.is_lazy_loaded_path(&std_path(&a), ctx));
+            });
+        });
+    });
+}
+
+// ── Revealing a file by path ────────────────────────────────────────
+#[test]
+fn reveal_file_expands_its_folders_and_selects_it() {
+    VirtualFS::test("file_tree_reveal_file", |dirs, mut vfs| {
+        vfs.mkdir("tree/a/b")
+            .with_files(vec![Stub::FileWithContent("tree/a/b/deep.txt", "x")]);
+        let tree = dirs.tests().join("tree");
+        let a = tree.join("a");
+        let b = a.join("b");
+        let file = b.join("deep.txt");
+
+        App::test((), |mut app| async move {
+            let (_, repository_metadata_model) = initialize_app(&mut app);
+            let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.set_is_active(true, ctx);
+                view.set_root_directories(vec![tree.clone()], ctx);
+            });
+            await_repository_indexed(&mut app, &repository_metadata_model, &tree).await;
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                assert!(view.has_root_containing(&std_path(&file)));
+                view.reveal_file(&std_path(&file), ctx);
+            });
+            await_selected(&mut app, &file_tree_view, &file).await;
+
+            file_tree_view.read(&app, |view, _ctx| {
+                let expanded = &view.root_directories[&std_path(&tree)].expanded_folders;
+                assert!(expanded.contains(&std_path(&a)));
+                assert!(expanded.contains(&std_path(&b)));
+            });
+        });
+    });
+}
+
+#[test]
+fn reveal_file_survives_the_change_of_roots_caused_by_opening_it() {
+    VirtualFS::test("file_tree_reveal_file_roots_change", |dirs, mut vfs| {
+        vfs.mkdir("tree/a/b")
+            .with_files(vec![Stub::FileWithContent("tree/a/b/deep.txt", "x")]);
+        let tree = dirs.tests().join("tree");
+        let b = tree.join("a/b");
+        let file = b.join("deep.txt");
+
+        App::test((), |mut app| async move {
+            let (_, repository_metadata_model) = initialize_app(&mut app);
+            let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.set_is_active(true, ctx);
+                view.set_root_directories(vec![tree.clone()], ctx);
+            });
+            await_repository_indexed(&mut app, &repository_metadata_model, &tree).await;
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.reveal_file(&std_path(&file), ctx);
+                // The editor opened for the file adds its folder to the working directories
+                // before any of the folders on the way has loaded.
+                view.set_root_directories(vec![b.clone(), tree.clone()], ctx);
+            });
+            await_selected(&mut app, &file_tree_view, &file).await;
+
+            file_tree_view.read(&app, |view, _ctx| {
+                assert_eq!(view.displayed_directories, vec![std_path(&tree)]);
+            });
+        });
+    });
+}
+
+#[test]
+fn reveal_file_reopens_a_folder_collapsed_by_hand() {
+    VirtualFS::test("file_tree_reveal_file_collapsed", |dirs, mut vfs| {
+        vfs.mkdir("tree/a")
+            .with_files(vec![Stub::FileWithContent("tree/a/file.txt", "x")]);
+        let tree = dirs.tests().join("tree");
+        let a = tree.join("a");
+        let file = a.join("file.txt");
+
+        App::test((), |mut app| async move {
+            let (_, repository_metadata_model) = initialize_app(&mut app);
+            let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.set_is_active(true, ctx);
+                view.set_root_directories(vec![tree.clone()], ctx);
+            });
+            await_repository_indexed(&mut app, &repository_metadata_model, &tree).await;
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.reveal_file(&std_path(&file), ctx);
+            });
+            await_selected(&mut app, &file_tree_view, &file).await;
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                // Collapsing the folder by hand hides the file again.
+                view.toggle_folder_expansion(&std_path(&tree), &std_path(&a), ctx);
+                assert!(view.is_explicitly_collapsed(&std_path(&tree), &std_path(&a)));
+
+                view.reveal_file(&std_path(&file), ctx);
+            });
+
+            file_tree_view.read(&app, |view, _ctx| {
+                assert!(!view.is_explicitly_collapsed(&std_path(&tree), &std_path(&a)));
+                assert_eq!(view.selected_item_std_path(), Some(std_path(&file)));
+            });
+        });
+    });
+}
+
+#[test]
+fn reveal_file_uses_the_root_that_contains_it_and_ignores_files_outside_every_root() {
+    VirtualFS::test("file_tree_reveal_file_roots", |dirs, mut vfs| {
+        vfs.mkdir("one/src")
+            .mkdir("two/src")
+            .mkdir("elsewhere")
+            .with_files(vec![
+                Stub::FileWithContent("one/src/main.txt", "1"),
+                Stub::FileWithContent("two/src/main.txt", "2"),
+                Stub::FileWithContent("elsewhere/other.txt", "3"),
+            ]);
+        let one = dirs.tests().join("one");
+        let two = dirs.tests().join("two");
+        let file_in_two = two.join("src/main.txt");
+        let outside = dirs.tests().join("elsewhere/other.txt");
+
+        App::test((), |mut app| async move {
+            let (_, repository_metadata_model) = initialize_app(&mut app);
+            let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.set_is_active(true, ctx);
+                view.set_root_directories(vec![one.clone(), two.clone()], ctx);
+            });
+            await_repository_indexed(&mut app, &repository_metadata_model, &one).await;
+            await_repository_indexed(&mut app, &repository_metadata_model, &two).await;
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                view.reveal_file(&std_path(&file_in_two), ctx);
+            });
+            await_selected(&mut app, &file_tree_view, &file_in_two).await;
+            file_tree_view.read(&app, |view, _ctx| {
+                let selected = view.selected_item.as_ref().expect("file is selected");
+                assert_eq!(selected.root, std_path(&two));
+                assert_eq!(view.selected_item_std_path(), Some(std_path(&file_in_two)));
+            });
+
+            file_tree_view.update(&mut app, |view, ctx| {
+                assert!(!view.has_root_containing(&std_path(&outside)));
+                view.reveal_file(&std_path(&outside), ctx);
+            });
+            file_tree_view.read(&app, |view, _ctx| {
+                assert_eq!(
+                    view.selected_item_std_path(),
+                    Some(std_path(&file_in_two)),
+                    "a file outside every root must leave the tree as it was"
+                );
+                assert_eq!(
+                    view.displayed_directories,
+                    vec![std_path(&one), std_path(&two)]
+                );
             });
         });
     });

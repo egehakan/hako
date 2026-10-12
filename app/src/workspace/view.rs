@@ -9796,6 +9796,26 @@ impl Workspace {
         });
     }
 
+    /// Opens the tools panel of the active tab on the Project Explorer with the file at `path`
+    /// selected in the tree. Leaves the panel and the tree alone when none of the tree's roots
+    /// contains the file.
+    #[cfg(feature = "local_fs")]
+    fn reveal_file_in_project_explorer(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+        if !self
+            .left_panel_view
+            .as_ref(ctx)
+            .can_reveal_file_in_file_tree(path, ctx)
+        {
+            return;
+        }
+        if !self.active_tab_pane_group().as_ref(ctx).left_panel_open {
+            self.toggle_left_panel(ctx);
+        }
+        self.left_panel_view.update(ctx, |left_panel, ctx| {
+            left_panel.reveal_file_in_file_tree(path, ctx);
+        });
+    }
+
     fn toggle_left_panel(&mut self, ctx: &mut ViewContext<Self>) {
         let active_pane_group = self.active_tab_pane_group().clone();
 
@@ -17568,7 +17588,19 @@ impl Workspace {
                 line_col,
             } => {
                 // A file link followed from a pane opens where a file picked in the Project
-                // Explorer would.
+                // Explorer would, and is shown there.
+                let opens_in_this_tab = match target {
+                    FileTarget::CodeEditor(layout) | FileTarget::MarkdownViewer(layout) => {
+                        matches!(layout, EditorLayout::SplitPane)
+                    }
+                    FileTarget::EnvEditor
+                    | FileTarget::ExternalEditor(_)
+                    | FileTarget::SystemDefault
+                    | FileTarget::SystemGeneric => false,
+                };
+                if opens_in_this_tab {
+                    self.reveal_file_in_project_explorer(path, ctx);
+                }
                 let tools_panel_position = self.left_panel_view.as_ref(ctx).panel_position();
                 self.open_file_with_target_beside(
                     path.clone(),
