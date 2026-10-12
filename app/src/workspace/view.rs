@@ -27034,6 +27034,9 @@ impl View for Workspace {
         if *CodeSettings::as_ref(app).show_hidden_files {
             context.set.insert(flags::SHOW_HIDDEN_FILES);
         }
+        if *CodeSettings::as_ref(app).open_files_in_preview_mode {
+            context.set.insert(flags::OPEN_FILES_IN_PREVIEW_MODE);
+        }
 
         if self.team_uid(app).is_some() {
             context.set.insert("WarpDrive_BelongsToTeam");

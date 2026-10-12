@@ -87,6 +87,7 @@ impl EditorAndCodeReviewPageView {
             Box::new(ProjectExplorerToggleWidget::default()),
             Box::new(GlobalSearchToggleWidget::default()),
             Box::new(ShowHiddenFilesToggleWidget::default()),
+            Box::new(OpenFilesInPreviewModeToggleWidget::default()),
             Box::new(FormatOnSaveToggleWidget::default()),
             Box::new(AutoSaveToggleWidget::default()),
         ]);
@@ -153,6 +154,7 @@ pub enum EditorAndCodeReviewPageAction {
     ToggleProjectExplorer,
     ToggleGlobalSearch,
     ToggleShowHiddenFiles,
+    ToggleOpenFilesInPreviewMode,
     ToggleFormatOnSave,
     ToggleAutoSave,
     SetCodeEditorLineNumberMode(CodeEditorLineNumberMode),
@@ -194,6 +196,16 @@ impl TypedActionView for EditorAndCodeReviewPageView {
             EditorAndCodeReviewPageAction::ToggleShowHiddenFiles => {
                 CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.show_hidden_files.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            EditorAndCodeReviewPageAction::ToggleOpenFilesInPreviewMode => {
+                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .open_files_in_preview_mode
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 ctx.notify();
             }
@@ -333,6 +345,14 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 context,
                 flags::SHOW_HIDDEN_FILES,
+            ),
+            ToggleSettingActionPair::new(
+                "open files in preview mode",
+                builder(SettingsAction::EditorAndCodeReview(
+                    EditorAndCodeReviewPageAction::ToggleOpenFilesInPreviewMode,
+                )),
+                context,
+                flags::OPEN_FILES_IN_PREVIEW_MODE,
             ),
         ],
         app,
@@ -610,6 +630,51 @@ impl SettingsWidget for ShowHiddenFilesToggleWidget {
                 .finish(),
             Some(
                 "Show dotfiles and hidden files (starting with .) in the project explorer.".into(),
+            ),
+        )
+    }
+}
+
+#[derive(Default)]
+struct OpenFilesInPreviewModeToggleWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for OpenFilesInPreviewModeToggleWidget {
+    type View = EditorAndCodeReviewPageView;
+
+    fn search_terms(&self) -> &str {
+        "open files in preview mode preview tab single click double click project explorer search"
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let code_settings = CodeSettings::as_ref(app);
+
+        render_body_item::<EditorAndCodeReviewPageAction>(
+            "Open files in preview mode".into(),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*code_settings.open_files_in_preview_mode)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(
+                        EditorAndCodeReviewPageAction::ToggleOpenFilesInPreviewMode,
+                    );
+                })
+                .finish(),
+            Some(
+                "A file picked with a single click in the project explorer or global search opens in a preview tab, shown in italics, that the next such file replaces. Double-click the file or its tab, or edit it, to keep it open."
+                    .into(),
             ),
         )
     }

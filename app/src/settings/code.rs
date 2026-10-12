@@ -87,6 +87,18 @@ define_settings_group!(CodeSettings, settings: [
         toml_path: "code.editor.format_on_save",
         description: "Whether the language server automatically formats the file on save. Other LSP features (hover, go-to-definition, references, diagnostics) are unaffected.",
     },
+    // Controls whether a file picked with a single click in the project explorer or global
+    // search opens in a preview tab that the next such file replaces.
+    open_files_in_preview_mode: OpenFilesInPreviewMode {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "code.editor.open_files_in_preview_mode",
+        description: "Whether a file picked with a single click in the project explorer or global search opens in a preview tab that the next such file replaces.",
+    },
     // Controls whether the Warp text editor automatically saves file changes as the
     // user types (debounced) and when the editor loses focus. Only applies to the
     // Warp text editor, not the command line or AI input.
