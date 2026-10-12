@@ -396,6 +396,11 @@ pub struct StaticImage {
 }
 
 impl StaticImage {
+    /// Wraps pixels decoded outside the asset cache, in RGBA order with straight alpha.
+    pub fn from_rgba(img: image::RgbaImage) -> Self {
+        Self { img }
+    }
+
     pub fn size(&self) -> Vector2I {
         Vector2I::new(self.width() as i32, self.height() as i32)
     }
