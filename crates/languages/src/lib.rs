@@ -151,12 +151,30 @@ fn language_by_filename_parts(
     language_by_name(language_name_for_filename_parts(filename, extension)?)
 }
 
+/// Suffixes appended to a real filename to mark a checked-in template of it, as in
+/// `.env.example` or `phpunit.xml.dist`.
+const TEMPLATE_SUFFIXES: [&str; 3] = [".example", ".sample", ".dist"];
+
 /// Resolves a file to an internal language name. Whole filenames take precedence over
 /// extensions, which are retried in lowercase so `README.MD` and `api.Dockerfile` resolve.
 fn language_name_for_filename_parts(
     filename: Option<&str>,
     extension: Option<&str>,
 ) -> Option<&'static str> {
+    let template_of = filename.and_then(|filename| {
+        TEMPLATE_SUFFIXES
+            .iter()
+            .find_map(|suffix| filename.strip_suffix(suffix))
+    });
+    if let Some(template_of) = template_of {
+        let extension = Path::new(template_of)
+            .extension()
+            .and_then(|extension| extension.to_str());
+        if let Some(name) = language_name_for_filename_parts(Some(template_of), extension) {
+            return Some(name);
+        }
+    }
+
     filename.and_then(language_name_for_filename).or_else(|| {
         let extension = extension?;
         language_name_for_extension(extension)
@@ -172,16 +190,16 @@ fn language_name_for_filename(filename: &str) -> Option<&'static str> {
         | ".profile" => "shell",
         ".zshrc" | ".zsh_profile" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" => "shell",
         // Dotenv-style files are `KEY=value` lines with `#` comments, which is valid shell.
-        ".envrc" | ".dev.vars" | ".flaskenv" => "shell",
+        ".envrc" | ".dev.vars" | ".flaskenv" | "env.example" | "env.sample" => "shell",
         "BUILD" | "WORKSPACE" => "starlark",
         "Dockerfile" | "Containerfile" | "dockerfile" | "containerfile" => "dockerfile",
         "Gemfile" | "Rakefile" | "Podfile" | "Fastfile" | "Brewfile" | "Vagrantfile" => "ruby",
         "Cargo.lock" | "poetry.lock" | "uv.lock" | "Pipfile" => "toml",
-        "composer.lock" | "bun.lock" | "flake.lock" | "Pipfile.lock" | ".babelrc" | ".swcrc" => {
-            "json"
-        }
-        // These rc files may hold either JSON or YAML; YAML is a superset, so it covers both.
-        ".prettierrc" | ".eslintrc" | ".stylelintrc" | ".clang-format" | ".yamllint" => "yaml",
+        "composer.lock" | "bun.lock" | "flake.lock" | "Pipfile.lock" => "json",
+        // These rc files may also be written in YAML, but JSON (often with comments, which the
+        // YAML grammar cannot parse) is the overwhelmingly common form.
+        ".babelrc" | ".swcrc" | ".prettierrc" | ".eslintrc" | ".stylelintrc" => "json",
+        ".clang-format" | ".yamllint" => "yaml",
         ".npmrc" | ".editorconfig" => "ini",
         "Makefile" | "makefile" | "GNUmakefile" => "make",
         _ => {

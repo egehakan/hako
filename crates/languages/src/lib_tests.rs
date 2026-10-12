@@ -190,7 +190,8 @@ fn config_and_data_variants_resolve_to_their_base_language() {
         ("uv.lock", "toml"),
         ("Cargo.lock", "toml"),
         ("docker-compose.yml", "yaml"),
-        (".prettierrc", "yaml"),
+        (".prettierrc", "json"),
+        (".clang-format", "yaml"),
         ("main.tf", "hcl"),
         ("prod.tfvars", "hcl"),
         (".terraform.lock.hcl", "hcl"),
@@ -259,6 +260,20 @@ fn ruby_project_files_resolve_to_ruby() {
 }
 
 #[test]
+fn checked_in_templates_resolve_like_the_file_they_stand_in_for() {
+    assert_language_names(&[
+        ("app.yaml.example", "yaml"),
+        ("auth.json.example", "json"),
+        ("terraform.tfvars.example", "hcl"),
+        ("phpunit.xml.dist", "xml"),
+        (".dev.vars.example", "shell"),
+        ("env.example", "shell"),
+        ("Dockerfile.sample", "dockerfile"),
+    ]);
+    assert_eq!(language_name("notes.example"), None);
+}
+
+#[test]
 fn extensions_resolve_case_insensitively() {
     assert_language_names(&[
         ("README.MD", "markdown"),
@@ -301,6 +316,21 @@ $$;
             ("keyword", "update"),
             ("number", "42"),
             ("number", "1.5"),
+        ],
+    );
+}
+
+#[test]
+fn jsonc_comments_highlight_in_json() {
+    let source = "// config\n{\n  /* name */\n  \"name\": \"worker\",\n  \"port\": 8787\n}\n";
+    assert_highlights(
+        "json",
+        source,
+        &[
+            ("comment", "// config"),
+            ("comment", "/* name */"),
+            ("string", "\"worker\""),
+            ("number", "8787"),
         ],
     );
 }
