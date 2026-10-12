@@ -104,8 +104,8 @@ pub fn initialize_cloud_preferences_syncer(
 
     // The settings surface decides whether this process participates in cloud
     // sync at all (e.g. the TUI keeps its config local).
-    let sync_enabled =
-        settings::settings_mode().should_sync_to_cloud() && channel_syncs_settings_to_cloud(channel);
+    let sync_enabled = settings::settings_mode().should_sync_to_cloud()
+        && channel_syncs_settings_to_cloud(channel);
     CloudPreferencesSyncer::new(
         force_local_wins_on_startup,
         toml_file_path,

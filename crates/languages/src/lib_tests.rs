@@ -870,11 +870,7 @@ function Header(props: { title: string }) {
   return <h2>{props.title}</h2>;
 }
 ";
-    assert_painted(
-        "tsx",
-        source,
-        &[("constructor", "Header"), ("tag", "h2")],
-    );
+    assert_painted("tsx", source, &[("constructor", "Header"), ("tag", "h2")]);
 }
 
 #[test]

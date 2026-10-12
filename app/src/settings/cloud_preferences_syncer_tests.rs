@@ -1570,7 +1570,8 @@ fn test_file_missing_with_stored_hash_lets_cloud_win() {
         enable_settings_sync(&mut app);
 
         app.add_singleton_model(move |ctx| {
-            let syncer = initialize_cloud_preferences_syncer(missing_path, None, SYNCING_CHANNEL, ctx);
+            let syncer =
+                initialize_cloud_preferences_syncer(missing_path, None, SYNCING_CHANNEL, ctx);
             syncer.sync(ForceCloudToMatchLocal::No, ctx);
             syncer
         });
