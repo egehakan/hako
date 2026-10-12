@@ -456,3 +456,156 @@ async fn num_lines_in_file_if_non_binary_errors_for_directory() {
     let result = LocalDiffStateModel::num_lines_in_file_if_non_binary(dir.path()).await;
     assert!(result.is_err());
 }
+
+async fn git(repo: &Path, args: &[&str]) -> String {
+    run_git_command(repo, args)
+        .await
+        .unwrap_or_else(|err| panic!("git {args:?} failed: {err}"))
+        .trim()
+        .to_string()
+}
+
+async fn commit_file(repo: &Path, name: &str, content: &str, message: &str) {
+    std::fs::write(repo.join(name), content).expect("write file");
+    git(repo, &["add", "-A"]).await;
+    git(repo, &["commit", "-m", message]).await;
+}
+
+/// A repository whose `feature` branch is checked out and has diverged from `main`: both have
+/// one commit the other lacks. Returns the commit they share.
+async fn init_diverged_repo(repo: &Path) -> String {
+    git(repo, &["init", "-b", "main"]).await;
+    git(repo, &["config", "user.email", "test@test.com"]).await;
+    git(repo, &["config", "user.name", "Test"]).await;
+    git(repo, &["config", "commit.gpgsign", "false"]).await;
+    commit_file(repo, "shared.txt", "one\n", "shared").await;
+    let fork_point = git(repo, &["rev-parse", "HEAD"]).await;
+
+    git(repo, &["checkout", "-b", "feature"]).await;
+    commit_file(repo, "feature.txt", "feature\n", "on feature").await;
+    git(repo, &["checkout", "main"]).await;
+    commit_file(repo, "shared.txt", "one\ntwo\n", "on main").await;
+    git(repo, &["checkout", "feature"]).await;
+    fork_point
+}
+
+fn revision(rev: &str, comparison: RevisionComparison) -> DiffMode {
+    DiffMode::Revision {
+        rev: rev.to_string(),
+        comparison,
+    }
+}
+
+async fn changed_paths(repo: &Path, mode: DiffMode) -> Vec<String> {
+    let mut paths: Vec<String> =
+        LocalDiffStateModel::load_diff_data_for_mode(mode, repo.to_path_buf())
+            .await
+            .expect("diff loads")
+            .files
+            .into_iter()
+            .map(|file| file.file_path)
+            .collect();
+    paths.sort_unstable();
+    paths
+}
+
+#[tokio::test]
+async fn resolve_diff_base_follows_the_comparison_of_a_revision() {
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo = repo_dir.path();
+    let fork_point = init_diverged_repo(repo).await;
+    let main = git(repo, &["rev-parse", "main"]).await;
+
+    let direct = LocalDiffStateModel::resolve_diff_base(
+        repo,
+        &revision("main", RevisionComparison::Direct),
+    )
+    .await
+    .expect("direct base resolves");
+    assert_eq!(direct, main);
+
+    let merge_base = LocalDiffStateModel::resolve_diff_base(
+        repo,
+        &revision("main", RevisionComparison::MergeBase),
+    )
+    .await
+    .expect("merge base resolves");
+    assert_eq!(merge_base, fork_point);
+
+    // A branch compared by name keeps comparing from the merge base.
+    let branch =
+        LocalDiffStateModel::resolve_diff_base(repo, &DiffMode::OtherBranch("main".to_string()))
+            .await
+            .expect("branch base resolves");
+    assert_eq!(branch, fork_point);
+
+    let expression = LocalDiffStateModel::resolve_diff_base(
+        repo,
+        &revision("HEAD~1", RevisionComparison::Direct),
+    )
+    .await
+    .expect("expression resolves");
+    assert_eq!(expression, fork_point);
+}
+
+#[tokio::test]
+async fn resolve_diff_base_fails_for_an_unknown_revision_and_for_head() {
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo = repo_dir.path();
+    init_diverged_repo(repo).await;
+
+    for comparison in [RevisionComparison::Direct, RevisionComparison::MergeBase] {
+        let error =
+            LocalDiffStateModel::resolve_diff_base(repo, &revision("no-such-rev", comparison))
+                .await
+                .expect_err("unknown revision does not resolve");
+        assert!(error.to_string().contains("no-such-rev"), "{error}");
+    }
+    assert!(
+        LocalDiffStateModel::resolve_diff_base(repo, &DiffMode::Head)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn revision_mode_diffs_directly_or_from_the_merge_base() {
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo = repo_dir.path();
+    init_diverged_repo(repo).await;
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write untracked file");
+
+    // From the merge base only this branch's own work shows.
+    assert_eq!(
+        changed_paths(repo, revision("main", RevisionComparison::MergeBase)).await,
+        ["feature.txt", "untracked.txt"]
+    );
+    // Directly, what main gained since the branches diverged shows as well.
+    assert_eq!(
+        changed_paths(repo, revision("main", RevisionComparison::Direct)).await,
+        ["feature.txt", "shared.txt", "untracked.txt"]
+    );
+    // Comparing with the branch's own previous commit shows what that commit added.
+    assert_eq!(
+        changed_paths(repo, revision("HEAD~1", RevisionComparison::Direct)).await,
+        ["feature.txt", "untracked.txt"]
+    );
+}
+
+#[tokio::test]
+async fn revision_mode_reports_an_unknown_revision_as_an_error() {
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo = repo_dir.path();
+    init_diverged_repo(repo).await;
+
+    let diffs = LocalDiffStateModel::load_diffs_for_repo(
+        repo.to_path_buf(),
+        revision("no-such-rev", RevisionComparison::Direct),
+        false,
+    )
+    .await;
+    match diffs.changes {
+        Ok(_) => panic!("an unknown revision should fail to load"),
+        Err(error) => assert!(error.contains("no-such-rev"), "{error}"),
+    }
+}

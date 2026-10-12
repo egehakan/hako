@@ -9,7 +9,10 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
         use crate::ai::agent::{AIAgentAttachment, CurrentHead, DiffBase};
         use crate::ai::blocklist::BlocklistAIContextModel;
-        use crate::code_review::{diff_state::DiffMode, DiffSetScope};
+        use crate::code_review::{
+            diff_state::{display_revision, DiffMode},
+            DiffSetScope,
+        };
         use warpui::{AppContext, ModelHandle};
     }
 }
@@ -83,6 +86,9 @@ pub fn create_attachment_reference_and_key(
                 }
                 DiffMode::OtherBranch(branch_name) => {
                     format!("diffset against {branch_name}")
+                }
+                DiffMode::Revision { rev, .. } => {
+                    format!("diffset against {}", display_revision(rev))
                 }
             };
             let key = diff_set_description.clone();

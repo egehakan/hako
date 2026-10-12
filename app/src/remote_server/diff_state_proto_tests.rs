@@ -6,7 +6,7 @@ use super::super::proto;
 use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE, UnrenderableReason};
 use crate::code_review::diff_state::{
     DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState, FileDiff, FileDiffAndContent,
-    FileStatusInfo, GitDiffWithBaseContent, GitFileStatus,
+    FileStatusInfo, GitDiffWithBaseContent, GitFileStatus, RevisionComparison,
 };
 use crate::util::git::PrInfo;
 
@@ -261,4 +261,48 @@ fn file_diff_to_proto_preserves_content_at_budget_boundary() {
         Some(at_budget.as_str())
     );
     assert_eq!(proto_diff.size, proto::DiffSize::Normal as i32);
+}
+
+// ── DiffMode ────────────────────────────────────────────────────
+
+#[test]
+fn diff_modes_the_protocol_knows_round_trip() {
+    for mode in [
+        DiffMode::Head,
+        DiffMode::MainBranch,
+        DiffMode::OtherBranch("feature/remote".to_string()),
+    ] {
+        let proto_mode = proto::DiffMode::from(&mode);
+        assert_eq!(DiffMode::from(&proto_mode), mode);
+    }
+}
+
+#[test]
+fn a_diff_mode_without_a_mode_reads_as_head() {
+    assert_eq!(
+        DiffMode::from(&proto::DiffMode { mode: None }),
+        DiffMode::Head
+    );
+}
+
+#[test]
+fn a_revision_is_sent_as_the_branch_comparison_the_protocol_has() {
+    for comparison in [RevisionComparison::MergeBase, RevisionComparison::Direct] {
+        let proto_mode = proto::DiffMode::from(&DiffMode::Revision {
+            rev: "v1.0".to_string(),
+            comparison,
+        });
+        assert_eq!(
+            proto_mode.mode,
+            Some(proto::diff_mode::Mode::OtherBranch(
+                proto::DiffModeOtherBranch {
+                    branch_name: "v1.0".to_string(),
+                }
+            ))
+        );
+        assert_eq!(
+            DiffMode::from(&proto_mode),
+            DiffMode::OtherBranch("v1.0".to_string())
+        );
+    }
 }

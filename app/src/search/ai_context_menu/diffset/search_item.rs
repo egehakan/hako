@@ -6,7 +6,7 @@ use warpui::elements::{
 use warpui::{AppContext, Element, SingletonEntity};
 
 use crate::appearance::Appearance;
-use crate::code_review::diff_state::DiffMode;
+use crate::code_review::diff_state::{DiffMode, display_revision};
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
 use crate::search::ai_context_menu::styles;
 use crate::search::item::SearchItem;
@@ -24,6 +24,7 @@ impl DiffSetSearchItem {
             DiffMode::Head => "Uncommitted changes".to_string(),
             DiffMode::MainBranch => "Changes vs. main branch".to_string(),
             DiffMode::OtherBranch(branch) => format!("Changes vs. {branch}"),
+            DiffMode::Revision { rev, .. } => format!("Changes vs. {}", display_revision(rev)),
         }
     }
 
@@ -32,6 +33,9 @@ impl DiffSetSearchItem {
             DiffMode::Head => "All uncommitted changes in the working directory".to_string(),
             DiffMode::MainBranch => "All changes compared to the main branch".to_string(),
             DiffMode::OtherBranch(branch) => format!("All changes compared to {branch}"),
+            DiffMode::Revision { rev, .. } => {
+                format!("All changes compared to {}", display_revision(rev))
+            }
         }
     }
 }

@@ -388,6 +388,13 @@ impl From<&DiffMode> for proto::DiffMode {
                     branch_name: branch.clone(),
                 })
             }
+            // The protocol only knows comparisons from a merge base, so a direct comparison
+            // cannot be asked of a remote host. Remote repositories are not offered one.
+            DiffMode::Revision { rev, .. } => {
+                proto::diff_mode::Mode::OtherBranch(proto::DiffModeOtherBranch {
+                    branch_name: rev.clone(),
+                })
+            }
         };
         proto::DiffMode {
             mode: Some(mode_oneof),

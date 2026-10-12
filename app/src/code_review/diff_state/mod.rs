@@ -309,9 +309,76 @@ pub enum DiffMode {
     MainBranch,
     /// Show changes in working directory against an arbitrary branch (git diff $(git merge-base HEAD <branch>))
     OtherBranch(#[serde(skip_serializing)] String),
+    /// Show changes in working directory against anything git resolves to a commit: a remote
+    /// branch, a tag, a commit, an expression such as `HEAD~3`.
+    Revision {
+        #[serde(skip_serializing)]
+        rev: String,
+        comparison: RevisionComparison,
+    },
+}
+
+/// Which commit a [`DiffMode::Revision`] compares the working directory with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize)]
+pub enum RevisionComparison {
+    /// The commit the revision and `HEAD` last had in common
+    /// (git diff $(git merge-base HEAD <rev>)).
+    #[default]
+    MergeBase,
+    /// The revision itself (git diff <rev>).
+    Direct,
+}
+
+impl RevisionComparison {
+    /// Short name shown next to the revision being compared with.
+    pub fn label(&self) -> &'static str {
+        match self {
+            RevisionComparison::MergeBase => "common ancestor",
+            RevisionComparison::Direct => "direct",
+        }
+    }
+}
+
+/// Length of the abbreviated commit shown in place of a full one.
+const SHORT_SHA_LENGTH: usize = 7;
+
+/// Abbreviates `rev` when it is a full commit id, and returns any other revision unchanged.
+pub fn display_revision(rev: &str) -> &str {
+    let is_full_sha = rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if is_full_sha {
+        &rev[..SHORT_SHA_LENGTH]
+    } else {
+        rev
+    }
 }
 
 impl DiffMode {
+    /// Whether the comparison looks back at a point in history instead of following the working
+    /// tree's own branch. Changing the working tree from such a view, as discarding and reverting
+    /// do, would bring that old state back over committed work.
+    pub fn is_historical(&self) -> bool {
+        match self {
+            DiffMode::Head | DiffMode::MainBranch | DiffMode::OtherBranch(_) => false,
+            DiffMode::Revision { .. } => true,
+        }
+    }
+
+    /// How the comparison base reads in the review header. `main_branch_name` is the repository's
+    /// main branch, when known.
+    pub fn base_label(&self, main_branch_name: Option<&str>) -> String {
+        let merge_base = RevisionComparison::MergeBase.label();
+        match self {
+            DiffMode::Head => "Uncommitted changes".to_string(),
+            DiffMode::MainBranch => {
+                format!("{} \u{b7} {merge_base}", main_branch_name.unwrap_or("main"))
+            }
+            DiffMode::OtherBranch(branch) => format!("{branch} \u{b7} {merge_base}"),
+            DiffMode::Revision { rev, comparison } => {
+                format!("{} \u{b7} {}", display_revision(rev), comparison.label())
+            }
+        }
+    }
+
     /// Creates a DiffMode from a branch name.
     /// If the branch matches the repository's main branch, returns `MainBranch`;
     /// otherwise returns `OtherBranch(branch)`.
@@ -652,6 +719,18 @@ impl DiffStateModel {
                     model.set_diff_mode(mode, track_load_duration, preferred_session, ctx);
                 });
             }
+        }
+    }
+
+    /// Puts a model that has not loaded anything yet in the diff mode its repository was last
+    /// compared in. Nothing is loaded.
+    pub(crate) fn restore_diff_mode(&self, mode: DiffMode, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(local) => {
+                local.update(ctx, |local, _| local.restore_diff_mode(mode));
+            }
+            // A remote model subscribes to its mode as it is created.
+            Self::Remote(_) => {}
         }
     }
 

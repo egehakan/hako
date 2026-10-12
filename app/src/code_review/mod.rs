@@ -29,6 +29,7 @@ pub(crate) mod comment_rendering;
 pub mod comments;
 pub(crate) mod diff_menu;
 pub(crate) mod diff_selector;
+pub(crate) mod revisions;
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 pub(crate) mod file_invalidation_queue;
 
