@@ -10750,6 +10750,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "project_replace"
+version = "0.1.0"
+dependencies = [
+ "grep",
+ "hex",
+ "ignore",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "prost"
 version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
