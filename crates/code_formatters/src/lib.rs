@@ -7,12 +7,16 @@
 
 pub mod config;
 pub mod discovery;
+mod line_ending;
 mod plan;
 mod preference;
 mod registry;
+mod run;
 #[cfg(all(test, unix))]
 mod test_support;
 
+pub use line_ending::LineEnding;
 pub use plan::{Arg, Invocation, Selection, select};
 pub use preference::Preference;
 pub use registry::{Language, Tool};
+pub use run::{Limits, RunError, run};
