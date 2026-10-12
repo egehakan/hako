@@ -3185,6 +3185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "code_formatters"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "command",
+ "futures-lite 1.13.0",
+ "instant",
+ "libc",
+ "log",
+ "serde_json",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "codebook-tree-sitter-latex"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
