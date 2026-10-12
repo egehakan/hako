@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(feature = "local_fs")]
-use file_viewer_ui::{FileViewerAction, FileViewerEvent, FileViewerView};
+use file_viewer_ui::FileViewerEvent;
+use file_viewer_ui::{FileViewerAction, FileViewerView};
 #[cfg(feature = "local_fs")]
 use file_viewers::kind::{self as viewer_kind, ViewerKind};
 use lsp::LspManagerModel;
