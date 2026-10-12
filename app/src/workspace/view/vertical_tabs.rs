@@ -44,7 +44,7 @@ use crate::appearance::Appearance;
 use crate::cloud_object::CloudObjectLookup as _;
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::code::editor::{add_color, remove_color};
-use crate::code::icon_from_file_path;
+use crate::code::{icon_from_file_path, icon_from_folder_path};
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::github_pr_display_text_from_url;
 use crate::drive::DriveObjectType;
@@ -74,6 +74,7 @@ use crate::workspace::action::{NewSessionMenuAnchor, WorkspaceAction};
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
 use crate::workspace::hoa_onboarding::HoaOnboardingStep;
 use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::tab_folders::{TabGroupIcon, display_directory};
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::tab_settings::{
     TabSettings, VerticalTabsCompactSubtitle, VerticalTabsDisplayGranularity,
@@ -303,6 +304,7 @@ struct TabGroupMouseStates {
     chevron: MouseStateHandle,
     kebab: MouseStateHandle,
     close: MouseStateHandle,
+    add_tab: MouseStateHandle,
 }
 
 /// Describes how a pane row sits in its tab's row layout. Carried as state
@@ -1913,7 +1915,24 @@ fn render_groups(
         merge_group_name_matches(&tab_group_ids, &matched_groups, own_matches)
     };
 
-    if visible_tabs.is_empty() {
+    // Groups without tabs stay in the list. While searching, only those whose name matches do.
+    let ordered_group_ids = workspace.ordered_tab_group_ids();
+    let groups_with_tabs: HashSet<TabGroupId> =
+        workspace.tabs.iter().filter_map(|tab| tab.group_id).collect();
+    let empty_groups_matching_query =
+        (!query.is_empty()).then(|| matched_group_ids(&workspace.tab_groups, &query.to_lowercase()));
+    let shown_empty_groups: Vec<TabGroupId> = ordered_group_ids
+        .iter()
+        .copied()
+        .filter(|group_id| !groups_with_tabs.contains(group_id))
+        .filter(|group_id| {
+            empty_groups_matching_query
+                .as_ref()
+                .is_none_or(|matched| matched.contains(group_id))
+        })
+        .collect();
+
+    if visible_tabs.is_empty() && shown_empty_groups.is_empty() {
         if query.is_empty() {
             return Empty::new().finish();
         } else {
@@ -1942,6 +1961,31 @@ fn render_groups(
         groups = groups.with_spacing(TABS_MODE_ITEM_SPACING);
     }
 
+    let mut rendered_empty_groups: HashSet<TabGroupId> = HashSet::new();
+    let mut render_empty_groups = |groups: &mut Flex, up_to: Option<TabGroupId>| {
+        let slots = match up_to.and_then(|id| ordered_group_ids.iter().position(|g| *g == id)) {
+            Some(slot) => &ordered_group_ids[..slot],
+            None if up_to.is_some() => &[][..],
+            None => &ordered_group_ids[..],
+        };
+        for group_id in slots {
+            if !shown_empty_groups.contains(group_id) || !rendered_empty_groups.insert(*group_id) {
+                continue;
+            }
+            if let Some(group) = workspace.tab_groups.get(group_id) {
+                groups.add_child(render_grouped_tab_container(
+                    state,
+                    workspace,
+                    group,
+                    &[],
+                    None,
+                    is_any_pane_dragging,
+                    app,
+                ));
+            }
+        }
+    };
+
     // Consecutive tabs sharing a group_id collapse into a single group container.
     // TODO(johnturcoo) adopt horizontal tabs 'tab slot' pattern to remove this while loop.
     let total_visible = visible_tabs.len();
@@ -1959,6 +2003,7 @@ fn render_groups(
                 .map(|group| (gid, group.clone()))
         }) {
             Some((group_id, mut group)) => {
+                render_empty_groups(&mut groups, Some(group_id));
                 // While a search is active, render every surviving group
                 // expanded so its matches are visible without a click. This
                 // only mutates the local clone — the stored `collapsed` flag is
@@ -2011,6 +2056,7 @@ fn render_groups(
             }
         }
     }
+    render_empty_groups(&mut groups, None);
     // Ghost after all tab groups (fencepost).
     if ghost_insertion_index == Some(workspace.tabs.len()) {
         groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
@@ -2793,10 +2839,33 @@ fn render_grouped_tabs_header(
     let sub_text_color = theme.sub_text_color(theme.background());
     let group_id = group.id;
 
+    // A group with an icon of its own, or a folder, shows that icon whether or not it is collapsed;
+    // a folder's default icon is open or closed to match.
+    let own_icon: Option<Box<dyn Element>> = match &group.icon {
+        Some(icon @ TabGroupIcon::Material(_)) => icon.material_image(),
+        Some(TabGroupIcon::Text(text)) => Some(
+            Text::new_inline(text.clone(), font_family, TAB_GROUP_ICON_SIZE)
+                .with_color(main_text_color.into())
+                .finish(),
+        ),
+        None => group
+            .directory
+            .as_ref()
+            .map(|directory| icon_from_folder_path(&directory.to_string_lossy(), !is_collapsed)),
+    };
+
     // Collapsed groups show the icon collage (same component as horizontal tab
     // groups) in place of the chevron, sized to VERTICAL_TABS_ICON_SIZE so
     // the 2-icon variant matches the tab Summary Pair layout exactly.
-    let tab_group_icon = if is_collapsed {
+    let tab_group_icon = if let Some(own_icon) = own_icon {
+        Align::new(
+            ConstrainedBox::new(own_icon)
+                .with_max_width(TAB_GROUP_ICON_SIZE + 2.)
+                .with_max_height(TAB_GROUP_ICON_SIZE + 2.)
+                .finish(),
+        )
+        .finish()
+    } else if is_collapsed {
         let kinds = collapsed_member_kinds.unwrap_or(&[]);
         render_group_member_icon_collage(kinds, VERTICAL_TABS_ICON_SIZE, appearance)
     } else {
@@ -2837,14 +2906,25 @@ fn render_grouped_tabs_header(
                 )
                 .finish()
         };
-    let subtitle_text = if member_count == 1 {
+    let tab_count_text = if member_count == 1 {
         "1 tab".to_string()
     } else {
         format!("{member_count} tabs")
     };
+    let (subtitle_text, subtitle_color) = match &group.directory {
+        Some(directory) if group.directory_missing => (
+            format!("Folder not found: {}", display_directory(directory)),
+            theme.ui_error_color(),
+        ),
+        Some(directory) => (
+            format!("{} · {tab_count_text}", display_directory(directory)),
+            sub_text_color.into(),
+        ),
+        None => (tab_count_text, sub_text_color.into()),
+    };
     let subtitle = Text::new_inline(subtitle_text, font_family, 10.)
         .with_clip(ClipConfig::ellipsis())
-        .with_color(sub_text_color.into())
+        .with_color(subtitle_color)
         .finish();
     let text_column: Box<dyn Element> = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
@@ -2854,6 +2934,15 @@ fn render_grouped_tabs_header(
         .with_child(subtitle)
         .finish();
 
+    // Opening a tab in the group is the one action that is always at hand, not only on hover.
+    let add_tab_button = render_tab_group_header_icon_button(
+        WarpIcon::Plus,
+        TAB_GROUP_HEADER_ACTION_ICON_SIZE,
+        sub_text_color,
+        internal_colors::fg_overlay_2(theme),
+        mouse_states.add_tab.clone(),
+        Some(WorkspaceAction::NewTabInGroup(group_id)),
+    );
     let action_buttons = if show_action_buttons {
         let kebab_button = SavePosition::new(
             render_tab_group_header_icon_button(
@@ -2882,11 +2971,12 @@ fn render_grouped_tabs_header(
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(GROUP_ACTION_BUTTON_GAP)
+            .with_child(add_tab_button)
             .with_child(kebab_button)
             .with_child(close_button)
             .finish()
     } else {
-        Empty::new().finish()
+        add_tab_button
     };
 
     let group_pinned = FeatureFlag::PinnedTabs.is_enabled() && group.pinned;
@@ -2911,10 +3001,7 @@ fn render_grouped_tabs_header(
         .finish();
 
     // Resolve the group's color so the header tints to match its member tabs.
-    let group_color_fill: Option<ThemeFill> = group
-        .color
-        .resolve(None)
-        .map(|c| c.to_ansi_color(&theme.terminal_colors().normal).into());
+    let group_color_fill: Option<ThemeFill> = group.fill(theme);
 
     let mut hoverable = Hoverable::new(mouse_states.header.clone(), move |state| {
         let border_fill = if is_header_selected {
@@ -3078,7 +3165,7 @@ fn render_grouped_tab_container(
         //   cursor: above the group near the top of the header, or into the group
         //   as its new first member lower down. `TabIndex(first)` enables that by
         //   testing the cursor against the first member's row.
-        let header = if is_any_pane_dragging {
+        let header = if is_any_pane_dragging && member_count > 0 {
             let header_location = if is_collapsed {
                 TabBarLocation::AfterTabIndex(first_member_index)
             } else {
@@ -3137,10 +3224,7 @@ fn render_grouped_tab_container(
         // a backdrop (member rows carry their own colors and layer on top), and
         // strengthen that tint on hover/active as the highlight. Fall back to the
         // neutral highlight when the group has no color.
-        let group_color_fill: Option<ThemeFill> = group
-            .color
-            .resolve(None)
-            .map(|c| c.to_ansi_color(&theme.terminal_colors().normal).into());
+        let group_color_fill: Option<ThemeFill> = group.fill(theme);
         let is_highlighted = hover_state.is_hovered() || any_member_active;
         let background = if let Some(color) = group_color_fill {
             // Highlight a colored tab group when it is hovered or active,
@@ -3193,6 +3277,7 @@ fn render_grouped_tab_container(
         // Distinct from the into-group indicator above the first tab in the group,
         // which carries this group's id instead of `None`.
         if is_any_pane_dragging
+            && member_count > 0
             && show_before_indicator(workspace.hovered_tab_index, first_member_index, None)
         {
             let mut stack = Stack::new().with_child(container);
@@ -3220,7 +3305,8 @@ fn render_grouped_tab_container(
     // Skip the group `Draggable` while a pane is being dragged so pane
     // reordering (within the active tab's split layout) doesn't fight with
     // group-block reordering for the same mouse input.
-    let skip_group_draggable = is_any_pane_dragging;
+    // A group without tabs has no block of tabs to reorder; it is moved from its menu.
+    let skip_group_draggable = is_any_pane_dragging || member_count == 0;
     let is_this_group_dragging = group.draggable_state.is_dragging();
     let group_draggable_state = group.draggable_state.clone();
     let positioned_container: Box<dyn Element> = if skip_group_draggable {
@@ -4080,17 +4166,11 @@ fn should_show_tab_group_header(
     has_custom_title || is_being_renamed || visible_pane_count > 1
 }
 
-/// Header text for a tab group the user has never named.
-const UNTITLED_GROUP_NAME: &str = "New Group";
-
 /// The group title as displayed in the panel header, including the fallback
 /// used for a group the user has never named. Search matches against this so a
 /// query matches what is actually on screen.
 fn group_display_name(group: &TabGroup) -> String {
-    group
-        .name
-        .clone()
-        .unwrap_or_else(|| UNTITLED_GROUP_NAME.to_string())
+    group.display_name()
 }
 
 fn group_name_highlight_indices(text: &str, query: &str) -> Vec<usize> {

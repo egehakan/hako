@@ -307,6 +307,7 @@ impl Workspace {
             let tab = &mut self.tabs[index];
             tab.group_id = Some(group_id);
             tab.pinned = false;
+            tab.stays_ungrouped = false;
             tab.in_multi_selection = false;
         }
 
@@ -398,6 +399,7 @@ impl Workspace {
             .tabs
             .iter()
             .position(|tab| tab.group_id == Some(group_id));
+        let empty_group_anchor = self.group_append_index(group_id);
 
         // Store the active tab (pane group).
         let active_pane_group_id = self
@@ -412,14 +414,15 @@ impl Workspace {
             let tab = &mut self.tabs[index];
             tab.group_id = Some(group_id);
             tab.pinned = false;
+            tab.stays_ungrouped = false;
             tab.in_multi_selection = false;
         }
 
         // Anchor the group block at its original first-member position, shifted
-        // left by the count of newly-added members from before that position.
-        let insert_at = first_existing_member.map_or(0, |first| {
-            first - selected_indices.iter().filter(|&&i| i < first).count()
-        });
+        // left by the count of newly-added members from before that position. A group without
+        // tabs is anchored where the tab list shows it.
+        let anchor = first_existing_member.unwrap_or(empty_group_anchor);
+        let insert_at = anchor - selected_indices.iter().filter(|&&i| i < anchor).count();
         // Split tabs into the destination group's members (existing + newly
         // added) and the rest.
         let (members, mut rest): (Vec<_>, Vec<_>) = self
@@ -475,6 +478,7 @@ impl Workspace {
         // Clear the group that all selected tabs belonged to.
         for &index in &selected_indices {
             self.tabs[index].group_id = None;
+            self.tabs[index].stays_ungrouped = true;
         }
 
         // Non-selected tabs originally before the group's first member; if the
@@ -742,26 +746,15 @@ impl Workspace {
             None => self.selection_shared_group(),
         };
 
-        let mut groups_with_first_index: Vec<(TabGroupId, usize)> = self
-            .tab_groups
-            .keys()
-            .copied()
-            .filter(|gid| Some(*gid) != excluded_group)
-            .filter_map(|gid| {
-                group_member_indices(&self.tabs, gid)
-                    .next()
-                    .map(|idx| (gid, idx))
-            })
-            .collect();
-        groups_with_first_index.sort_by_key(|(_, idx)| *idx);
-
-        groups_with_first_index
+        self.ordered_tab_group_ids()
             .into_iter()
-            .map(|(group_id, _)| {
+            .filter(|gid| Some(*gid) != excluded_group)
+            .map(|group_id| {
                 let label = self
                     .tab_groups
                     .get(&group_id)
-                    .and_then(|g| g.name.clone())
+                    .filter(|group| group.name.is_some() || group.is_folder())
+                    .map(TabGroup::display_name)
                     .unwrap_or_else(|| "Untitled group".to_string());
                 let action = match tab_index {
                     Some(tab_index) => WorkspaceAction::MoveTabToGroup {

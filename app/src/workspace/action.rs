@@ -221,6 +221,10 @@ pub enum WorkspaceAction {
     },
     UngroupTabs(TabGroupId),
     NewTabInGroup(TabGroupId),
+    /// Closes every tab in the group and removes the group, even when it is a folder.
+    RemoveTabGroup(TabGroupId),
+    /// Asks for a directory and adds it to the tab list as a folder.
+    AddTabFolder,
     MoveTabGroupUp(TabGroupId),
     MoveTabGroupDown(TabGroupId),
     CloseTabsOutsideGroup(TabGroupId),
@@ -973,6 +977,8 @@ impl WorkspaceAction {
             | RemoveActiveOrSelectedTabsFromGroup
             | UngroupTabs(_)
             | NewTabInGroup(_)
+            | RemoveTabGroup(_)
+            | AddTabFolder
             | MoveTabGroupUp(_)
             | MoveTabGroupDown(_)
             | CloseTabsOutsideGroup(_)

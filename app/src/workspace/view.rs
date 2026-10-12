@@ -17,6 +17,7 @@ pub(crate) mod openwarp_launch_modal;
 pub(crate) mod orchestration_launch_modal;
 pub(crate) mod right_panel;
 mod startup_directory;
+mod tab_folder_groups;
 mod tab_grouping;
 #[cfg(test)]
 #[path = "view_tests.rs"]
@@ -508,6 +509,7 @@ use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderTo
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
 use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::tab_folders::{TabFolders, TabFoldersEvent};
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::tab_settings::TabCloseButtonPosition;
 use crate::workspace::toast_stack::{
@@ -1117,6 +1119,12 @@ pub struct Workspace {
     traffic_light_mouse_states: TrafficLightMouseStates,
     /// Tab groups in this workspace, keyed by id.
     pub(crate) tab_groups: HashMap<TabGroupId, TabGroup>,
+    /// The order groups were last shown in. It is what places a group that has no tabs; read it
+    /// through `ordered_tab_group_ids`, which accounts for tabs moved since it was recorded.
+    pub(crate) tab_group_order: Vec<TabGroupId>,
+    /// Set while a tab is opened for a specific group, so that it is not filed under the folder
+    /// of its directory first.
+    suppress_folder_assignment: bool,
     /// Per-group hover state for the horizontal tab bar.
     horizontal_tab_group_mouse_states: RefCell<HashMap<TabGroupId, HorizontalTabGroupMouseStates>>,
     tab_rename_editor: ViewHandle<EditorView>,
@@ -1686,6 +1694,7 @@ impl Workspace {
             && let Some(group) = self.tab_groups.get_mut(&group_id)
         {
             group.name = Some(trimmed.to_string());
+            self.publish_tab_folder(group_id, ctx);
         }
         self.clear_tab_group_name_editor(ctx);
         self.focus_active_tab(ctx);
@@ -3517,6 +3526,8 @@ impl Workspace {
             tab_bar_hover_state: Default::default(),
             traffic_light_mouse_states: Default::default(),
             tab_groups: HashMap::new(),
+            tab_group_order: Vec::new(),
+            suppress_folder_assignment: false,
             horizontal_tab_group_mouse_states: RefCell::default(),
             tab_rename_editor: Self::tab_rename_editor(ctx),
             pane_rename_editor: Self::pane_rename_editor(ctx),
@@ -3666,6 +3677,10 @@ impl Workspace {
         };
 
         ws.configure_new_workspace(workspace_setting, ctx);
+        ws.join_tab_folders(ctx);
+        ctx.subscribe_to_model(&TabFolders::handle(ctx), |me, _, event, ctx| match event {
+            TabFoldersEvent::Changed => me.adopt_tab_folders(true, ctx),
+        });
         ws.sync_panel_positions_from_config(ctx);
         ws.sync_window_button_visibility(ctx);
         ws.update_titlebar_height(ctx);
@@ -4044,6 +4059,10 @@ impl Workspace {
                     // Mirrors the session-restore path: only honor pinned
                     // state while the Pinned Tabs feature is enabled.
                     pinned: FeatureFlag::PinnedTabs.is_enabled() && group_template.pinned,
+                    directory: None,
+                    custom_color: None,
+                    icon: None,
+                    directory_missing: false,
                 };
                 let id = group.id;
                 self.tab_groups.insert(id, group);
@@ -4166,21 +4185,29 @@ impl Workspace {
                         .tab_groups
                         .iter()
                         .map(|group_snapshot| {
-                            (
-                                group_snapshot.id,
-                                TabGroup {
-                                    id: group_snapshot.id,
-                                    name: group_snapshot.name.clone(),
-                                    color: group_snapshot.color,
-                                    collapsed: group_snapshot.collapsed,
-                                    draggable_state: Default::default(),
-                                    // Only restore pinned state when the
-                                    // Pinned Tabs feature is enabled.
-                                    pinned: FeatureFlag::PinnedTabs.is_enabled()
-                                        && group_snapshot.pinned,
-                                },
-                            )
+                            let mut group = TabGroup {
+                                id: group_snapshot.id,
+                                name: group_snapshot.name.clone(),
+                                color: group_snapshot.color,
+                                collapsed: group_snapshot.collapsed,
+                                draggable_state: Default::default(),
+                                // Only restore pinned state when the
+                                // Pinned Tabs feature is enabled.
+                                pinned: FeatureFlag::PinnedTabs.is_enabled()
+                                    && group_snapshot.pinned,
+                                directory: group_snapshot.directory.clone(),
+                                custom_color: group_snapshot.custom_color,
+                                icon: group_snapshot.icon.clone(),
+                                directory_missing: false,
+                            };
+                            group.refresh_directory_missing();
+                            (group_snapshot.id, group)
                         })
+                        .collect();
+                    self.tab_group_order = window_snapshot
+                        .tab_groups
+                        .iter()
+                        .map(|group_snapshot| group_snapshot.id)
                         .collect();
                 }
 
@@ -4208,6 +4235,8 @@ impl Workspace {
                         self.tabs[tab_index].group_id = saved_tab
                             .group_id
                             .filter(|group_id| self.tab_groups.contains_key(group_id));
+                        self.tabs[tab_index].stays_ungrouped =
+                            saved_tab.stays_ungrouped == Some(true);
 
                         let pane_group = self.tabs[tab_index].pane_group.clone();
 
@@ -4250,6 +4279,10 @@ impl Workspace {
                 }
 
                 self.activate_tab_internal(active_tab_index, ctx);
+                // Only when every saved tab was restored do the tabs line up with their snapshots.
+                if self.tab_count() == window_snapshot.tabs.len() {
+                    self.file_restored_tabs_under_folders(&window_snapshot.tabs, ctx);
+                }
                 self.check_and_trigger_onboarding(ctx);
             }
             NewWorkspaceSource::FromTemplate { window_template } => {
@@ -5576,6 +5609,8 @@ impl Workspace {
     /// view's state. It's not meant to be invoked directly by an action.
     pub fn activate_tab_internal(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
         if index < self.tab_count() {
+            self.refresh_missing_tab_folders(ctx);
+
             // If the command palette is open when the tab is switched using a keybinding,
             // we want to close the palette so that we don't get into a state where the palette
             // is open but doesn't have focus.
@@ -5892,10 +5927,12 @@ impl Workspace {
         let Some(group) = self.tab_groups.get_mut(&group_id) else {
             return;
         };
-        if group.color == color {
+        if group.color == color && group.custom_color.is_none() {
             return;
         }
         group.color = color;
+        group.custom_color = None;
+        self.publish_tab_folder(group_id, ctx);
         ctx.notify();
     }
 
@@ -7264,6 +7301,14 @@ impl Workspace {
                     .with_icon(icons::Icon::LayersThree01)
                     .into_item(),
             );
+            if uses_vertical_tabs(ctx) {
+                menu_items.push(
+                    MenuItemFields::new("Add folder…")
+                        .with_on_select_action(WorkspaceAction::AddTabFolder)
+                        .with_icon(icons::Icon::FolderPlus)
+                        .into_item(),
+                );
+            }
         }
 
         menu_items.push(MenuItem::Separator);
@@ -7586,6 +7631,7 @@ impl Workspace {
         let group = TabGroup::new();
         let group_id = group.id;
         self.tab_groups.insert(group_id, group);
+        self.suppress_folder_assignment = true;
         self.add_new_session_tab_with_default_mode(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
@@ -7594,6 +7640,7 @@ impl Workspace {
             false,
             ctx,
         );
+        self.suppress_folder_assignment = false;
         let new_tab_index = self.active_tab_index;
 
         // Ensure that new tab groups always land below pinned items, but above
@@ -7612,13 +7659,18 @@ impl Workspace {
         ctx.dispatch_typed_action_deferred(WorkspaceAction::RenameTabGroup(group_id));
     }
 
-    /// Closes every tab in the given group and removes the group.
+    /// Closes every tab in the given group. The group goes with its tabs unless it is a folder,
+    /// which stays in the tab list without tabs.
     pub fn close_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        let is_folder = self
+            .tab_groups
+            .get(&group_id)
+            .is_some_and(TabGroup::is_folder);
         let indices: Vec<usize> = group_member_indices(&self.tabs, group_id).collect();
         if indices.is_empty() {
-            self.tab_groups.remove(&group_id);
-            ctx.dispatch_global_action("workspace:save_app", ());
-            ctx.notify();
+            if !is_folder {
+                self.delete_empty_tab_group(group_id, ctx);
+            }
             return;
         }
         let first_index = indices[0];
@@ -7631,9 +7683,28 @@ impl Workspace {
             true,
             ctx,
         );
+        if closed && !is_folder {
+            self.delete_empty_tab_group(group_id, ctx);
+        }
+    }
+
+    /// Closes every tab in the given group and removes the group, a folder included.
+    pub fn remove_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        let indices: Vec<usize> = group_member_indices(&self.tabs, group_id).collect();
+        let closed = match indices.first().copied() {
+            Some(first_index) => self.close_tabs(
+                indices.into_iter(),
+                OpenDialogSource::CloseOtherTabs {
+                    tab_index: first_index,
+                },
+                false,
+                true,
+                ctx,
+            ),
+            None => true,
+        };
         if closed {
-            self.tab_groups.remove(&group_id);
-            ctx.notify();
+            self.delete_empty_tab_group(group_id, ctx);
         }
     }
 
@@ -7645,6 +7716,8 @@ impl Workspace {
     ) {
         if let Some(group) = self.tab_groups.get_mut(&group_id) {
             group.collapsed = !group.collapsed;
+            group.refresh_directory_missing();
+            self.publish_tab_folder(group_id, ctx);
             ctx.dispatch_global_action("workspace:save_app", ());
             ctx.notify();
         }
@@ -7676,13 +7749,9 @@ impl Workspace {
         let Some(group) = self.tab_groups.get(&group_id) else {
             return;
         };
-        // Seed the editor with the existing name, or the "New Group" default
-        // label when the group is unnamed. `insert_selected_text` selects the
-        // seeded text so the user can type to replace it instantly.
-        let seed_text = group
-            .name
-            .clone()
-            .unwrap_or_else(|| "New Group".to_string());
+        // Seed the editor with the name on display. `insert_selected_text` selects the seeded
+        // text so the user can type to replace it instantly.
+        let seed_text = group.display_name();
 
         self.current_workspace_state
             .set_tab_group_being_renamed(group_id);
@@ -7779,13 +7848,9 @@ impl Workspace {
         }
         let previous_group_id = tab.group_id;
 
-        let target_index = self.index_after_group(group_id).unwrap_or(self.tabs.len());
-        self.tabs[tab_index].group_id = Some(group_id);
-
-        // Moving a tab to a group, clear its pinned state.
-        self.tabs[tab_index].pinned = false;
+        // Moving a tab to a group clears its pinned state.
+        self.place_tab_in_group(tab_index, group_id, ctx);
         self.expand_tab_group(group_id, ctx);
-        self.move_tab_to_index(tab_index, target_index, ctx);
 
         if let Some(prev) = previous_group_id {
             self.prune_empty_tab_group(prev, ctx);
@@ -7818,6 +7883,7 @@ impl Workspace {
             .map(|t| self.clamp_to_unpinned_region(&self.tabs, t));
 
         self.tabs[tab_index].group_id = None;
+        self.tabs[tab_index].stays_ungrouped = true;
 
         if let Some(target) = target {
             self.move_tab_to_index(tab_index, target, ctx);
@@ -7843,9 +7909,17 @@ impl Workspace {
         for tab in &mut self.tabs {
             if tab.group_id == Some(group_id) {
                 tab.group_id = None;
+                tab.stays_ungrouped = true;
             }
         }
-        self.tab_groups.remove(&group_id);
+        if let Some(directory) = self
+            .tab_groups
+            .remove(&group_id)
+            .and_then(|group| group.directory)
+        {
+            TabFolders::handle(ctx).update(ctx, |folders, ctx| folders.remove(&directory, ctx));
+        }
+        self.tab_group_order.retain(|id| *id != group_id);
 
         // If the group was pinned, we must reposition the group's
         // members after the pinned area. They are now ungrouped and
@@ -7876,11 +7950,20 @@ impl Workspace {
     /// tab is created top-level (or in another group), so we pull it to the end
     /// of this group's run.
     fn new_tab_in_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
-        if !FeatureFlag::GroupedTabs.is_enabled() || !self.tab_groups.contains_key(&group_id) {
+        let Some(group) = self
+            .tab_groups
+            .get(&group_id)
+            .filter(|_| FeatureFlag::GroupedTabs.is_enabled())
+        else {
+            return;
+        };
+        if group.is_folder() {
+            self.new_tab_in_folder(group_id, ctx);
             return;
         }
 
         // Creating the tab honors the default session mode and becomes active.
+        self.suppress_folder_assignment = true;
         self.add_new_session_tab_with_default_mode(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
@@ -7889,22 +7972,13 @@ impl Workspace {
             false,
             ctx,
         );
+        self.suppress_folder_assignment = false;
 
         // If the creation path already dropped the new tab into this group
         // (`AfterCurrentTab` with a member active), it's correctly placed right
         // after the active tab. Otherwise pull it to the end of the group's run.
         let new_idx = self.active_tab_index;
-        let already_in_group = self
-            .tabs
-            .get(new_idx)
-            .is_some_and(|tab| tab.group_id == Some(group_id));
-        if !already_in_group {
-            let target_index = self.index_after_group(group_id).unwrap_or(self.tabs.len());
-            if let Some(tab) = self.tabs.get_mut(new_idx) {
-                tab.group_id = Some(group_id);
-            }
-            self.move_tab_to_index(new_idx, target_index, ctx);
-        }
+        self.place_tab_in_group(new_idx, group_id, ctx);
         self.expand_tab_group(group_id, ctx);
     }
 
@@ -7956,6 +8030,10 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         if !FeatureFlag::GroupedTabs.is_enabled() {
+            return;
+        }
+        // The horizontal tab bar shows no groups without tabs, so there is nothing to step over.
+        if uses_vertical_tabs(ctx) && self.move_tab_group_in_list(group_id, direction, ctx) {
             return;
         }
         if !self.can_move_tab_group(group_id, direction) {
@@ -8118,11 +8196,17 @@ impl Workspace {
         ctx.notify();
     }
 
-    /// Removes a tab group from the workspace if no tabs reference it.
+    /// Removes a tab group from the workspace if no tabs reference it. Folders are kept: they
+    /// stay in the tab list until they are removed explicitly.
     fn prune_empty_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
         let has_members = group_member_indices(&self.tabs, group_id).next().is_some();
-        if !has_members {
+        let is_folder = self
+            .tab_groups
+            .get(&group_id)
+            .is_some_and(TabGroup::is_folder);
+        if !has_members && !is_folder {
             self.tab_groups.remove(&group_id);
+            self.tab_group_order.retain(|id| *id != group_id);
             ctx.notify();
         }
     }
@@ -10445,17 +10529,30 @@ impl Workspace {
         is_vertical: bool,
         terminal_colors: AnsiColors,
     ) -> Vec<MenuItem<WorkspaceAction>> {
-        let Some((first, last)) = group_member_index_range(&self.tabs, group_id) else {
+        let Some(group) = self.tab_groups.get(&group_id) else {
             return vec![];
         };
-        let has_tabs_above = first > 0;
-        let has_tabs_below = last + 1 < self.tabs.len();
-        let has_tabs_outside = (last - first + 1) < self.tabs.len();
+        let is_folder = group.is_folder();
+        let member_range = group_member_index_range(&self.tabs, group_id);
+        let has_tabs = member_range.is_some();
+        let has_tabs_above = member_range.is_some_and(|(first, _)| first > 0);
+        let has_tabs_below = member_range.is_some_and(|(_, last)| last + 1 < self.tabs.len());
+        let has_tabs_outside =
+            member_range.is_some_and(|(first, last)| (last - first + 1) < self.tabs.len());
         // Move entries are hidden when the move would cross the
         // pinned/unpinned boundary, or go beyond the tab list bounds
         // so the user never sees an option that would be a no-op.
-        let can_move_up = has_tabs_above && self.can_move_tab_group(group_id, TabMovement::Left);
-        let can_move_down = has_tabs_below && self.can_move_tab_group(group_id, TabMovement::Right);
+        let (can_move_up, can_move_down) = if is_vertical {
+            (
+                self.can_move_tab_group_in_list(group_id, TabMovement::Left),
+                self.can_move_tab_group_in_list(group_id, TabMovement::Right),
+            )
+        } else {
+            (
+                has_tabs_above && self.can_move_tab_group(group_id, TabMovement::Left),
+                has_tabs_below && self.can_move_tab_group(group_id, TabMovement::Right),
+            )
+        };
 
         let move_section = {
             let mut items = vec![];
@@ -10487,11 +10584,14 @@ impl Workspace {
         };
 
         let close_section = {
-            let mut items = vec![
-                MenuItemFields::new("Close all tabs in group")
-                    .with_on_select_action(WorkspaceAction::CloseTabGroup(group_id))
-                    .into_item(),
-            ];
+            let mut items = vec![];
+            if has_tabs {
+                items.push(
+                    MenuItemFields::new("Close all tabs in group")
+                        .with_on_select_action(WorkspaceAction::CloseTabGroup(group_id))
+                        .into_item(),
+                );
+            }
             if has_tabs_outside {
                 items.push(
                     MenuItemFields::new("Close other tabs")
@@ -10523,10 +10623,18 @@ impl Workspace {
                         .into_item(),
                 );
             }
+            // A group without tabs only shows in the tab sidebar, so that is where it is removed.
+            if is_vertical {
+                items.push(
+                    MenuItemFields::new("Remove group")
+                        .with_on_select_action(WorkspaceAction::RemoveTabGroup(group_id))
+                        .into_item(),
+                );
+            }
             items
         };
 
-        let pin_section = if FeatureFlag::PinnedTabs.is_enabled() {
+        let pin_section = if FeatureFlag::PinnedTabs.is_enabled() && has_tabs {
             let (label, action) = if self.tab_groups.get(&group_id).is_some_and(|g| g.pinned) {
                 ("Unpin group", WorkspaceAction::UnpinTabGroup(group_id))
             } else {
@@ -10556,16 +10664,24 @@ impl Workspace {
         };
 
         let mut menu_items = vec![];
-        for section_items in [
-            pin_section,
-            vec![
+        // Ungrouping takes the group away, which a folder only does when it is removed.
+        let mut tab_section = vec![];
+        if has_tabs && !is_folder {
+            tab_section.push(
                 MenuItemFields::new("Ungroup tabs")
                     .with_on_select_action(WorkspaceAction::UngroupTabs(group_id))
                     .into_item(),
-                MenuItemFields::new("New tab in group")
-                    .with_on_select_action(WorkspaceAction::NewTabInGroup(group_id))
-                    .into_item(),
-            ],
+            );
+        }
+        tab_section.push(
+            MenuItemFields::new("New tab in group")
+                .with_on_select_action(WorkspaceAction::NewTabInGroup(group_id))
+                .into_item(),
+        );
+
+        for section_items in [
+            pin_section,
+            tab_section,
             move_section,
             vec![
                 MenuItemFields::new("Rename")
@@ -12145,6 +12261,11 @@ impl Workspace {
                     // enabled.
                     pinned: FeatureFlag::PinnedTabs.is_enabled()
                         && self.tabs.get(tab_index).is_some_and(|tab| tab.pinned),
+                    stays_ungrouped: Some(
+                        self.tabs
+                            .get(tab_index)
+                            .is_some_and(|tab| tab.stays_ungrouped),
+                    ),
                 }
             })
             .filter(|tab| {
@@ -12162,20 +12283,21 @@ impl Workspace {
             })
             .collect();
 
-        // Skip orphan groups whose members were all filtered out above.
-        // This is a safety net and ensures empty groups are not saved/restored.
+        // Groups are saved in display order, with or without tabs: a group stays in the tab list
+        // until it is removed.
         let tab_groups: Vec<TabGroupSnapshot> = if FeatureFlag::GroupedTabs.is_enabled() {
-            let referenced_group_ids: HashSet<TabGroupId> =
-                tabs.iter().filter_map(|tab| tab.group_id).collect();
-            self.tab_groups
-                .values()
-                .filter(|group| referenced_group_ids.contains(&group.id))
+            self.ordered_tab_group_ids()
+                .iter()
+                .filter_map(|group_id| self.tab_groups.get(group_id))
                 .map(|group| TabGroupSnapshot {
                     id: group.id,
                     name: group.name.clone(),
                     color: group.color,
                     collapsed: group.collapsed,
                     pinned: FeatureFlag::PinnedTabs.is_enabled() && group.pinned,
+                    directory: group.directory.clone(),
+                    custom_color: group.custom_color,
+                    icon: group.icon.clone(),
                 })
                 .collect()
         } else {
@@ -12494,6 +12616,7 @@ impl Workspace {
         // Clear a detail sidecar anchored to this tab before the tab disappears.
         self.vertical_tabs_panel
             .clear_detail_sidecar_if_for_pane_group(pane_group.id());
+        self.store_tab_group_order();
 
         // If this is the last tab, close the window instead of actually removing
         // the tab.
@@ -12537,9 +12660,11 @@ impl Workspace {
         let removed_pane_group_id = tab_data.pane_group.id();
         self.tab_mru_order.retain(|id| *id != removed_pane_group_id);
 
-        // If the closed tab was a group member, prune the group when it now
-        // has no remaining members.
-        if let Some(group_id) = tab_data.group_id {
+        // Closing its last tab does not remove a group shown in the tab sidebar. The horizontal
+        // tab bar cannot show a group without tabs, so there the group goes with its last tab.
+        if let Some(group_id) = tab_data.group_id
+            && !uses_vertical_tabs(ctx)
+        {
             self.prune_empty_tab_group(group_id, ctx);
         }
 
@@ -13313,6 +13438,11 @@ impl Workspace {
 
         let is_new_terminal = matches!(panes_layout, PanesLayout::SingleTerminal(_));
         let is_restoration = matches!(panes_layout, PanesLayout::Snapshot(_));
+        let new_terminal_directory = match &panes_layout {
+            PanesLayout::SingleTerminal(options) => options.initial_directory.clone(),
+            _ => None,
+        };
+        self.store_tab_group_order();
         let new_pane_group = ctx.add_typed_action_view(|ctx| {
             let mut pane_group = PaneGroup::new_with_panes_layout(
                 self.tips_completed.clone(),
@@ -13355,6 +13485,10 @@ impl Workspace {
                 new_tab.group_id = Some(group_id);
             }
             self.expand_tab_group(group_id, ctx);
+        }
+
+        if is_new_terminal {
+            self.file_new_terminal_tab_under_folder(new_terminal_directory.as_deref(), ctx);
         }
 
         if !is_restoration {
@@ -24389,6 +24523,8 @@ impl TypedActionView for Workspace {
             return;
         }
 
+        self.store_tab_group_order();
+
         match action {
             ActivateTab(index) => self.activate_tab(*index, ctx),
             ActivateTabByNumber(num) => self.activate_tab(num.saturating_sub(1), ctx),
@@ -24527,6 +24663,8 @@ impl TypedActionView for Workspace {
             }
             UngroupTabs(group_id) => self.ungroup_tabs(*group_id, ctx),
             NewTabInGroup(group_id) => self.new_tab_in_group(*group_id, ctx),
+            RemoveTabGroup(group_id) => self.remove_tab_group(*group_id, ctx),
+            AddTabFolder => self.add_tab_folder(ctx),
             MoveTabGroupUp(group_id) => self.move_tab_group(*group_id, TabMovement::Left, ctx),
             MoveTabGroupDown(group_id) => self.move_tab_group(*group_id, TabMovement::Right, ctx),
             CloseTabsOutsideGroup(group_id) => self.close_tabs_outside_group(*group_id, ctx),
@@ -29289,6 +29427,11 @@ impl Workspace {
                 // The bounds of the group that a tab could be dragged into.
                 let target_group_range =
                     expanded_target.and_then(|gid| group_member_index_range(&self.tabs, gid));
+                // A group without tabs has no block to hop into; its first tab goes where the
+                // tab list shows the group.
+                let empty_group_slot = expanded_target
+                    .filter(|_| target_group_range.is_none())
+                    .map(|gid| self.group_append_index(gid));
 
                 // Assign the tab to the group we're dragging over (or clear its
                 // group if none). This intentionally leaves the pin untouched:
@@ -29312,6 +29455,8 @@ impl Workspace {
                     if insert_at != current_index {
                         self.hop_tab_to_index(current_index, insert_at, ctx);
                     }
+                } else if let Some(target) = empty_group_slot {
+                    self.move_tab_to_index(current_index, target, ctx);
                 } else if let Some(target) = unpinned_region_start {
                     // Relocate the now-unpinned tab to the first unpinned slot
                     // so the pinned region stays contiguous.

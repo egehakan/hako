@@ -312,6 +312,7 @@ use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 use crate::system::SystemStats;
 use crate::tab::TabShortcutModifierState;
+use crate::workspace::tab_folders::TabFolders;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
@@ -3160,6 +3161,14 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
                 .urls
                 .iter()
                 .any(is_cloud_agent_web_home_launch_url);
+            // Folders belong to the app rather than to a window, so they come back even when the
+            // windows themselves are not restored.
+            if let Some(app_state) = &app_state {
+                let tab_folders = app_state.tab_folders.clone();
+                TabFolders::handle(ctx).update(ctx, |folders, ctx| {
+                    folders.restore(tab_folders, ctx);
+                });
+            }
             let app_state = if should_skip_restore { None } else { app_state };
             // Attempt to restore windows from the persisted application state.
             let arg = OpenFromRestoredArg { app_state };
