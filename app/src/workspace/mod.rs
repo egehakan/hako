@@ -20,6 +20,7 @@ pub mod rewind_confirmation_dialog;
 pub mod sync_inputs;
 pub mod tab_folders;
 pub mod tab_group;
+mod tab_group_customize_dialog;
 pub mod tab_settings;
 mod toast_stack;
 pub mod util;
@@ -85,6 +86,7 @@ pub fn init(app: &mut AppContext) {
 
     modal::init(app);
     native_modal::init(app);
+    tab_group_customize_dialog::init(app);
     lightbox_view::init(app);
     rewind_confirmation_dialog::init(app);
     delete_conversation_confirmation_dialog::init(app);

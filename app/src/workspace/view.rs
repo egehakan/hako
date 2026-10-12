@@ -510,6 +510,7 @@ use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_folders::{TabFolders, TabFoldersEvent};
+use crate::workspace::tab_group_customize_dialog::TabGroupCustomizeDialog;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::tab_settings::TabCloseButtonPosition;
 use crate::workspace::toast_stack::{
@@ -1125,6 +1126,9 @@ pub struct Workspace {
     /// Set while a tab is opened for a specific group, so that it is not filed under the folder
     /// of its directory first.
     suppress_folder_assignment: bool,
+    tab_group_customize_dialog: ViewHandle<TabGroupCustomizeDialog>,
+    /// The group whose color and icon are being chosen, while that dialog is open.
+    customizing_tab_group: Option<TabGroupId>,
     /// Per-group hover state for the horizontal tab bar.
     horizontal_tab_group_mouse_states: RefCell<HashMap<TabGroupId, HorizontalTabGroupMouseStates>>,
     tab_rename_editor: ViewHandle<EditorView>,
@@ -2079,6 +2083,16 @@ impl Workspace {
         );
 
         delete_conversation_confirmation_dialog
+    }
+
+    fn build_tab_group_customize_dialog(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<TabGroupCustomizeDialog> {
+        let dialog = ctx.add_typed_action_view(TabGroupCustomizeDialog::new);
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_tab_group_customize_event(event, ctx);
+        });
+        dialog
     }
 
     fn build_native_modal_view(ctx: &mut ViewContext<Self>) -> ViewHandle<NativeModal> {
@@ -3528,6 +3542,8 @@ impl Workspace {
             tab_groups: HashMap::new(),
             tab_group_order: Vec::new(),
             suppress_folder_assignment: false,
+            tab_group_customize_dialog: Self::build_tab_group_customize_dialog(ctx),
+            customizing_tab_group: None,
             horizontal_tab_group_mouse_states: RefCell::default(),
             tab_rename_editor: Self::tab_rename_editor(ctx),
             pane_rename_editor: Self::pane_rename_editor(ctx),
@@ -4276,6 +4292,14 @@ impl Workspace {
                     );
                 } else if self.left_panel_visibility_across_tabs_enabled(ctx) {
                     self.left_panel_open = restored_left_panel_open;
+                }
+
+                // Adding a tab expands the group of the tab before it, so groups that were saved
+                // collapsed are collapsed again once every tab is in.
+                for group_snapshot in &window_snapshot.tab_groups {
+                    if let Some(group) = self.tab_groups.get_mut(&group_snapshot.id) {
+                        group.collapsed = group_snapshot.collapsed;
+                    }
                 }
 
                 self.activate_tab_internal(active_tab_index, ctx);
@@ -10686,6 +10710,9 @@ impl Workspace {
             vec![
                 MenuItemFields::new("Rename")
                     .with_on_select_action(WorkspaceAction::RenameTabGroup(group_id))
+                    .into_item(),
+                MenuItemFields::new("Color and icon…")
+                    .with_on_select_action(WorkspaceAction::CustomizeTabGroup(group_id))
                     .into_item(),
             ],
             close_section,
@@ -20591,10 +20618,7 @@ impl Workspace {
         let theme = appearance.theme();
         let is_collapsed = group.collapsed;
 
-        let group_color: Option<ColorU> = group
-            .color
-            .resolve(None)
-            .map(|c| c.to_ansi_color(&theme.terminal_colors().normal).into());
+        let group_color: Option<ColorU> = group.resolved_color(theme);
 
         let mouse_states = self
             .horizontal_tab_group_mouse_states
@@ -24664,6 +24688,7 @@ impl TypedActionView for Workspace {
             UngroupTabs(group_id) => self.ungroup_tabs(*group_id, ctx),
             NewTabInGroup(group_id) => self.new_tab_in_group(*group_id, ctx),
             RemoveTabGroup(group_id) => self.remove_tab_group(*group_id, ctx),
+            CustomizeTabGroup(group_id) => self.customize_tab_group(*group_id, ctx),
             AddTabFolder => self.add_tab_folder(ctx),
             MoveTabGroupUp(group_id) => self.move_tab_group(*group_id, TabMovement::Left, ctx),
             MoveTabGroupDown(group_id) => self.move_tab_group(*group_id, TabMovement::Right, ctx),
@@ -28283,6 +28308,18 @@ impl View for Workspace {
         {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.delete_conversation_confirmation_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
+        if self.customizing_tab_group.is_some() {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.tab_group_customize_dialog).finish(),
                 OffsetPositioning::offset_from_parent(
                     Vector2F::zero(),
                     ParentOffsetBounds::WindowByPosition,

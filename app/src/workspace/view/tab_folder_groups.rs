@@ -15,6 +15,7 @@ use crate::workspace::tab_folders::{
     insertion_index_for_empty_group, normalized_directory, normalized_group_order, tab_list_items,
 };
 use crate::workspace::tab_group::TabGroupId;
+use crate::workspace::tab_group_customize_dialog::TabGroupCustomizeEvent;
 use crate::workspace::util::TabMovement;
 
 /// The directory of the first terminal in a saved tab, which is where the tab is considered to
@@ -525,6 +526,37 @@ impl Workspace {
         self.publish_tab_folder(group_id, ctx);
         ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();
+    }
+
+    /// Opens the dialog in which a group's color and icon are chosen.
+    pub(super) fn customize_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        let Some(group) = self.tab_groups.get(&group_id) else {
+            return;
+        };
+        self.customizing_tab_group = Some(group_id);
+        self.tab_group_customize_dialog
+            .update(ctx, |dialog, ctx| dialog.open_for_group(group, ctx));
+        ctx.notify();
+    }
+
+    pub(super) fn handle_tab_group_customize_event(
+        &mut self,
+        event: &TabGroupCustomizeEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            TabGroupCustomizeEvent::SetColor { group_id, color } => {
+                self.set_tab_group_custom_color(*group_id, *color, ctx);
+            }
+            TabGroupCustomizeEvent::SetIcon { group_id, icon } => {
+                self.set_tab_group_icon(*group_id, icon.clone(), ctx);
+            }
+            TabGroupCustomizeEvent::Close => {
+                self.customizing_tab_group = None;
+                self.focus_active_tab(ctx);
+                ctx.notify();
+            }
+        }
     }
 
     pub(crate) fn set_tab_group_icon(

@@ -225,6 +225,8 @@ pub enum WorkspaceAction {
     RemoveTabGroup(TabGroupId),
     /// Asks for a directory and adds it to the tab list as a folder.
     AddTabFolder,
+    /// Opens the dialog in which the group's color and icon are chosen.
+    CustomizeTabGroup(TabGroupId),
     MoveTabGroupUp(TabGroupId),
     MoveTabGroupDown(TabGroupId),
     CloseTabsOutsideGroup(TabGroupId),
@@ -979,6 +981,7 @@ impl WorkspaceAction {
             | NewTabInGroup(_)
             | RemoveTabGroup(_)
             | AddTabFolder
+            | CustomizeTabGroup(_)
             | MoveTabGroupUp(_)
             | MoveTabGroupDown(_)
             | CloseTabsOutsideGroup(_)

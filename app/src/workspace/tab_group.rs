@@ -77,15 +77,18 @@ impl TabGroup {
         }
     }
 
-    /// The fill this group and its tabs are tinted with, if it has a color.
-    pub fn fill(&self, theme: &WarpTheme) -> Option<ThemeFill> {
-        match self.custom_color {
-            Some(color) => Some(ThemeFill::Solid(color)),
-            None => self
-                .color
+    /// The color this group and its tabs are tinted with, if it has one.
+    pub fn resolved_color(&self, theme: &WarpTheme) -> Option<ColorU> {
+        self.custom_color.or_else(|| {
+            self.color
                 .resolve(None)
-                .map(|color| color.to_ansi_color(&theme.terminal_colors().normal).into()),
-        }
+                .map(|color| color.to_ansi_color(&theme.terminal_colors().normal).into())
+        })
+    }
+
+    /// [`Self::resolved_color`] as a fill.
+    pub fn fill(&self, theme: &WarpTheme) -> Option<ThemeFill> {
+        self.resolved_color(theme).map(ThemeFill::Solid)
     }
 
     /// Re-checks whether the folder's directory exists.
