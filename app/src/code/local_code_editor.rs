@@ -42,15 +42,15 @@ use warp_util::file::{FileId, FileLoadError, FileSaveError};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::path::to_relative_path;
 use warp_util::sync::Condition;
+use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
     CornerRadius, CrossAxisAlignment, DropShadow, Flex, Hoverable, MainAxisAlignment, MainAxisSize,
     MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
     Rect, Shrinkable, Stack, Text,
 };
-use warpui::clipboard::ClipboardContent;
-use warpui::keymap::{EditableBinding, FixedBinding};
 use warpui::keymap::macros::*;
+use warpui::keymap::{EditableBinding, FixedBinding};
 use warpui::platform::SaveFilePickerConfiguration;
 use warpui::text::point::Point;
 use warpui::ui_components::button::ButtonVariant;
@@ -67,8 +67,8 @@ use crate::code::blame::{
 };
 use crate::code::blame_card::{BlameCard, BlameCardHandles, BlameCardTrigger};
 use crate::code::buffer_location::LocalOrRemotePath as BufferFileLocation;
-use crate::code::editor::{EditorReviewComment, TrailingAnnotation};
 use crate::code::editor::model::HoverableLink;
+use crate::code::editor::{EditorReviewComment, TrailingAnnotation};
 use crate::code::footer::{CodeFooterView, CodeFooterViewEvent};
 use crate::code::global_buffer_model::{BufferState, GlobalBufferModel, GlobalBufferModelEvent};
 use crate::code::{SaveOutcome, ShowFindReferencesCardProvider};
@@ -1471,10 +1471,9 @@ impl LocalCodeEditorView {
         self.watch_blame_repo(ctx);
         // Editors that are not waiting for an answer skip the lookup, so that one file's blame
         // arriving does not make every open tab ask for its own.
-        let is_interested = self
-            .inline_blame
-            .as_ref()
-            .is_some_and(|inline_blame| inline_blame.awaiting_blame || inline_blame.shown.is_some());
+        let is_interested = self.inline_blame.as_ref().is_some_and(|inline_blame| {
+            inline_blame.awaiting_blame || inline_blame.shown.is_some()
+        });
         if is_interested {
             self.update_inline_blame(ctx);
         }
@@ -1499,7 +1498,10 @@ impl LocalCodeEditorView {
         });
     }
 
-    fn inline_blame_annotation(&mut self, ctx: &mut ViewContext<Self>) -> Option<TrailingAnnotation> {
+    fn inline_blame_annotation(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<TrailingAnnotation> {
         let inline_blame = self.inline_blame.as_ref()?;
         if !inline_blame.activated || !*CodeSettings::as_ref(ctx).show_inline_blame {
             return None;
@@ -1530,7 +1532,12 @@ impl LocalCodeEditorView {
         // Line numbers of a buffer with a proposed or expanded diff do not match the file.
         if self.diff_type.is_some()
             || self.base_content_version.is_none()
-            || self.editor.as_ref(ctx).model.as_ref(ctx).diff_nav_is_active()
+            || self
+                .editor
+                .as_ref(ctx)
+                .model
+                .as_ref(ctx)
+                .diff_nav_is_active()
         {
             return None;
         }
@@ -2810,9 +2817,10 @@ impl View for LocalCodeEditorView {
             stack.add_positioned_overlay_child(hover_tooltip, positioning);
         }
 
-        if let (Some(blame_card), Some(positioning)) =
-            (self.render_blame_card(app), self.blame_card_positioning(app))
-        {
+        if let (Some(blame_card), Some(positioning)) = (
+            self.render_blame_card(app),
+            self.blame_card_positioning(app),
+        ) {
             stack.add_positioned_overlay_child(blame_card, positioning);
         }
 

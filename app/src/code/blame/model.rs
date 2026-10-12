@@ -330,7 +330,12 @@ impl BlameModel {
         });
     }
 
-    fn repo_info_loaded(&mut self, repo_root: PathBuf, info: RepoInfo, ctx: &mut ModelContext<Self>) {
+    fn repo_info_loaded(
+        &mut self,
+        repo_root: PathBuf,
+        info: RepoInfo,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let Some(state) = self.repos.get_mut(&repo_root) else {
             return;
         };
@@ -413,9 +418,12 @@ fn exceeds_blame_limits(contents: &str) -> bool {
 async fn locate_in_repository(path: PathBuf) -> Option<BlameFile> {
     let directory = path.parent()?;
     let file_name = path.file_name()?.to_str()?;
-    let output = run_git_command(directory, &["rev-parse", "--show-toplevel", "--show-prefix"])
-        .await
-        .ok()?;
+    let output = run_git_command(
+        directory,
+        &["rev-parse", "--show-toplevel", "--show-prefix"],
+    )
+    .await
+    .ok()?;
     let mut lines = output.lines();
     let repo_root = PathBuf::from(lines.next().filter(|root| !root.is_empty())?);
     // The directory relative to the root, empty at the root and ending in a slash below it.
@@ -492,12 +500,10 @@ pub(super) async fn compute_blame(
         file.relative_path.as_str(),
     ];
     let finished = {
-        let blame = run_git_command_streaming(
-            &file.repo_root,
-            &args,
-            Some(contents.as_bytes()),
-            |chunk| parser.lock().feed(chunk),
-        );
+        let blame =
+            run_git_command_streaming(&file.repo_root, &args, Some(contents.as_bytes()), |chunk| {
+                parser.lock().feed(chunk)
+            });
         let timer = Timer::after(timeout);
         futures::pin_mut!(blame);
         futures::pin_mut!(timer);

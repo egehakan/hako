@@ -42,7 +42,11 @@ fn relative_time_picks_the_largest_fitting_unit() {
         (3 * 365 * DAY + 100 * DAY, "3 years ago"),
     ];
     for (seconds_ago, expected) in cases {
-        assert_eq!(relative_time(NOW - seconds_ago, NOW), expected, "{seconds_ago}s ago");
+        assert_eq!(
+            relative_time(NOW - seconds_ago, NOW),
+            expected,
+            "{seconds_ago}s ago"
+        );
     }
 }
 
@@ -91,7 +95,12 @@ fn others_and_unset_identities_are_not_you() {
 
 #[test]
 fn annotation_names_author_age_and_summary() {
-    let grace = commit("Grace Hopper", "grace@example.com", 3 * DAY, "Fix the parser");
+    let grace = commit(
+        "Grace Hopper",
+        "grace@example.com",
+        3 * DAY,
+        "Fix the parser",
+    );
 
     assert_eq!(
         annotation_text(&grace, &GitIdentity::default(), NOW),
@@ -105,7 +114,12 @@ fn annotation_names_author_age_and_summary() {
 
 #[test]
 fn annotation_of_an_uncommitted_line_says_so() {
-    let mut unsaved = commit("External file (--contents)", "external.file", 0, "Version of a");
+    let mut unsaved = commit(
+        "External file (--contents)",
+        "external.file",
+        0,
+        "Version of a",
+    );
     unsaved.sha = "0".repeat(40);
 
     assert_eq!(
@@ -118,14 +132,20 @@ fn annotation_of_an_uncommitted_line_says_so() {
 fn annotation_without_a_summary_has_no_separator() {
     let empty = commit("Ada", "ada@example.com", 7200, "  ");
 
-    assert_eq!(annotation_text(&empty, &GitIdentity::default(), NOW), "Ada, 2 hours ago");
+    assert_eq!(
+        annotation_text(&empty, &GitIdentity::default(), NOW),
+        "Ada, 2 hours ago"
+    );
 }
 
 #[test]
 fn annotation_cuts_a_long_summary() {
     let long = commit("Ada", "ada@example.com", 60, &"word ".repeat(40));
     let text = annotation_text(&long, &GitIdentity::default(), NOW);
-    let summary = text.split(" \u{2022} ").nth(1).expect("summary follows the separator");
+    let summary = text
+        .split(" \u{2022} ")
+        .nth(1)
+        .expect("summary follows the separator");
 
     assert_eq!(summary.chars().count(), 72);
     assert!(summary.ends_with('\u{2026}'));
@@ -163,7 +183,11 @@ fn github_url_from_https_remotes() {
         "https://www.github.com/warpdotdev/warp.git",
         "https://github.com:443/warpdotdev/warp.git",
     ] {
-        assert_eq!(github_commit_url(remote, SHA).as_deref(), Some(expected.as_str()), "{remote}");
+        assert_eq!(
+            github_commit_url(remote, SHA).as_deref(),
+            Some(expected.as_str()),
+            "{remote}"
+        );
     }
 }
 
@@ -186,7 +210,11 @@ fn github_url_from_ssh_remotes() {
         "git://github.com/owner/my.repo-name_1.git",
         "github.com:owner/my.repo-name_1.git",
     ] {
-        assert_eq!(github_commit_url(remote, SHA).as_deref(), Some(expected.as_str()), "{remote}");
+        assert_eq!(
+            github_commit_url(remote, SHA).as_deref(),
+            Some(expected.as_str()),
+            "{remote}"
+        );
     }
 }
 
@@ -212,9 +240,24 @@ fn no_github_url_for_other_hosts() {
 #[test]
 fn no_github_url_for_malformed_repositories_or_commits() {
     assert_eq!(github_commit_url("https://github.com/owner", SHA), None);
-    assert_eq!(github_commit_url("https://github.com/owner/repo/extra", SHA), None);
-    assert_eq!(github_commit_url("https://github.com/owner/../repo", SHA), None);
-    assert_eq!(github_commit_url("https://github.com/ow ner/repo", SHA), None);
-    assert_eq!(github_commit_url("https://github.com/owner/repo.git", ""), None);
-    assert_eq!(github_commit_url("https://github.com/owner/repo.git", "HEAD~1"), None);
+    assert_eq!(
+        github_commit_url("https://github.com/owner/repo/extra", SHA),
+        None
+    );
+    assert_eq!(
+        github_commit_url("https://github.com/owner/../repo", SHA),
+        None
+    );
+    assert_eq!(
+        github_commit_url("https://github.com/ow ner/repo", SHA),
+        None
+    );
+    assert_eq!(
+        github_commit_url("https://github.com/owner/repo.git", ""),
+        None
+    );
+    assert_eq!(
+        github_commit_url("https://github.com/owner/repo.git", "HEAD~1"),
+        None
+    );
 }

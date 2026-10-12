@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use super::{
-    WslGitCommand, build_wslenv, run_git_command_streaming, translate_for_wsl_unc_cwd,
-};
+use super::{WslGitCommand, build_wslenv, run_git_command_streaming, translate_for_wsl_unc_cwd};
 
 /// Translates a git command in `cwd`, asserting that the working directory qualified for the WSL
 /// rewrite.
@@ -245,7 +243,11 @@ fn streaming_command_reports_what_git_printed_on_failure() {
 
     let error = futures_lite::future::block_on(run_git_command_streaming(
         directory.path(),
-        &["rev-parse", "--verify", "refs/heads/a-branch-no-repository-has"],
+        &[
+            "rev-parse",
+            "--verify",
+            "refs/heads/a-branch-no-repository-has",
+        ],
         None,
         |_| {},
     ))

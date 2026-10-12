@@ -136,15 +136,26 @@ fn boundary_commit_is_marked_and_still_blamed() {
     assert!(!root.is_uncommitted());
     assert_eq!(root.author, "Ada Lovelace");
     assert_eq!(root.author_tz_minutes, 60);
-    assert!(!blame.commit_for_line(3).expect("line is blamed").is_boundary);
+    assert!(
+        !blame
+            .commit_for_line(3)
+            .expect("line is blamed")
+            .is_boundary
+    );
 }
 
 #[test]
 fn renamed_file_keeps_the_name_it_had_in_each_commit() {
     let blame = parse(PORCELAIN);
 
-    assert_eq!(blame.commit_for_line(0).map(|c| c.path.as_str()), Some("old.txt"));
-    assert_eq!(blame.commit_for_line(3).map(|c| c.path.as_str()), Some("new.txt"));
+    assert_eq!(
+        blame.commit_for_line(0).map(|c| c.path.as_str()),
+        Some("old.txt")
+    );
+    assert_eq!(
+        blame.commit_for_line(3).map(|c| c.path.as_str()),
+        Some("new.txt")
+    );
 }
 
 #[test]
@@ -165,7 +176,12 @@ fn lines_not_in_head_are_uncommitted() {
     let unsaved = blame.commit_for_line(0).expect("line is blamed");
 
     assert!(unsaved.is_uncommitted());
-    assert!(!blame.commit_for_line(1).expect("line is blamed").is_uncommitted());
+    assert!(
+        !blame
+            .commit_for_line(1)
+            .expect("line is blamed")
+            .is_uncommitted()
+    );
 }
 
 #[test]
@@ -192,7 +208,10 @@ fn text_of_a_line_is_never_read_as_a_header() {
 
     assert_eq!(shas(&blame, 0..3), [ADA, ADA, ""]);
     assert_eq!(blame.commits().len(), 1);
-    assert_eq!(blame.commit_for_line(0).map(|c| c.author.as_str()), Some("Ada"));
+    assert_eq!(
+        blame.commit_for_line(0).map(|c| c.author.as_str()),
+        Some("Ada")
+    );
 }
 
 #[test]
@@ -200,7 +219,9 @@ fn author_name_that_is_not_utf8_is_kept_readable() {
     // "José" in Latin-1: the é is a lone 0xE9 byte.
     let mut output = format!("{ADA} 1 1 1\nauthor Jos").into_bytes();
     output.push(0xE9);
-    output.extend_from_slice(b" Garc\xEDa\nauthor-mail <jose@example.com>\nsummary Fix\nfilename a.txt\n");
+    output.extend_from_slice(
+        b" Garc\xEDa\nauthor-mail <jose@example.com>\nsummary Fix\nfilename a.txt\n",
+    );
     let blame = parse(&output);
     let commit = blame.commit_for_line(0).expect("line is blamed");
 
@@ -219,13 +240,19 @@ fn output_cut_short_keeps_the_lines_already_attributed() {
     let blame = parse(&INCREMENTAL[..cut]);
 
     assert_eq!(shas(&blame, 0..5), [UNCOMMITTED, "", "", "", GRACE]);
-    assert_eq!(blame.commit_for_line(4).map(|c| c.author.as_str()), Some("Grace Hopper"));
+    assert_eq!(
+        blame.commit_for_line(4).map(|c| c.author.as_str()),
+        Some("Grace Hopper")
+    );
 }
 
 #[test]
 fn garbage_and_empty_output_blame_nothing() {
     assert_eq!(parse(b""), FileBlame::default());
-    assert_eq!(parse(b"fatal: no such path 'x' in HEAD\n"), FileBlame::default());
+    assert_eq!(
+        parse(b"fatal: no such path 'x' in HEAD\n"),
+        FileBlame::default()
+    );
     // A line number no file has must not make the parser allocate for it.
     let huge = format!("{ADA} 1 4000000000 5\n");
     assert_eq!(parse(huge.as_bytes()).blamed_line_count(), 0);
@@ -239,7 +266,10 @@ fn sha256_ids_are_accepted() {
     let sha = "a".repeat(64);
     let blame = parse(format!("{sha} 1 1 1\nauthor Ada\nfilename a.txt\n").as_bytes());
 
-    assert_eq!(blame.commit_for_line(0).map(|c| c.sha.as_str()), Some(sha.as_str()));
+    assert_eq!(
+        blame.commit_for_line(0).map(|c| c.sha.as_str()),
+        Some(sha.as_str())
+    );
 }
 
 #[test]

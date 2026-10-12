@@ -127,7 +127,9 @@ fn github_repository(remote_url: &str) -> Option<(&str, &str)> {
             }
             let (authority, path) = rest.split_once('/')?;
             // Credentials written into the address stay out of the link.
-            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
             let host = host.split_once(':').map_or(host, |(host, _port)| host);
             if !is_github_host(host) {
                 return None;
@@ -137,7 +139,9 @@ fn github_repository(remote_url: &str) -> Option<(&str, &str)> {
         // The scp-like form: `git@github.com:owner/repository.git`.
         None => {
             let (authority, path) = remote_url.split_once(':')?;
-            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
             if !is_github_host(host) {
                 return None;
             }

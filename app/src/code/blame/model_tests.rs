@@ -26,21 +26,38 @@ fn result(marker: BlameResult) -> Arc<BlameResult> {
 fn cache_answers_only_for_the_same_repo_path_head_and_version() {
     let version = ContentVersion::new();
     let mut cache = BlameCache::new(8);
-    cache.insert(key("/repo", "a.rs", "head1", version), result(BlameResult::NotTracked));
+    cache.insert(
+        key("/repo", "a.rs", "head1", version),
+        result(BlameResult::NotTracked),
+    );
 
     assert!(cache.get(&key("/repo", "a.rs", "head1", version)).is_some());
-    assert!(cache.get(&key("/other", "a.rs", "head1", version)).is_none());
+    assert!(
+        cache
+            .get(&key("/other", "a.rs", "head1", version))
+            .is_none()
+    );
     assert!(cache.get(&key("/repo", "b.rs", "head1", version)).is_none());
     assert!(cache.get(&key("/repo", "a.rs", "head2", version)).is_none());
-    assert!(cache.get(&key("/repo", "a.rs", "head1", ContentVersion::new())).is_none());
+    assert!(
+        cache
+            .get(&key("/repo", "a.rs", "head1", ContentVersion::new()))
+            .is_none()
+    );
 }
 
 #[test]
 fn cache_keeps_one_blame_per_file() {
     let (old, new) = (ContentVersion::new(), ContentVersion::new());
     let mut cache = BlameCache::new(8);
-    cache.insert(key("/repo", "a.rs", "head", old), result(BlameResult::NotTracked));
-    cache.insert(key("/repo", "a.rs", "head", new), result(BlameResult::TooLarge));
+    cache.insert(
+        key("/repo", "a.rs", "head", old),
+        result(BlameResult::NotTracked),
+    );
+    cache.insert(
+        key("/repo", "a.rs", "head", new),
+        result(BlameResult::TooLarge),
+    );
 
     assert_eq!(cache.len(), 1);
     assert!(cache.get(&key("/repo", "a.rs", "head", old)).is_none());
@@ -54,11 +71,20 @@ fn cache_keeps_one_blame_per_file() {
 fn cache_is_bounded_and_drops_the_file_used_longest_ago() {
     let version = ContentVersion::new();
     let mut cache = BlameCache::new(2);
-    cache.insert(key("/repo", "a.rs", "head", version), result(BlameResult::NotTracked));
-    cache.insert(key("/repo", "b.rs", "head", version), result(BlameResult::NotTracked));
+    cache.insert(
+        key("/repo", "a.rs", "head", version),
+        result(BlameResult::NotTracked),
+    );
+    cache.insert(
+        key("/repo", "b.rs", "head", version),
+        result(BlameResult::NotTracked),
+    );
     // Using a.rs makes b.rs the one used longest ago.
     assert!(cache.get(&key("/repo", "a.rs", "head", version)).is_some());
-    cache.insert(key("/repo", "c.rs", "head", version), result(BlameResult::NotTracked));
+    cache.insert(
+        key("/repo", "c.rs", "head", version),
+        result(BlameResult::NotTracked),
+    );
 
     assert_eq!(cache.len(), 2);
     assert!(cache.get(&key("/repo", "a.rs", "head", version)).is_some());
@@ -70,15 +96,28 @@ fn cache_is_bounded_and_drops_the_file_used_longest_ago() {
 fn moving_head_drops_the_blames_of_that_repository_only() {
     let version = ContentVersion::new();
     let mut cache = BlameCache::new(8);
-    cache.insert(key("/repo", "a.rs", "old", version), result(BlameResult::NotTracked));
-    cache.insert(key("/repo", "b.rs", "new", version), result(BlameResult::NotTracked));
-    cache.insert(key("/elsewhere", "a.rs", "old", version), result(BlameResult::NotTracked));
+    cache.insert(
+        key("/repo", "a.rs", "old", version),
+        result(BlameResult::NotTracked),
+    );
+    cache.insert(
+        key("/repo", "b.rs", "new", version),
+        result(BlameResult::NotTracked),
+    );
+    cache.insert(
+        key("/elsewhere", "a.rs", "old", version),
+        result(BlameResult::NotTracked),
+    );
 
     cache.retain_head(Path::new("/repo"), Some("new"));
 
     assert!(cache.get(&key("/repo", "a.rs", "old", version)).is_none());
     assert!(cache.get(&key("/repo", "b.rs", "new", version)).is_some());
-    assert!(cache.get(&key("/elsewhere", "a.rs", "old", version)).is_some());
+    assert!(
+        cache
+            .get(&key("/elsewhere", "a.rs", "old", version))
+            .is_some()
+    );
 
     // A repository left without commits keeps nothing.
     cache.retain_head(Path::new("/repo"), None);
@@ -279,7 +318,10 @@ async fn blame_that_runs_out_of_time_reports_it() {
     .await;
 
     // Git cannot have answered before a time limit of zero. Should it ever, a blame is fine too.
-    assert!(matches!(result, BlameResult::TimedOut | BlameResult::Blamed(_)), "{result:?}");
+    assert!(
+        matches!(result, BlameResult::TimedOut | BlameResult::Blamed(_)),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
@@ -312,7 +354,10 @@ async fn file_outside_a_repository_is_not_located() {
     let directory = tempfile::tempdir().expect("create temp dir");
     std::fs::write(directory.path().join("loose.txt"), "text\n").expect("write file");
 
-    assert_eq!(locate_in_repository(directory.path().join("loose.txt")).await, None);
+    assert_eq!(
+        locate_in_repository(directory.path().join("loose.txt")).await,
+        None
+    );
     assert_eq!(
         locate_in_repository(directory.path().join("missing/dir/file.txt")).await,
         None
@@ -324,7 +369,11 @@ async fn repo_info_reports_head_identity_and_origin() {
     let repo_dir = tempfile::tempdir().expect("create temp repo dir");
     let repo = repo_dir.path();
     init_repo(repo).await;
-    git(repo, &["remote", "add", "origin", "git@github.com:owner/repo.git"]).await;
+    git(
+        repo,
+        &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+    )
+    .await;
     let head = git(repo, &["rev-parse", "HEAD"]).await;
 
     let info = load_repo_info(repo.to_path_buf()).await;
@@ -332,7 +381,10 @@ async fn repo_info_reports_head_identity_and_origin() {
     assert_eq!(info.head.as_deref(), Some(head.as_str()));
     assert_eq!(info.identity.name.as_deref(), Some("Ada Lovelace"));
     assert_eq!(info.identity.email.as_deref(), Some("ada@example.com"));
-    assert_eq!(info.origin_url.as_deref(), Some("git@github.com:owner/repo.git"));
+    assert_eq!(
+        info.origin_url.as_deref(),
+        Some("git@github.com:owner/repo.git")
+    );
 }
 
 #[tokio::test]
@@ -340,5 +392,8 @@ async fn repo_without_commits_has_no_head() {
     let repo_dir = tempfile::tempdir().expect("create temp repo dir");
     git(repo_dir.path(), &["init", "-b", "main"]).await;
 
-    assert_eq!(load_repo_info(repo_dir.path().to_path_buf()).await.head, None);
+    assert_eq!(
+        load_repo_info(repo_dir.path().to_path_buf()).await.head,
+        None
+    );
 }

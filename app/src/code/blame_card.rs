@@ -73,7 +73,11 @@ fn is_mouse_over(state: &MouseStateHandle) -> bool {
 impl LocalCodeEditorView {
     /// Opens the card for the line the cursor is on. When the blame of that line is still being
     /// worked out, a card asked for from the keyboard opens as soon as it is known.
-    pub(super) fn show_blame_card(&mut self, trigger: BlameCardTrigger, ctx: &mut ViewContext<Self>) {
+    pub(super) fn show_blame_card(
+        &mut self,
+        trigger: BlameCardTrigger,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(inline_blame) = &mut self.inline_blame else {
             return;
         };
@@ -320,10 +324,14 @@ impl LocalCodeEditorView {
         let main_color: ColorU = theme.active_ui_text_color().into();
         let sub_color: ColorU = theme.sub_text_color(theme.background()).into();
         let text = |content: String, color: ColorU| {
-            Text::new(content, appearance.ui_font_family(), appearance.ui_font_size())
-                .with_color(color)
-                .soft_wrap(true)
-                .finish()
+            Text::new(
+                content,
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_color(color)
+            .soft_wrap(true)
+            .finish()
         };
         let separator = || {
             Container::new(
@@ -338,29 +346,30 @@ impl LocalCodeEditorView {
             .with_vertical_padding(6.)
             .finish()
         };
-        let button = |label: &str, mouse_state: &MouseStateHandle, action: LocalCodeEditorAction| {
-            Container::new(
-                appearance
-                    .ui_builder()
-                    .button(ButtonVariant::Outlined, mouse_state.clone())
-                    .with_text_label(label.to_string())
-                    .with_style(UiComponentStyles {
-                        height: Some(24.),
-                        padding: Some(Coords {
-                            left: 8.,
-                            right: 8.,
+        let button =
+            |label: &str, mouse_state: &MouseStateHandle, action: LocalCodeEditorAction| {
+                Container::new(
+                    appearance
+                        .ui_builder()
+                        .button(ButtonVariant::Outlined, mouse_state.clone())
+                        .with_text_label(label.to_string())
+                        .with_style(UiComponentStyles {
+                            height: Some(24.),
+                            padding: Some(Coords {
+                                left: 8.,
+                                right: 8.,
+                                ..Default::default()
+                            }),
+                            font_color: Some(main_color),
                             ..Default::default()
-                        }),
-                        font_color: Some(main_color),
-                        ..Default::default()
-                    })
-                    .build()
-                    .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
-                    .finish(),
-            )
-            .with_margin_right(6.)
-            .finish()
-        };
+                        })
+                        .build()
+                        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+                        .finish(),
+                )
+                .with_margin_right(6.)
+                .finish()
+            };
 
         let mut content = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         if commit.is_uncommitted() {
@@ -403,7 +412,11 @@ impl LocalCodeEditorView {
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_child(Container::new(sha_label).with_margin_right(10.).finish())
                         .with_child(button(
-                            if card.copied_sha { "Copied" } else { "Copy SHA" },
+                            if card.copied_sha {
+                                "Copied"
+                            } else {
+                                "Copy SHA"
+                            },
                             &handles.copy_sha,
                             LocalCodeEditorAction::CopyBlameSha(commit.sha.clone()),
                         ))
@@ -418,7 +431,11 @@ impl LocalCodeEditorView {
             let mut lines = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for line in message.lines() {
                 if line.trim().is_empty() {
-                    lines.add_child(ConstrainedBox::new(Rect::new().finish()).with_height(8.).finish());
+                    lines.add_child(
+                        ConstrainedBox::new(Rect::new().finish())
+                            .with_height(8.)
+                            .finish(),
+                    );
                 } else {
                     lines.add_child(text(line.to_string(), main_color));
                 }
