@@ -85,7 +85,13 @@ fn search(roots: &[NameSearchRoot], query: &str) -> NameSearchResults {
         },
     )
     .expect("query should be matchable");
-    search_names(roots, &matcher, &AtomicBool::new(false)).expect("search was not cancelled")
+    search_names(
+        roots,
+        &matcher,
+        &Scope::unrestricted(),
+        &AtomicBool::new(false),
+    )
+    .expect("search was not cancelled")
 }
 
 fn display_paths(ranked: &RankedNameMatches) -> Vec<&str> {
@@ -175,6 +181,7 @@ fn cancelled_search_returns_nothing() {
     let results = search_names(
         &[indexed_root("/repo", "")],
         &matcher,
+        &Scope::unrestricted(),
         &AtomicBool::new(true),
     );
     assert!(results.is_none());

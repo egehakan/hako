@@ -1,9 +1,19 @@
+use project_replace::scope::ScopeGlobs;
 use warp_ripgrep::search::Submatch;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 pub struct SearchConfig {
     pub use_regex: bool,
     pub use_case_sensitivity: bool,
+}
+
+/// What narrows a global search beyond its query.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// Whether text matches have to be whole words. Names are matched as before.
+    pub whole_word: bool,
+    /// The files and folders the search covers.
+    pub scope: ScopeGlobs,
 }
 
 /// A single global search match: one line in one file, which may live on

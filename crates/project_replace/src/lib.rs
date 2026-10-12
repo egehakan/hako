@@ -19,3 +19,8 @@ pub mod selection;
 #[cfg(test)]
 mod test_support;
 pub mod undo;
+pub mod worker;
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

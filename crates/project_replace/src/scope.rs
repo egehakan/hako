@@ -10,7 +10,8 @@ use thiserror::Error;
 /// Each holds patterns separated by commas. A pattern follows `.gitignore` rules: without a slash
 /// it matches at any depth, with one it is relative to the search root, and a folder stands for
 /// everything below it. `./` anchors a pattern to the search root, an absolute path stands for
-/// that file or folder, and a pattern starting with `!` excludes whichever field it is in.
+/// that file or folder, and a pattern starting with `!` excludes whichever field it is in. A
+/// backslash makes the character after it stand for itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScopeGlobs {
     pub include: String,
@@ -105,11 +106,72 @@ impl Scope {
     }
 }
 
-fn patterns(field: &str) -> impl Iterator<Item = &str> {
-    field
-        .split([',', '\n'])
+/// The characters that need a backslash to stand for themselves in a pattern.
+const SPECIAL_CHARACTERS: [char; 10] = ['*', '?', '[', ']', '{', '}', ',', '\\', '!', '#'];
+
+/// The pattern that limits a search to the folder at `folder`: relative to `root` when the folder
+/// is below that search root, and the absolute path of the folder otherwise.
+pub fn folder_pattern(root: Option<&Path>, folder: &Path) -> String {
+    let relative = root
+        .and_then(|root| folder.strip_prefix(root).ok())
+        .filter(|relative| !relative.as_os_str().is_empty());
+    match relative {
+        Some(relative) => format!("./{}", escaped(&relative.to_string_lossy())),
+        None => escaped(&folder.to_string_lossy()),
+    }
+}
+
+fn escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if SPECIAL_CHARACTERS.contains(&ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Splits a field at the commas and line breaks that no backslash escapes.
+fn patterns(field: &str) -> Vec<&str> {
+    let mut patterns = Vec::new();
+    let mut start = 0;
+    let mut chars = field.char_indices();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            ',' | '\n' => {
+                patterns.push(&field[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    patterns.push(&field[start..]);
+
+    patterns
+        .into_iter()
         .map(str::trim)
         .filter(|pattern| !pattern.is_empty())
+        .collect()
+}
+
+/// The path `pattern` names, when it is an absolute path with no wildcard in it.
+fn literal_absolute_path(pattern: &str) -> Option<PathBuf> {
+    let mut literal = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => literal.push(chars.next()?),
+            '*' | '?' | '[' | '{' => return None,
+            _ => literal.push(ch),
+        }
+    }
+    Path::new(&literal)
+        .is_absolute()
+        .then(|| PathBuf::from(literal))
 }
 
 #[derive(Default)]
@@ -124,9 +186,8 @@ impl PatternSetBuilder {
             return Ok(());
         }
 
-        let has_wildcard = pattern.contains(['*', '?', '[', '{']);
-        if Path::new(pattern).is_absolute() && !has_wildcard {
-            self.paths.push(PathBuf::from(pattern));
+        if let Some(path) = literal_absolute_path(pattern) {
+            self.paths.push(path);
             return Ok(());
         }
 

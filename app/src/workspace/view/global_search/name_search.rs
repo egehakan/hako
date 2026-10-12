@@ -2,10 +2,11 @@
 
 use std::borrow::Cow;
 use std::ops::ControlFlow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use project_replace::scope::Scope;
 use repo_metadata::file_tree_store::FileTreeEntryState;
 use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::{FileTreeEntry, RepoMetadataModel, RepositoryIdentifier};
@@ -97,17 +98,22 @@ fn indexed_source(root: &LocalOrRemotePath, app: &AppContext) -> Option<NameSour
     }
 }
 
-/// Matches the name of every entry below `roots`. Returns `None` if `cancelled` was set before
-/// the search finished.
+/// Matches the name of every entry below `roots` that `scope` covers. Returns `None` if
+/// `cancelled` was set before the search finished.
 pub(super) fn search_names(
     roots: &[NameSearchRoot],
     matcher: &NameMatcher,
+    scope: &Scope,
     cancelled: &AtomicBool,
 ) -> Option<NameSearchResults> {
     let mut collector = NameMatchCollector::new(MAX_RANKED_NAME_MATCHES);
 
     for root in roots {
         let prefix_chars = root.display_prefix.chars().count();
+        let root_path = match &root.root {
+            LocalOrRemotePath::Local(path) => path.clone(),
+            LocalOrRemotePath::Remote(remote) => PathBuf::from(remote.path.as_str()),
+        };
         let mut visit = |relative_path: &str, kind| {
             if cancelled.load(Ordering::Relaxed) {
                 return ControlFlow::Break(());
@@ -115,6 +121,11 @@ pub(super) fn search_names(
             let Some(matched) = matcher.match_path(relative_path) else {
                 return ControlFlow::Continue(());
             };
+            if !scope.is_unrestricted()
+                && !scope.includes(&root_path, &root_path.join(relative_path))
+            {
+                return ControlFlow::Continue(());
+            }
             let display_path = if root.display_prefix.is_empty() {
                 Cow::Borrowed(relative_path)
             } else {

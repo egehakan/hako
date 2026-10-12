@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_channel::Sender;
 use instant::Instant;
 use pathfinder_geometry::vector::vec2f;
+use project_replace::scope::{ScopeGlobs, folder_pattern};
 use remote_server::HostId;
 use string_offset::{ByteOffset, CharCounter};
 use warp_core::r#async::debounce;
@@ -46,7 +47,8 @@ use crate::code::{default_file_icon, icon_from_file_path, icon_from_folder_path}
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::editor::{
     EditorOptions, EditorView, Event as EditorEvent, InteractionState,
-    PropagateAndNoOpNavigationKeys, PropagateHorizontalNavigationKeys, TextOptions,
+    PropagateAndNoOpNavigationKeys, PropagateHorizontalNavigationKeys, SingleLineEditorOptions,
+    TextOptions,
 };
 use crate::search::ItemHighlightState as SearchHighlightState;
 use crate::ui_components::blended_colors;
@@ -61,7 +63,7 @@ use crate::workspace::view::global_search::name_groups::{
     name_match_summary,
 };
 use crate::workspace::view::global_search::{
-    GlobalSearchMatch, NameMatchKind, NameSearchResults, SearchConfig,
+    GlobalSearchMatch, NameMatchKind, NameSearchResults, SearchConfig, SearchOptions,
 };
 
 const BORDER_RADIUS: f32 = 6.;
@@ -127,6 +129,9 @@ pub enum GlobalSearchAction {
     FocusResultsList,
     ToggleRegexSearch,
     ToggleCaseSensitivity,
+    ToggleWholeWord,
+    /// Shows or hides the fields that limit the search to some files.
+    ToggleScopeOpen,
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -398,6 +403,15 @@ pub struct GlobalSearchView {
     regex_button: ViewHandle<ActionButton>,
     case_sensitivity_enabled: bool,
     case_sensitivity_button: ViewHandle<ActionButton>,
+    whole_word_enabled: bool,
+    whole_word_button: ViewHandle<ActionButton>,
+    /// The patterns of the files to search, which narrow the search even while hidden.
+    include_editor: ViewHandle<EditorView>,
+    exclude_editor: ViewHandle<EditorView>,
+    is_scope_open: bool,
+    scope_button: ViewHandle<ActionButton>,
+    /// What narrowed the last search, to search again once it changes.
+    last_searched_options: Option<SearchOptions>,
 }
 
 impl Entity for GlobalSearchView {
@@ -531,6 +545,18 @@ impl TypedActionView for GlobalSearchView {
                     button.set_active(self.case_sensitivity_enabled, ctx);
                 });
                 self.rerun_search_from_query(ctx, true);
+            }
+            GlobalSearchAction::ToggleWholeWord => {
+                self.whole_word_enabled = !self.whole_word_enabled;
+                self.whole_word_button.update(ctx, |button, ctx| {
+                    button.set_active(self.whole_word_enabled, ctx);
+                });
+                self.rerun_search_from_query(ctx, true);
+            }
+            GlobalSearchAction::ToggleScopeOpen => {
+                self.is_scope_open = !self.is_scope_open;
+                self.update_scope_button(ctx);
+                ctx.notify();
             }
         }
     }
@@ -760,6 +786,34 @@ impl GlobalSearchView {
                 })
         });
 
+        let whole_word_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new_with_boxed_theme(String::new(), Arc::new(NakedTheme))
+                .with_icon(UiIcon::WholeWord)
+                .with_tooltip("Toggle Whole Word")
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(GlobalSearchAction::ToggleWholeWord);
+                })
+        });
+
+        let scope_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new_with_boxed_theme(String::new(), Arc::new(NakedTheme))
+                .with_icon(UiIcon::FilterFunnel)
+                .with_tooltip("Toggle Files to Include and Exclude")
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(GlobalSearchAction::ToggleScopeOpen);
+                })
+        });
+
+        let include_editor = Self::add_field_editor("Files to include, e.g. src/**/*.ts", ctx);
+        let exclude_editor = Self::add_field_editor("Files to exclude, e.g. **/dist/**", ctx);
+        for scope_editor in [&include_editor, &exclude_editor] {
+            ctx.subscribe_to_view(scope_editor, |me, _handle, event, ctx| {
+                me.handle_scope_editor_event(event, ctx);
+            });
+        }
+
         ctx.subscribe_to_view(&query_editor, |me, _handle, event, ctx| {
             me.handle_query_editor_event(event, ctx);
         });
@@ -800,7 +854,35 @@ impl GlobalSearchView {
             regex_button,
             case_sensitivity_enabled: false,
             case_sensitivity_button,
+            whole_word_enabled: false,
+            whole_word_button,
+            include_editor,
+            exclude_editor,
+            is_scope_open: false,
+            scope_button,
+            last_searched_options: None,
         }
+    }
+
+    /// Adds a single-line editor for one of the fields below the query.
+    fn add_field_editor(
+        placeholder: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<EditorView> {
+        ctx.add_typed_action_view(|ctx| {
+            let appearance = Appearance::as_ref(ctx);
+            let mut editor = EditorView::single_line(
+                SingleLineEditorOptions {
+                    text: TextOptions::ui_text(Some(14.), appearance),
+                    select_all_on_focus: true,
+                    clear_selections_on_blur: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
+            editor.set_placeholder_text(placeholder, ctx);
+            editor
+        })
     }
 
     pub fn on_left_panel_focused(
@@ -955,6 +1037,71 @@ impl GlobalSearchView {
         }
     }
 
+    fn handle_scope_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
+        match event {
+            EditorEvent::Focused => self.on_field_editor_focused(ctx),
+            EditorEvent::Edited(_)
+            | EditorEvent::BufferReplaced
+            | EditorEvent::BufferReinitialized => {
+                self.update_scope_button(ctx);
+                self.notify_query_changed();
+            }
+            EditorEvent::Enter => {
+                self.rerun_search_from_query(ctx, true);
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps the results list from acting on keys typed into a field below the query, which
+    /// takes the focus without going through the query editor.
+    fn on_field_editor_focused(&mut self, ctx: &mut ViewContext<Self>) {
+        if !matches!(self.focus_mode, FocusMode::QueryEditor) {
+            self.set_query_mode_state(ctx);
+        }
+    }
+
+    /// The scope narrows the search even while its fields are hidden, so the button that shows
+    /// them stays lit while they hold anything.
+    fn update_scope_button(&mut self, ctx: &mut ViewContext<Self>) {
+        let is_active = self.is_scope_open || !self.search_scope(ctx).is_empty();
+        self.scope_button.update(ctx, |button, ctx| {
+            button.set_active(is_active, ctx);
+        });
+    }
+
+    fn search_scope(&self, app: &AppContext) -> ScopeGlobs {
+        ScopeGlobs {
+            include: self.include_editor.as_ref(app).buffer_text(app),
+            exclude: self.exclude_editor.as_ref(app).buffer_text(app),
+        }
+    }
+
+    fn search_options(&self, app: &AppContext) -> SearchOptions {
+        SearchOptions {
+            whole_word: self.whole_word_enabled,
+            scope: self.search_scope(app),
+        }
+    }
+
+    /// Limits the search to the folder at `folder`, by naming it in the files to include.
+    pub fn search_in_folder(&mut self, folder: &Path, ctx: &mut ViewContext<Self>) {
+        // A pattern relative to the search root reads best, but with several roots it would
+        // stand for the folder of that name in each of them.
+        let root = match self.search_roots.as_slice() {
+            [root] => root.to_local_path(),
+            _ => None,
+        };
+        let pattern = folder_pattern(root, folder);
+        self.include_editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(&pattern, ctx);
+        });
+        self.is_scope_open = true;
+        self.update_scope_button(ctx);
+        self.rerun_search_from_query(ctx, true);
+        ctx.notify();
+    }
+
     fn notify_query_changed(&self) {
         let _ = self.query_change_tx.try_send(());
     }
@@ -977,6 +1124,7 @@ impl GlobalSearchView {
 
         if clear_last_pattern {
             self.last_searched_pattern = None;
+            self.last_searched_options = None;
         }
     }
 
@@ -998,20 +1146,17 @@ impl GlobalSearchView {
             return;
         }
 
-        let should_run_search = if force {
-            true
-        } else {
-            match self.last_searched_pattern.as_deref() {
-                Some(last) => last != pattern,
-                None => true,
-            }
-        };
+        let options = self.search_options(ctx);
+        let should_run_search = force
+            || self.last_searched_pattern.as_deref() != Some(pattern.as_str())
+            || self.last_searched_options.as_ref() != Some(&options);
 
         if !should_run_search {
             return;
         }
 
         self.last_searched_pattern = Some(pattern.clone());
+        self.last_searched_options = Some(options.clone());
 
         let roots = self.search_roots.clone();
         self.find_model.update(ctx, |model, model_ctx| {
@@ -1022,6 +1167,7 @@ impl GlobalSearchView {
                     use_regex: self.regex_search_enabled,
                     use_case_sensitivity: self.case_sensitivity_enabled,
                 },
+                options,
                 model_ctx,
             );
         });
@@ -2701,7 +2847,12 @@ impl View for GlobalSearchView {
         let case_sensitivity_button =
             Container::new(ChildView::new(&self.case_sensitivity_button).finish()).finish();
 
+        let whole_word_button =
+            Container::new(ChildView::new(&self.whole_word_button).finish()).finish();
+
         let regex_button = Container::new(ChildView::new(&self.regex_button).finish()).finish();
+
+        let scope_button = Container::new(ChildView::new(&self.scope_button).finish()).finish();
 
         let mut editor_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2717,7 +2868,9 @@ impl View for GlobalSearchView {
                 .finish(),
             );
         editor_row.add_child(case_sensitivity_button);
+        editor_row.add_child(whole_word_button);
         editor_row.add_child(regex_button);
+        editor_row.add_child(scope_button);
         let editor_row = editor_row.finish();
 
         let query_row_container = Container::new(editor_row)
@@ -2739,6 +2892,11 @@ impl View for GlobalSearchView {
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_child(search_label)
             .with_child(query_row);
+
+        if self.is_scope_open {
+            header_column.add_child(self.render_field_row(&self.include_editor, None, app));
+            header_column.add_child(self.render_field_row(&self.exclude_editor, None, app));
+        }
 
         let files = self.unique_match_count();
         let file_word = if files == 1 { "file" } else { "files" };
@@ -2856,6 +3014,40 @@ impl View for GlobalSearchView {
 }
 
 impl GlobalSearchView {
+    /// Renders one of the single-line fields below the query, with `trailing` after its text.
+    fn render_field_row(
+        &self,
+        editor: &ViewHandle<EditorView>,
+        trailing: Option<Box<dyn Element>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
+        let theme = appearance.theme();
+        let line_height = editor.as_ref(app).line_height(app.font_cache(), appearance);
+
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Shrinkable::new(
+                    1.0,
+                    ConstrainedBox::new(Clipped::new(ChildView::new(editor).finish()).finish())
+                        .with_height(line_height)
+                        .finish(),
+                )
+                .finish(),
+            );
+        if let Some(trailing) = trailing {
+            row.add_child(trailing);
+        }
+
+        Container::new(row.finish())
+            .with_padding(Padding::uniform(6.))
+            .with_border(Border::all(BORDER_WIDTH).with_border_fill(theme.surface_3()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(BORDER_RADIUS)))
+            .with_margin_bottom(4.)
+            .finish()
+    }
+
     fn render_zero_state(
         &self,
         icon: Icon,

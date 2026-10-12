@@ -129,3 +129,51 @@ fn an_invalid_pattern_is_reported() {
     .expect("the pattern is invalid");
     assert_eq!(error.pattern, "src/[z-a]");
 }
+
+#[test]
+fn a_backslash_makes_a_character_stand_for_itself() {
+    let scope = scope_of(r"src/\[id\], a\,b.txt", "");
+    assert!(includes(&scope, "src/[id]/page.tsx"));
+    assert!(!includes(&scope, "src/i/page.tsx"));
+    assert!(includes(&scope, "docs/a,b.txt"));
+    assert!(!includes(&scope, "docs/a"));
+    assert!(!includes(&scope, "b.txt"));
+}
+
+#[test]
+fn a_folder_pattern_limits_the_search_to_that_folder() {
+    let root = Path::new("/project");
+    let folder = root.join("app/[id]/a,b {x}");
+    let pattern = folder_pattern(Some(root), &folder);
+    assert_eq!(pattern, r"./app/\[id\]/a\,b \{x\}");
+
+    let scope = scope_of(&pattern, "");
+    assert!(includes(&scope, "app/[id]/a,b {x}/page.tsx"));
+    assert!(includes(&scope, "app/[id]/a,b {x}/deep/er/page.tsx"));
+    assert!(!includes(&scope, "app/i/a,b {x}/page.tsx"));
+    assert!(!includes(&scope, "lib/app/[id]/a,b {x}/page.tsx"));
+    assert!(!includes(&scope, "app/page.tsx"));
+
+    assert_eq!(folder_pattern(Some(root), &root.join("src")), "./src");
+}
+
+#[test]
+fn a_folder_outside_the_root_or_the_root_itself_is_named_by_its_path() {
+    let root = Path::new("/project");
+    assert_eq!(folder_pattern(Some(root), root), "/project");
+    assert_eq!(
+        folder_pattern(Some(root), Path::new("/other/[x]")),
+        r"/other/\[x\]"
+    );
+    assert_eq!(folder_pattern(None, Path::new("/other/src")), "/other/src");
+
+    let scope = scope_of(&folder_pattern(None, Path::new("/other/[x]")), "");
+    let other = Path::new("/other");
+    assert!(scope.includes(other, &other.join("[x]/main.rs")));
+    assert!(!scope.includes(other, &other.join("x/main.rs")));
+
+    // Searching two roots while limited to one of them leaves the other out.
+    let scope = scope_of(&folder_pattern(Some(root), root), "");
+    assert!(scope.includes(root, &root.join("src/main.rs")));
+    assert!(!scope.includes(other, &other.join("src/main.rs")));
+}

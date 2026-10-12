@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,7 +8,8 @@ use anyhow::Result;
 use futures::StreamExt as _;
 use instant::Instant;
 use num_traits::SaturatingSub;
-use regex::escape;
+use project_replace::engine::SearchSpec;
+use project_replace::scope::{Scope, ScopeGlobs};
 use remote_server::HostId;
 use remote_server::manager::{HostRequestError, RemoteServerManager, RipgrepSearchParams};
 use remote_server::proto::RipgrepSearchSuccess;
@@ -25,7 +26,7 @@ use warpui::{Entity, ModelContext, ModelSpawner, SingletonEntity};
 use crate::workspace::view::global_search::name_match::NameMatcher;
 use crate::workspace::view::global_search::name_search::{resolve_roots, search_names};
 use crate::workspace::view::global_search::view::GlobalSearchEvent;
-use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
+use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig, SearchOptions};
 
 const START_BATCH_AFTER_COUNT: usize = 50;
 const MAX_BATCH_SIZE: usize = 512;
@@ -155,6 +156,7 @@ impl GlobalSearch {
         pattern: String,
         roots: Vec<LocalOrRemotePath>,
         search_config: SearchConfig,
+        options: SearchOptions,
         ctx: &mut ModelContext<Self>,
     ) {
         if !self.search_handles.is_empty() {
@@ -165,16 +167,40 @@ impl GlobalSearch {
         let search_id = self.next_search_id;
         self.next_search_id += 1;
 
-        let name_search_started =
-            self.spawn_name_search(search_id, &pattern, &roots, &search_config, ctx);
-
-        let effective_pattern = if search_config.use_regex {
-            pattern
-        } else {
-            escape(&pattern)
+        let scope = match Scope::parse(&options.scope) {
+            Ok(scope) => Arc::new(scope),
+            Err(err) => {
+                ctx.emit(GlobalSearchEvent::Started {
+                    search_id,
+                    remote_host_count: 0,
+                    name_search_started: false,
+                });
+                ctx.emit(GlobalSearchEvent::Failed {
+                    search_id,
+                    error: err.to_string(),
+                });
+                return;
+            }
         };
-        let ignore_case = !search_config.use_case_sensitivity;
-        let multiline = effective_pattern.contains('\n');
+
+        let name_search_started = self.spawn_name_search(
+            search_id,
+            &pattern,
+            &roots,
+            &search_config,
+            scope.clone(),
+            ctx,
+        );
+
+        let spec = SearchSpec {
+            pattern,
+            use_regex: search_config.use_regex,
+            case_sensitive: search_config.use_case_sensitivity,
+            whole_word: options.whole_word,
+        };
+        let effective_pattern = spec.effective_pattern();
+        let ignore_case = spec.ignore_case();
+        let multiline = spec.is_multiline();
 
         // Split roots into the local filesystem source and one remote
         // source per host.
@@ -227,6 +253,7 @@ impl GlobalSearch {
                 local_roots,
                 ignore_case,
                 multiline,
+                options.scope.clone(),
                 ctx,
             );
         }
@@ -239,7 +266,7 @@ impl GlobalSearch {
                 multiline,
                 max_matches: REMOTE_MAX_MATCH_COUNT,
             };
-            self.spawn_remote_search(search_id, host_id, params, ctx);
+            self.spawn_remote_search(search_id, host_id, params, scope.clone(), ctx);
         }
     }
 
@@ -251,6 +278,7 @@ impl GlobalSearch {
         pattern: &str,
         roots: &[LocalOrRemotePath],
         search_config: &SearchConfig,
+        scope: Arc<Scope>,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         let Some(matcher) = NameMatcher::new(pattern, search_config) else {
@@ -265,7 +293,7 @@ impl GlobalSearch {
         let handle = ctx.spawn(
             {
                 let cancelled = cancelled.clone();
-                async move { search_names(&roots, &matcher, &cancelled) }
+                async move { search_names(&roots, &matcher, &scope, &cancelled) }
             },
             move |me, results, ctx| {
                 if me
@@ -296,6 +324,7 @@ impl GlobalSearch {
         roots: Vec<PathBuf>,
         ignore_case: bool,
         multiline: bool,
+        scope: ScopeGlobs,
         ctx: &mut ModelContext<Self>,
     ) {
         let spawner = ctx.spawner();
@@ -309,6 +338,7 @@ impl GlobalSearch {
                     roots,
                     ignore_case,
                     multiline,
+                    scope,
                     spawner,
                 )
                 .await;
@@ -334,8 +364,10 @@ impl GlobalSearch {
         search_id: u32,
         host_id: HostId,
         params: RipgrepSearchParams,
+        scope: Arc<Scope>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let roots = params.roots.clone();
         let pending = RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
             manager.start_ripgrep_search(&host_id, params)
         });
@@ -347,8 +379,19 @@ impl GlobalSearch {
             SearchSource::Remote,
             async move {
                 match pending.result().await {
-                    Ok(success) => {
+                    Ok(mut success) => {
                         let capped = success.capped;
+                        // The host searches whole folders, so the scope is applied to what it
+                        // found.
+                        if !scope.is_unrestricted() {
+                            success.matches.retain(|found| {
+                                let path = Path::new(&found.file_path);
+                                roots.iter().any(|root| {
+                                    let root = Path::new(root.as_str());
+                                    path.starts_with(root) && scope.includes(root, path)
+                                })
+                            });
+                        }
                         let mut items = Self::remote_matches_to_global(&host_id, success);
                         let match_count = items.len();
                         flush_batch(&spawner, search_id, &mut items).await;
@@ -488,6 +531,7 @@ impl GlobalSearch {
         roots: Vec<PathBuf>,
         ignore_case: bool,
         multiline: bool,
+        scope: ScopeGlobs,
         spawner: ModelSpawner<GlobalSearch>,
     ) -> Result<usize> {
         let roots_display: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
@@ -497,8 +541,13 @@ impl GlobalSearch {
         );
 
         let patterns = &[pattern];
-        let stream =
-            warp_ripgrep::search::search_streaming(patterns, &roots, ignore_case, multiline)?;
+        let stream = warp_ripgrep::search::search_streaming(
+            patterns,
+            &roots,
+            ignore_case,
+            multiline,
+            &scope,
+        )?;
         futures::pin_mut!(stream);
 
         let mut total_match_count: usize = 0;
