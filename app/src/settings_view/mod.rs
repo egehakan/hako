@@ -675,6 +675,7 @@ pub mod flags {
     pub const SHOW_HIDDEN_FILES: &str = "ShowHiddenFiles";
     pub const OPEN_FILES_IN_PREVIEW_MODE: &str = "OpenFilesInPreviewMode";
     pub const SHOW_INLINE_BLAME: &str = "ShowInlineBlame";
+    pub const USE_PROJECT_FORMATTERS: &str = "UseProjectFormatters";
 }
 
 pub fn init_actions_from_parent_view<T: Action + Clone>(
