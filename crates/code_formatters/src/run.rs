@@ -28,6 +28,9 @@ const MAX_STDERR_BYTES: usize = 64 * 1024;
 
 const MAX_MESSAGE_CHARS: usize = 200;
 
+const MIN_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Bounds on a formatter run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -35,6 +38,17 @@ pub struct Limits {
     /// Buffers larger than this are not formatted.
     pub max_input_bytes: usize,
     pub max_output_bytes: usize,
+}
+
+impl Limits {
+    /// The default limits with `timeout`, kept within bounds that can neither cut off every
+    /// formatter nor hold up a save indefinitely.
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout: timeout.clamp(MIN_TIMEOUT, MAX_TIMEOUT),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for Limits {

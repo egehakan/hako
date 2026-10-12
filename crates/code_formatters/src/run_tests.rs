@@ -46,6 +46,18 @@ fn read_pid(path: PathBuf) -> i32 {
 }
 
 #[test]
+fn a_configured_timeout_is_kept_within_bounds() {
+    let limits = |millis| Limits::with_timeout(Duration::from_millis(millis));
+    assert_eq!(limits(2_500).timeout, Duration::from_millis(2_500));
+    assert_eq!(limits(0).timeout, Duration::from_millis(100));
+    assert_eq!(limits(3_600_000).timeout, Duration::from_secs(60));
+    assert_eq!(
+        limits(2_500).max_input_bytes,
+        Limits::default().max_input_bytes
+    );
+}
+
+#[test]
 fn pipes_the_buffer_through_stdin_and_stdout() {
     let project = Project::new();
     assert_eq!(
