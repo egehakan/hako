@@ -81,8 +81,8 @@ pub fn image_tiles<'a, T>(pyramid: &'a Pyramid<T>, placement: &Placement) -> Vec
 pub struct Backdrop {
     /// Where to draw the pattern tile. Tiles in the last column and row stick out of the area.
     pub tiles: Vec<Rect>,
-    /// What to paint over with the background colour to hide the parts that stick out.
-    pub cover: Vec<Rect>,
+    /// The part of the area that is in view, which the tiles have to be clipped to.
+    pub clip: Rect,
 }
 
 /// Lays square tiles of side `tile` over the part of `area` that is inside a viewport of size
@@ -112,14 +112,10 @@ pub fn backdrop(area: Rect, viewport: Size, tile: f32) -> Backdrop {
         }
     }
 
-    let mut cover = Vec::new();
-    if area.right() < viewport.width {
-        cover.push(Rect::new(area.right(), top, tile, bottom - top + tile));
+    Backdrop {
+        tiles,
+        clip: Rect::new(left, top, right - left, bottom - top),
     }
-    if area.bottom() < viewport.height {
-        cover.push(Rect::new(left, area.bottom(), right - left, tile));
-    }
-    Backdrop { tiles, cover }
 }
 
 /// The strips of a document to have rasterised for the view `transform` gives of it: the ones

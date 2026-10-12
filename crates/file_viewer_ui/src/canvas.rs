@@ -56,9 +56,17 @@ pub(crate) enum Shape {
     },
 }
 
+/// A pattern image repeated behind the shapes of a frame and cut off at the edge of `clip`.
+pub(crate) struct BackdropTiles {
+    pub clip: RectF,
+    pub tiles: Vec<RectF>,
+    pub image: Arc<StaticImage>,
+}
+
 /// What a canvas shows for one paint.
 #[derive(Default)]
 pub(crate) struct Frame {
+    pub backdrop: Option<BackdropTiles>,
     pub shapes: Vec<Shape>,
     /// When to paint again without being asked, for content that changes with time.
     pub repaint_after: Option<Duration>,
@@ -166,8 +174,32 @@ impl Element for ViewerCanvas {
             .draw_rect_with_hit_recording(bounds)
             .with_background(self.background);
 
-        if let Some(painter) = &self.painter {
-            let frame = painter(viewport);
+        let frame = self.painter.as_ref().map(|painter| painter(viewport));
+        // Within a layer images are drawn over every rectangle, so the tiles cannot be trimmed
+        // by painting over them. They get a clipped layer of their own instead.
+        if let Some(backdrop) = frame.as_ref().and_then(|frame| frame.backdrop.as_ref()) {
+            let clip = RectF::new(backdrop.clip.origin() + origin, backdrop.clip.size());
+            if is_drawable(&clip) {
+                ctx.scene
+                    .start_layer(ClipBounds::BoundedByActiveLayerAnd(clip));
+                for tile in &backdrop.tiles {
+                    let rect = RectF::new(tile.origin() + origin, tile.size());
+                    if is_drawable(&rect) {
+                        ctx.scene.draw_image(
+                            rect,
+                            backdrop.image.clone(),
+                            1.,
+                            CornerRadius::default(),
+                        );
+                    }
+                }
+                ctx.scene.stop_layer();
+            }
+        }
+
+        // The shapes go in a layer started after the backdrop's, which puts them above it.
+        ctx.scene.start_layer(ClipBounds::ActiveLayer);
+        if let Some(frame) = frame {
             for shape in frame.shapes {
                 match shape {
                     Shape::Fill { rect, color } => {
@@ -196,6 +228,7 @@ impl Element for ViewerCanvas {
             child.paint(origin, ctx, app);
         }
         self.top_z_index = Some(ctx.scene.max_active_z_index());
+        ctx.scene.stop_layer();
         ctx.scene.stop_layer();
     }
 

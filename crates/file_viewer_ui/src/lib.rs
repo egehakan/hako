@@ -44,7 +44,7 @@ use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, id,
 };
 
-use self::canvas::{CanvasHandle, Frame, Shape, ViewerCanvas};
+use self::canvas::{BackdropTiles, CanvasHandle, Frame, Shape, ViewerCanvas};
 
 /// Memory the rasters of a PDF document may take.
 const STRIP_CACHE_BYTES: usize = 256 << 20;
@@ -1033,6 +1033,7 @@ impl FileViewerView {
                     })
                     .collect();
                 Frame {
+                    backdrop: None,
                     shapes,
                     repaint_after: Some(BUSY_STEP),
                 }
@@ -1056,18 +1057,11 @@ impl FileViewerView {
                 if let Some(backdrop) = &backdrop {
                     let area = placement.place(Rect::new(0., 0., content.width, content.height));
                     let pattern = scene::backdrop(area, viewport.size, BACKDROP_TILE);
-                    frame
-                        .shapes
-                        .extend(pattern.tiles.into_iter().map(|rect| Shape::Image {
-                            rect: to_rect_f(rect),
-                            image: backdrop.clone(),
-                        }));
-                    frame
-                        .shapes
-                        .extend(pattern.cover.into_iter().map(|rect| Shape::Fill {
-                            rect: to_rect_f(rect),
-                            color: background,
-                        }));
+                    frame.backdrop = Some(BackdropTiles {
+                        clip: to_rect_f(pattern.clip),
+                        tiles: pattern.tiles.into_iter().map(to_rect_f).collect(),
+                        image: backdrop.clone(),
+                    });
                 }
 
                 let (index, until_next) = if frames.len() > 1 {

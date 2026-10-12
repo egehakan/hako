@@ -74,13 +74,7 @@ fn the_backdrop_covers_the_image_and_nothing_else() {
         ]
     );
     // The second tile sticks out to the right, and both stick out below.
-    assert_eq!(
-        backdrop.cover,
-        vec![
-            Rect::new(450., 275., 64., 114.),
-            Rect::new(350., 325., 100., 64.),
-        ]
-    );
+    assert_eq!(backdrop.clip, area);
 }
 
 #[test]
@@ -98,7 +92,10 @@ fn the_backdrop_of_a_scrolled_image_starts_at_the_tiles_in_view() {
         VIEWPORT.size.width,
         VIEWPORT.size.height
     ))));
-    assert!(backdrop.cover.is_empty());
+    assert_eq!(
+        backdrop.clip,
+        Rect::new(0., 0., VIEWPORT.size.width, VIEWPORT.size.height)
+    );
 
     let off_screen = Rect::new(900., 0., 100., 100.);
     assert_eq!(
