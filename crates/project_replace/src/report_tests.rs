@@ -38,13 +38,21 @@ fn the_confirmation_states_the_counts_and_both_texts() {
         "Replace 37 occurrences across 9 files of “foo” with “bar”?"
     );
     assert_eq!(
-        confirmation_title(counts(1, 1), "a\nb", ""),
-        "Replace 1 occurrence across 1 file of “a⏎b” with “”?"
+        confirmation_title(counts(1, 1), "a\nb", "x"),
+        "Replace 1 occurrence across 1 file of “a⏎b” with “x”?"
     );
 
     let long = "x".repeat(100);
     let title = confirmation_title(counts(2, 2), &long, "y");
     assert!(title.contains(&format!("“{}…”", "x".repeat(40))));
+}
+
+#[test]
+fn the_confirmation_of_an_empty_replacement_says_the_matches_are_deleted() {
+    assert_eq!(
+        confirmation_title(counts(37, 9), "foo", ""),
+        "Delete 37 occurrences across 9 files of “foo”?"
+    );
 }
 
 #[test]

@@ -135,8 +135,16 @@ pub fn replace_all_label(counts: ReplaceCounts) -> String {
     format!("Replace {}", counts.describe())
 }
 
-/// The question to confirm before replacing everything `counts` covers.
+/// The question to confirm before replacing everything `counts` covers. An empty replacement
+/// removes the matches, which the question says outright.
 pub fn confirmation_title(counts: ReplaceCounts, pattern: &str, replacement: &str) -> String {
+    if replacement.is_empty() {
+        return format!(
+            "Delete {} of “{}”?",
+            counts.describe(),
+            shortened(pattern)
+        );
+    }
     format!(
         "Replace {} of “{}” with “{}”?",
         counts.describe(),
@@ -144,6 +152,10 @@ pub fn confirmation_title(counts: ReplaceCounts, pattern: &str, replacement: &st
         shortened(replacement)
     )
 }
+
+/// What the confirmation adds under its question when the replacement is empty.
+pub const DELETION_WARNING: &str =
+    "The replacement is empty, so every match will be deleted and nothing put in its place.";
 
 /// For example "Replaced 37 occurrences in 9 files", then what was skipped and why.
 pub fn replace_summary(

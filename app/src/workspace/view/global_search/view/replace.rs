@@ -10,7 +10,8 @@ use project_replace::engine::SearchSpec;
 use project_replace::preview::{Previewer, RowPreview, preview_row};
 use project_replace::replacement::ReplaceSpec;
 use project_replace::report::{
-    ReplaceCounts, confirmation_title, describe_change, replace_all_label, replace_summary,
+    DELETION_WARNING, ReplaceCounts, confirmation_title, describe_change, replace_all_label,
+    replace_summary,
     undo_summary,
 };
 use project_replace::selection::{Dismissals, Selection, TargetsBuilder, count_targets};
@@ -353,7 +354,8 @@ impl GlobalSearchView {
     pub(super) fn refresh_replace_preview(&mut self, ctx: &mut ViewContext<Self>) {
         let replacement = self.replacement_text(ctx);
         self.replace.previewer = match &self.searched_spec {
-            Some(search) if self.replace.is_open && !replacement.is_empty() => {
+            // An empty replacement is a replacement too: it deletes the matches.
+            Some(search) if self.replace.is_open => {
                 Some(Previewer::new(
                     search,
                     &ReplaceSpec {
@@ -461,20 +463,30 @@ impl GlobalSearchView {
             return;
         }
 
-        let title = confirmation_title(counts, &search.pattern, &self.replacement_text(ctx));
-        ctx.show_native_platform_modal(AlertDialogWithCallbacks::for_view(
-            title,
-            "Files that changed since the search are left alone. The replace can be taken back \
-             with Undo Last Replace.",
-            vec![
-                // The first button is the one Return presses.
-                ModalButton::for_view("Cancel", |_: &mut Self, _| {}),
-                ModalButton::for_view("Replace", move |me: &mut Self, ctx| {
-                    me.start_replace(files, ctx);
-                }),
-            ],
-            |_, _| {},
-        ));
+        let replacement = self.replacement_text(ctx);
+        let title = confirmation_title(counts, &search.pattern, &replacement);
+        let caveats = "Files that changed since the search are left alone. The replace can be \
+                       taken back with Undo Last Replace.";
+        let (details, confirm_label) = if replacement.is_empty() {
+            (format!("{DELETION_WARNING} {caveats}"), "Delete")
+        } else {
+            (caveats.to_string(), "Replace")
+        };
+        ctx.show_native_platform_modal(
+            AlertDialogWithCallbacks::for_view(
+                title,
+                details,
+                vec![
+                    // The first button is the one Return presses.
+                    ModalButton::for_view("Cancel", |_: &mut Self, _| {}),
+                    ModalButton::for_view(confirm_label, move |me: &mut Self, ctx| {
+                        me.start_replace(files, ctx);
+                    }),
+                ],
+                |_, _| {},
+            )
+            .asked_every_time(),
+        );
     }
 
     pub(super) fn replace_in_file(
@@ -766,7 +778,7 @@ impl GlobalSearchView {
             let mut row = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(ChildView::new(&self.replace.replace_all_button).finish());
-            if let Some(text) = self.replace_hint(app) {
+            if let Some(text) = self.replace_hint() {
                 row.add_child(
                     Shrinkable::new(
                         1.0,
@@ -858,7 +870,7 @@ impl GlobalSearchView {
     }
 
     /// Why nothing can be replaced right now, when the reason is not plain from the results.
-    fn replace_hint(&self, app: &AppContext) -> Option<&'static str> {
+    fn replace_hint(&self) -> Option<&'static str> {
         if self.replace.is_ready {
             return None;
         }
@@ -866,8 +878,6 @@ impl GlobalSearchView {
             Some("The search ended early. Search again to replace.")
         } else if self.is_search_in_progress {
             Some("Waiting for the search to finish.")
-        } else if self.replacement_text(app).is_empty() {
-            Some("Type what to replace matches with.")
         } else {
             None
         }
