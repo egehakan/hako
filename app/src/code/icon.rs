@@ -71,22 +71,42 @@ fn index_by_key<T: Copy>(
 /// Returns a special icon for the given file path, if any.
 pub fn icon_from_file_path(path: &str, appearance: &Appearance) -> Option<Box<dyn Element>> {
     let icon = file_icon(path)?;
-    Some(bundled_image(icon.path_for_theme(appearance.theme())))
+    Some(bundled_image(icon.path_for_theme(appearance.theme()), 1.))
 }
 
 /// Returns the generic icon for files that have no special icon.
 pub fn default_file_icon() -> Box<dyn Element> {
-    bundled_image(DEFAULT_FILE)
+    bundled_image(DEFAULT_FILE, 1.)
 }
 
 /// Returns the icon for the folder at the given path, which is generic unless the folder has a
 /// well-known name.
 pub fn icon_from_folder_path(path: &str, is_open: bool) -> Box<dyn Element> {
-    bundled_image(folder_icon(path).path(is_open))
+    bundled_image(folder_icon(path).path(is_open), 1.)
 }
 
-fn bundled_image(path: &'static str) -> Box<dyn Element> {
-    Image::new(AssetSource::Bundled { path }, CacheOption::BySize).finish()
+/// Returns the icon for the file at the given path, the generic one when it has no special icon,
+/// drawn at `opacity`.
+pub fn file_icon_with_opacity(
+    path: &str,
+    opacity: f32,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let icon_path = file_icon(path)
+        .map(|icon| icon.path_for_theme(appearance.theme()))
+        .unwrap_or(DEFAULT_FILE);
+    bundled_image(icon_path, opacity)
+}
+
+/// Returns the icon for the folder at the given path, drawn at `opacity`.
+pub fn folder_icon_with_opacity(path: &str, is_open: bool, opacity: f32) -> Box<dyn Element> {
+    bundled_image(folder_icon(path).path(is_open), opacity)
+}
+
+fn bundled_image(path: &'static str, opacity: f32) -> Box<dyn Element> {
+    Image::new(AssetSource::Bundled { path }, CacheOption::BySize)
+        .with_opacity(opacity)
+        .finish()
 }
 
 fn file_icon(path: &str) -> Option<FileIcon> {
