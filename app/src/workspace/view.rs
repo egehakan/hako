@@ -3,6 +3,7 @@ pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
 pub(crate) mod chatgpt_plan_modal;
 pub(crate) mod cloud_agent_capacity_modal;
+mod closing;
 pub(crate) mod codex_modal;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
@@ -149,6 +150,8 @@ use super::hoa_onboarding::{
 };
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
+use self::closing::{PendingClose, PendingGroupClose};
+pub use self::closing::WindowCloseConfirmation;
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
@@ -509,6 +512,7 @@ use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderTo
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
 use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::close_confirmation::{CloseConfirmationDialog, confirms_every_close};
 use crate::workspace::tab_folders::{TabFolders, TabFoldersEvent};
 use crate::workspace::tab_group_customize_dialog::TabGroupCustomizeDialog;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
@@ -1127,6 +1131,12 @@ pub struct Workspace {
     /// of its directory first.
     suppress_folder_assignment: bool,
     tab_group_customize_dialog: ViewHandle<TabGroupCustomizeDialog>,
+    close_confirmation_dialog: ViewHandle<CloseConfirmationDialog>,
+    /// The close the confirmation dialog is showing for; the dialog is open while this is set.
+    pending_close: Option<PendingClose>,
+    /// Set when a close that takes the window with it has been confirmed, so that the window's
+    /// own close request does not ask again.
+    window_close_confirmed: bool,
     /// The group whose color and icon are being chosen, while that dialog is open.
     customizing_tab_group: Option<TabGroupId>,
     /// Per-group hover state for the horizontal tab bar.
@@ -2083,6 +2093,16 @@ impl Workspace {
         );
 
         delete_conversation_confirmation_dialog
+    }
+
+    fn build_close_confirmation_dialog(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<CloseConfirmationDialog> {
+        let dialog = ctx.add_typed_action_view(|_| CloseConfirmationDialog::new());
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_close_confirmation_event(event, ctx);
+        });
+        dialog
     }
 
     fn build_tab_group_customize_dialog(
@@ -3543,6 +3563,9 @@ impl Workspace {
             tab_group_order: Vec::new(),
             suppress_folder_assignment: false,
             tab_group_customize_dialog: Self::build_tab_group_customize_dialog(ctx),
+            close_confirmation_dialog: Self::build_close_confirmation_dialog(ctx),
+            pending_close: None,
+            window_close_confirmed: false,
             customizing_tab_group: None,
             horizontal_tab_group_mouse_states: RefCell::default(),
             tab_rename_editor: Self::tab_rename_editor(ctx),
@@ -7686,15 +7709,18 @@ impl Workspace {
     /// Closes every tab in the given group. The group goes with its tabs unless it is a folder,
     /// which stays in the tab list without tabs.
     pub fn close_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
-        let is_folder = self
-            .tab_groups
-            .get(&group_id)
-            .is_some_and(TabGroup::is_folder);
         let indices: Vec<usize> = group_member_indices(&self.tabs, group_id).collect();
         if indices.is_empty() {
-            if !is_folder {
-                self.delete_empty_tab_group(group_id, ctx);
-            }
+            // With no tabs left to close, closing the group can only mean taking it away.
+            self.remove_tab_group(group_id, ctx);
+            return;
+        }
+        if confirms_every_close(ctx) {
+            let group = PendingGroupClose {
+                group_id,
+                removes_group: false,
+            };
+            self.ask_before_closing_tabs(indices, true, Some(group), ctx);
             return;
         }
         let first_index = indices[0];
@@ -7707,14 +7733,29 @@ impl Workspace {
             true,
             ctx,
         );
-        if closed && !is_folder {
-            self.delete_empty_tab_group(group_id, ctx);
+        if closed {
+            let group = PendingGroupClose {
+                group_id,
+                removes_group: false,
+            };
+            self.finish_group_close(group, ctx);
         }
     }
 
     /// Closes every tab in the given group and removes the group, a folder included.
     pub fn remove_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        if !self.tab_groups.contains_key(&group_id) {
+            return;
+        }
         let indices: Vec<usize> = group_member_indices(&self.tabs, group_id).collect();
+        let group = PendingGroupClose {
+            group_id,
+            removes_group: true,
+        };
+        if confirms_every_close(ctx) {
+            self.ask_before_closing_tabs(indices, true, Some(group), ctx);
+            return;
+        }
         let closed = match indices.first().copied() {
             Some(first_index) => self.close_tabs(
                 indices.into_iter(),
@@ -7728,7 +7769,7 @@ impl Workspace {
             None => true,
         };
         if closed {
-            self.delete_empty_tab_group(group_id, ctx);
+            self.finish_group_close(group, ctx);
         }
     }
 
@@ -12649,6 +12690,9 @@ impl Workspace {
         // the tab.
         if self.tabs.len() == 1 {
             if ContextFlag::CloseWindow.is_enabled() {
+                // With confirmations on, what led here was either confirmed already or was not a
+                // request to close at all (the shell exited), so the window does not ask again.
+                self.window_close_confirmed = confirms_every_close(ctx);
                 ctx.close_window();
             }
             return;
@@ -12751,6 +12795,12 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         let tab_indices_vec = tab_indices.collect_vec();
+        if !skip_confirmation && confirms_every_close(ctx) {
+            if !tab_indices_vec.is_empty() {
+                self.ask_before_closing_tabs(tab_indices_vec, add_to_undo_stack, None, ctx);
+            }
+            return false;
+        }
         // Check if there are any tabs that can't be closed without confirmation
         if !skip_confirmation && self.should_confirm_close_session(ctx) {
             for i in tab_indices_vec.iter() {
@@ -12854,6 +12904,11 @@ impl Workspace {
     ) {
         let is_last_tab = self.tabs.len() == 1;
         if !ContextFlag::CloseWindow.is_enabled() && is_last_tab {
+            return;
+        }
+
+        if !skip_confirmation && confirms_every_close(ctx) {
+            self.ask_before_closing_tabs(vec![index], add_to_undo_stack, None, ctx);
             return;
         }
 
@@ -17001,6 +17056,9 @@ impl Workspace {
                 *in_subshell,
                 ctx,
             ),
+            pane_group::Event::ClosePaneRequested { pane_id, stakes } => {
+                self.ask_before_closing_pane(&pane_group, *pane_id, *stakes, ctx);
+            }
             pane_group::Event::CloseSharedSessionPaneRequested { pane_id } => {
                 if *SessionSettings::as_ref(ctx).should_confirm_close_session {
                     self.show_close_session_confirmation_dialog(
@@ -23853,6 +23911,10 @@ impl Workspace {
             context.set.insert(flags::QUIT_WARNING_MODAL);
         }
 
+        if *general_settings.confirm_before_closing.value() {
+            context.set.insert(flags::CONFIRM_BEFORE_CLOSING);
+        }
+
         if semantic_selection_settings.smart_select_enabled() {
             context.set.insert(flags::SMART_SELECT_FLAG);
         }
@@ -28317,6 +28379,18 @@ impl View for Workspace {
             );
         }
 
+        if self.pending_close.is_some() {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.close_confirmation_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
         if self.customizing_tab_group.is_some() {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.tab_group_customize_dialog).finish(),
@@ -28654,7 +28728,16 @@ impl View for Workspace {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
-        if focus_ctx.is_self_focused() {
+        if !focus_ctx.is_self_focused() {
+            return;
+        }
+        // A dialog that is waiting for an answer keeps the keyboard, so that Enter and Escape
+        // answer it rather than reach the terminal behind it.
+        if self.pending_close.is_some() {
+            ctx.focus(&self.close_confirmation_dialog);
+        } else if self.customizing_tab_group.is_some() {
+            ctx.focus(&self.tab_group_customize_dialog);
+        } else {
             self.focus_active_tab(ctx);
         }
     }

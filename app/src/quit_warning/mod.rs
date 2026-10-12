@@ -366,8 +366,17 @@ impl<'a> UnsavedStateSummary<'a> {
     /// things auto-save can't handle: running processes, shared sessions, or
     /// unsaved changes with no backing file (e.g. untitled buffers).
     pub fn save_unsaved_code_and_should_warn(&self, ctx: &mut AppContext) -> bool {
+        let unsaved_changes_remain = self.save_unsaved_code(ctx);
+        *GeneralSettings::as_ref(ctx).show_warning_before_quitting
+            && (self.total_long_running_commands > 0
+                || self.shared_sessions > 0
+                || unsaved_changes_remain)
+    }
+
+    /// Saves what the auto-save setting allows and returns whether unsaved changes remain.
+    pub fn save_unsaved_code(&self, ctx: &mut AppContext) -> bool {
         if !*CodeSettings::as_ref(ctx).auto_save {
-            return self.should_display_warning(ctx);
+            return self.unsaved_code_changes;
         }
 
         let mut unsaveable_changes_remain = false;
@@ -378,11 +387,7 @@ impl<'a> UnsavedStateSummary<'a> {
         for review_view in self.scope.code_review_view_handles(ctx) {
             review_view.update(ctx, |view, ctx| view.auto_save_all_unsaved_files(ctx));
         }
-
-        *GeneralSettings::as_ref(ctx).show_warning_before_quitting
-            && (self.total_long_running_commands > 0
-                || self.shared_sessions > 0
-                || unsaveable_changes_remain)
+        unsaveable_changes_remain
     }
 
     pub fn running_sessions(&self) -> RunningSessionSummary<'_> {

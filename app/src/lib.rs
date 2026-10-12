@@ -312,7 +312,9 @@ use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 use crate::system::SystemStats;
 use crate::tab::TabShortcutModifierState;
+use crate::workspace::close_confirmation::CloseStakes;
 use crate::workspace::tab_folders::TabFolders;
+use crate::workspace::view::WindowCloseConfirmation;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
@@ -2803,6 +2805,16 @@ pub(crate) fn app_callbacks(
             crash_reporting::uninit_sentry();
         })),
         on_should_close_window: Some(Box::new(move |window_id, ctx| {
+            // Don't show dialog on integration test. Machine can't press buttons.
+            let confirmation = if is_integration_test {
+                WindowCloseConfirmation::NotNeeded
+            } else {
+                confirm_window_close(window_id, ctx)
+            };
+            if confirmation == WindowCloseConfirmation::Asked {
+                return ApproveTerminateResult::Cancel;
+            }
+
             let general_settings = GeneralSettings::as_ref(ctx);
             // On Linux or Windows, if we're about to close the final window, we should quit the app instead.
             // On Mac, we do this conditionally based on a user setting.
@@ -2813,6 +2825,10 @@ pub(crate) fn app_callbacks(
                 log::info!("No windows left, terminating app");
                 ctx.terminate_app(TerminationMode::Cancellable, None);
                 return ApproveTerminateResult::Cancel;
+            }
+
+            if confirmation == WindowCloseConfirmation::Confirmed {
+                return ApproveTerminateResult::Terminate;
             }
 
             let summary = UnsavedStateSummary::for_window(window_id, ctx);
@@ -2999,6 +3015,26 @@ pub(crate) fn app_callbacks(
         })),
         ..Default::default()
     }
+}
+
+/// Puts the request to close a window to its workspace, which asks for confirmation when closing
+/// is always confirmed and has not been confirmed already.
+fn confirm_window_close(window_id: WindowId, ctx: &mut AppContext) -> WindowCloseConfirmation {
+    let Some(workspace) = ctx
+        .views_of_type::<Workspace>(window_id)
+        .and_then(|workspaces| workspaces.first().cloned())
+    else {
+        return WindowCloseConfirmation::NotNeeded;
+    };
+    let summary = UnsavedStateSummary::for_window(window_id, ctx);
+    let stakes = CloseStakes {
+        running_commands: summary.total_long_running_commands,
+        shared_sessions: summary.shared_sessions,
+        unsaved_changes: summary.save_unsaved_code(ctx),
+    };
+    workspace.update(ctx, |workspace, ctx| {
+        workspace.confirm_window_close(stakes, ctx)
+    })
 }
 
 /// Focuses the active window or if there isn't one then a window with a running process

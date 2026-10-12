@@ -4,6 +4,7 @@ pub(crate) mod auto_handoff;
 pub mod bonus_grant_notification_model;
 #[cfg(target_os = "macos")]
 pub(crate) mod cli_install;
+pub mod close_confirmation;
 mod close_session_confirmation_dialog;
 pub(crate) mod cross_window_tab_drag;
 pub mod delete_conversation_confirmation_dialog;
@@ -86,6 +87,7 @@ pub fn init(app: &mut AppContext) {
 
     modal::init(app);
     native_modal::init(app);
+    close_confirmation::init(app);
     tab_group_customize_dialog::init(app);
     lightbox_view::init(app);
     rewind_confirmation_dialog::init(app);

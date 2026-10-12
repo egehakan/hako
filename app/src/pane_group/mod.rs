@@ -105,6 +105,7 @@ use crate::pane_group::pane::terminal_pane::{
 };
 use crate::persistence::ModelEvent;
 use crate::quit_warning::UnsavedStateSummary;
+use crate::workspace::close_confirmation::{CloseStakes, confirms_every_close};
 use crate::resource_center::{
     Tip, TipAction, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
 };
@@ -572,6 +573,11 @@ pub enum Event {
     },
     CloseSharedSessionPaneRequested {
         pane_id: PaneId,
+    },
+    /// Asks the workspace to confirm closing the pane, and to close it if confirmed.
+    ClosePaneRequested {
+        pane_id: PaneId,
+        stakes: CloseStakes,
     },
     /// Dirty the workspace so the tab indicator shows.
     MaximizePaneToggled,
@@ -4473,6 +4479,17 @@ impl PaneGroup {
         // "process running" warning—it doesn't apply.
         if self.is_child_agent_pane(pane_id) {
             self.close_pane(pane_id, ctx);
+            return;
+        }
+
+        if confirms_every_close(ctx) {
+            let summary = UnsavedStateSummary::for_pane(self, pane_id, ctx);
+            let stakes = CloseStakes {
+                running_commands: summary.total_long_running_commands,
+                shared_sessions: summary.shared_sessions,
+                unsaved_changes: summary.save_unsaved_code(ctx),
+            };
+            ctx.emit(Event::ClosePaneRequested { pane_id, stakes });
             return;
         }
 
