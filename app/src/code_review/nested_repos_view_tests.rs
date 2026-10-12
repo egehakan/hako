@@ -75,3 +75,18 @@ fn every_status_has_a_distinct_letter() {
 
     assert_eq!(letters, ["A", "M", "D", "R", "C", "U", "!"]);
 }
+
+#[test]
+fn change_counts_are_singular_only_for_one() {
+    assert_eq!(change_count_label(0), "0 changes");
+    assert_eq!(change_count_label(1), "1 change");
+    assert_eq!(change_count_label(300), "300 changes");
+}
+
+#[test]
+fn main_branch_is_recognised_with_or_without_its_remote_prefix() {
+    assert!(is_main_branch("main", "main"));
+    assert!(is_main_branch("main", "origin/main"));
+    assert!(!is_main_branch("feature", "origin/main"));
+    assert!(!is_main_branch("origin/main", "main"));
+}

@@ -298,10 +298,6 @@ pub struct WorkingDirectoriesModel {
     /// leaves the pane group's session and returns to it later, even if the auto-selection
     /// logic would otherwise pick a different default.
     selected_review_repo: HashMap<EntityId, LocalOrRemotePath>,
-    /// Per-pane-group repositories the user opened from a folder that contains them, rather than
-    /// by navigating a terminal into them. They stay among the pane group's repositories for as
-    /// long as that folder remains one of its non-repository directories.
-    opened_nested_repos: HashMap<EntityId, IndexSet<PathBuf>>,
     global_search_views: HashMap<EntityId, ViewHandle<GlobalSearchView>>,
     file_tree_views: HashMap<EntityId, ViewHandle<FileTreeView>>,
 }
@@ -568,7 +564,6 @@ impl WorkingDirectoriesModel {
     }
 
     fn handle_empty_pane_group(&mut self, pane_group_id: EntityId, ctx: &mut ModelContext<Self>) {
-        self.opened_nested_repos.remove(&pane_group_id);
         let did_remove_dirs = self.pane_groups.remove(&pane_group_id).is_some();
         let did_remove_terminals = self.directory_to_terminal.remove(&pane_group_id).is_some();
         let orphaned_repos = self.repository_roots.remove_pane_group(pane_group_id);
@@ -809,28 +804,9 @@ impl WorkingDirectoriesModel {
             }
         }
 
-        // Carry over the repositories opened from a containing folder. This happens after the
-        // focused-repo pass above, since the terminal they map to is not inside them.
-        let retained_nested_repos = self.retain_opened_nested_repos(
-            pane_group_id,
-            &new_local_root_paths,
-            &new_root_to_terminal,
-            ctx,
-        );
-        for (repo_root, terminal_id) in &retained_nested_repos {
-            new_root_to_terminal
-                .entry(LocalOrRemotePath::Local(repo_root.clone()))
-                .or_insert(*terminal_id);
-        }
-
         // Build the unified set of repo roots (local + remote).
         let mut new_repo_roots_wrapped: Vec<LocalOrRemotePath> = new_local_repo_roots
             .into_iter()
-            .chain(
-                retained_nested_repos
-                    .into_iter()
-                    .map(|(repo_root, _)| repo_root),
-            )
             .map(LocalOrRemotePath::Local)
             .chain(new_remote_repo_roots)
             .chain(new_remote_display_roots)
@@ -916,99 +892,6 @@ impl WorkingDirectoriesModel {
         self.pane_groups
             .keys()
             .any(|pane_group_id| self.is_non_repo_directory(*pane_group_id, directory))
-    }
-
-    /// Returns whether `repo_root` was opened in this pane group from a folder that contains it.
-    pub fn is_opened_nested_repo(&self, pane_group_id: EntityId, repo_root: &Path) -> bool {
-        self.opened_nested_repos
-            .get(&pane_group_id)
-            .is_some_and(|repos| repos.contains(repo_root))
-    }
-
-    /// Adds a repository nested under one of the pane group's non-repository directories to the
-    /// pane group's repositories, mapped to that directory's terminal.
-    ///
-    /// Returns `false`, leaving the pane group unchanged, when no such directory with a terminal
-    /// contains `repo_root`.
-    pub fn register_opened_nested_repo(
-        &mut self,
-        pane_group_id: EntityId,
-        repo_root: PathBuf,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        let terminal_id = self
-            .pane_groups
-            .get(&pane_group_id)
-            .into_iter()
-            .flatten()
-            .filter_map(LocalOrRemotePath::to_local_path)
-            .filter(|directory| {
-                repo_root.starts_with(directory)
-                    && self.is_non_repo_directory(pane_group_id, directory)
-            })
-            .find_map(|directory| {
-                self.get_terminal_id_for_root_path(
-                    pane_group_id,
-                    &LocalOrRemotePath::Local(directory.to_path_buf()),
-                )
-            });
-        let Some(terminal_id) = terminal_id else {
-            return false;
-        };
-
-        self.opened_nested_repos
-            .entry(pane_group_id)
-            .or_default()
-            .insert(repo_root.clone());
-        let repo_key = LocalOrRemotePath::Local(repo_root);
-        self.directory_to_terminal
-            .entry(pane_group_id)
-            .or_default()
-            .entry(repo_key.clone())
-            .or_insert(terminal_id);
-        if self.repository_roots.insert(pane_group_id, repo_key) {
-            self.emit_repositories_changed(pane_group_id, ctx);
-        }
-        true
-    }
-
-    /// Forgets the opened nested repositories whose containing folder is no longer one of the
-    /// pane group's non-repository directories, and returns the rest with the terminal each one
-    /// maps to.
-    fn retain_opened_nested_repos(
-        &mut self,
-        pane_group_id: EntityId,
-        local_root_paths: &[PathBuf],
-        root_to_terminal: &HashMap<LocalOrRemotePath, EntityId>,
-        ctx: &AppContext,
-    ) -> Vec<(PathBuf, EntityId)> {
-        let Some(mut opened) = self.opened_nested_repos.remove(&pane_group_id) else {
-            return Vec::new();
-        };
-        let containing_folders: Vec<(&PathBuf, EntityId)> = local_root_paths
-            .iter()
-            .filter(|root| self.get_repo_root_for_path(root, ctx).is_none())
-            .filter_map(|root| {
-                let terminal_id = root_to_terminal.get(&LocalOrRemotePath::Local(root.clone()))?;
-                Some((root, *terminal_id))
-            })
-            .collect();
-
-        let mut retained = Vec::new();
-        opened.retain(|repo_root| {
-            let terminal_id = containing_folders
-                .iter()
-                .find(|(folder, _)| repo_root.starts_with(folder))
-                .map(|(_, terminal_id)| *terminal_id);
-            if let Some(terminal_id) = terminal_id {
-                retained.push((repo_root.clone(), terminal_id));
-            }
-            terminal_id.is_some()
-        });
-        if !opened.is_empty() {
-            self.opened_nested_repos.insert(pane_group_id, opened);
-        }
-        retained
     }
 
     /// Registers a remote repository root for a pane group. Inserts it into
@@ -1206,14 +1089,6 @@ impl WorkingDirectoriesModel {
     }
 
     pub fn clear_selected_review_repo(&mut self, _pane_group_id: EntityId) {}
-
-    pub fn is_opened_nested_repo(
-        &self,
-        _pane_group_id: EntityId,
-        _repo_root: &std::path::Path,
-    ) -> bool {
-        false
-    }
 
     pub fn store_global_search_view(
         &mut self,

@@ -10,8 +10,6 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::Icon;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
-#[cfg(feature = "local_fs")]
-use warpui::elements::{Border, Hoverable};
 use warpui::elements::{
     ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CrossAxisAlignment, DragBarSide,
     Element, Empty, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
@@ -31,18 +29,18 @@ use crate::ai::agent::AgentReviewCommentBatch;
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::code::buffer_location::LocalOrRemotePath;
 use crate::code_review::code_review_header::HEADER_BUTTON_PADDING;
+#[cfg(feature = "local_fs")]
+use crate::code_review::code_review_view::CodeReviewAction;
 use crate::code_review::code_review_view::{
     CONTENT_LEFT_MARGIN, CONTENT_RIGHT_MARGIN, CodeReviewCommentDebugState, CodeReviewView,
     CodeReviewViewEvent, ReviewActionTargetProvider, render_file_navigation_button,
 };
-#[cfg(feature = "local_fs")]
-use crate::code_review::code_review_view::{CodeReviewAction, DeferredReviewRequest};
 use crate::code_review::diff_state::DiffStateModel;
 #[cfg(feature = "local_fs")]
 use crate::code_review::nested_repos::{NestedReposEvent, NestedReposModel};
 #[cfg(feature = "local_fs")]
 use crate::code_review::nested_repos_view::{
-    NestedRepoGitAction, NestedReposView, NestedReposViewEvent, OpenNestedRepo,
+    COMFORTABLE_TWO_COLUMN_WIDTH, NestedReposView, NestedReposViewEvent,
 };
 use crate::code_review::telemetry_event::CodeReviewContextDestination;
 use crate::drive::panel::{MAX_SIDEBAR_WIDTH_RATIO, MIN_SIDEBAR_WIDTH};
@@ -59,11 +57,11 @@ use crate::terminal::resizable_data::{ModalType, ResizableData};
 use crate::terminal::view::TerminalView;
 use crate::ui_components::buttons::icon_button_with_color;
 use crate::ui_components::icons;
-#[cfg(feature = "local_fs")]
-use crate::ui_components::item_highlight::ItemHighlightState;
 use crate::util::bindings::{CustomAction, keybinding_name_to_display_string};
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::FileTarget;
+use crate::util::file::external_editor::EditorSettings;
+#[cfg(feature = "local_fs")]
+use crate::util::openable_file_type::{FileTarget, resolve_file_target_with_editor_choice};
 use crate::util::path::{display_name_with_host, display_path_with_host};
 use crate::view_components::action_button::{ActionButton, PaneHeaderTheme};
 #[cfg(feature = "local_fs")]
@@ -233,24 +231,6 @@ fn is_inside_git_working_tree(folder: &Path) -> bool {
         .any(|ancestor| ancestor.join(".git").exists())
 }
 
-/// The repository to review when none is selected: the most recent one that a terminal or editor
-/// is in. Repositories opened from a folder's overview are skipped so that they do not take the
-/// overview's place.
-fn default_review_repo(
-    working_directories: &WorkingDirectoriesModel,
-    pane_group_id: EntityId,
-    repos: &[LocalOrRemotePath],
-) -> Option<LocalOrRemotePath> {
-    repos
-        .iter()
-        .find(|repo| {
-            !repo.to_local_path().is_some_and(|repo_root| {
-                working_directories.is_opened_nested_repo(pane_group_id, repo_root)
-            })
-        })
-        .cloned()
-}
-
 /// Resolve the repo-switcher dropdown's text color from the current theme.
 /// Kept as a free function so the construction site and the
 /// `AppearanceEvent::ThemeChanged` subscription compute the exact same color.
@@ -310,17 +290,14 @@ impl CodeReviewState {
     fn set_available_repos(
         &mut self,
         _repos: Vec<LocalOrRemotePath>,
-        _default_repo: Option<LocalOrRemotePath>,
         _ctx: &mut ViewContext<RightPanelView>,
     ) {
     }
 
-    /// Replaces the selectable repositories, selecting `default_repo` when nothing is selected.
     #[cfg(feature = "local_fs")]
     fn set_available_repos(
         &mut self,
         repos: Vec<LocalOrRemotePath>,
-        default_repo: Option<LocalOrRemotePath>,
         ctx: &mut ViewContext<RightPanelView>,
     ) {
         let should_clear = self
@@ -335,10 +312,11 @@ impl CodeReviewState {
 
         self.update_repo_dropdown(ctx);
 
+        // Auto-select first repo if we have one and no selection yet
         if self.selected_repo_path.is_none()
-            && let Some(default_repo) = default_repo
+            && let Some(first_repo) = self.available_repos.first()
         {
-            self.set_selected_repo(default_repo, ctx);
+            self.set_selected_repo(first_repo.clone(), ctx);
         }
     }
 
@@ -458,8 +436,6 @@ pub enum RightPanelAction {
     },
     OpenRepository,
     ToggleMaximize,
-    /// Leave a repository opened from a folder's overview and show the overview again.
-    ShowAllRepositories,
 }
 
 #[derive(Clone, Debug)]
@@ -500,8 +476,6 @@ pub struct RightPanelView {
     /// Folder whose nested repositories the panel offers for the active pane group.
     #[cfg(feature = "local_fs")]
     overview_folder: Option<PathBuf>,
-    #[cfg(feature = "local_fs")]
-    all_repositories_button_mouse_state: MouseStateHandle,
     is_agent_management_view_open: bool,
     panel_position: super::PanelPosition,
 }
@@ -593,8 +567,6 @@ impl RightPanelView {
             nested_repos_overviews: HashMap::new(),
             #[cfg(feature = "local_fs")]
             overview_folder: None,
-            #[cfg(feature = "local_fs")]
-            all_repositories_button_mouse_state: Default::default(),
             is_agent_management_view_open: false,
             panel_position: super::PanelPosition::Right,
         }
@@ -678,7 +650,8 @@ impl RightPanelView {
             });
             let view = ctx.add_typed_action_view(|ctx| NestedReposView::new(model.clone(), ctx));
             ctx.subscribe_to_view(&view, |me, _, event, ctx| match event {
-                NestedReposViewEvent::OpenRepo(request) => me.open_nested_repo(request, ctx),
+                NestedReposViewEvent::FileDiffOpened => me.make_room_for_file_diff(ctx),
+                NestedReposViewEvent::OpenFile { path } => me.open_file_from_overview(path, ctx),
             });
             self.nested_repos_overviews
                 .insert(folder.clone(), NestedReposOverview { model, view });
@@ -706,116 +679,37 @@ impl RightPanelView {
         (!found_no_repos).then_some(overview)
     }
 
-    /// Hands a repository picked in an overview to the per-repository review machinery.
+    /// Widens the panel, within its bounds, when it is too narrow to show the overview's list and
+    /// a file's diff side by side.
     #[cfg(feature = "local_fs")]
-    fn open_nested_repo(&mut self, request: &OpenNestedRepo, ctx: &mut ViewContext<Self>) {
-        let Some(pane_group_id) = self.active_pane_group.as_ref().map(|group| group.id()) else {
-            return;
-        };
-        let repo_root = request.repo_root.clone();
-        let is_registered = self.working_directories_model.update(ctx, |model, ctx| {
-            model.register_opened_nested_repo(pane_group_id, repo_root, ctx)
-        });
-        if !is_registered {
+    fn make_room_for_file_diff(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.is_maximized(ctx) {
             return;
         }
-
-        let repo_path = LocalOrRemotePath::Local(request.repo_root.clone());
-        self.handle_action(
-            &RightPanelAction::SelectRepo {
-                repo_path: repo_path.clone(),
-                from_dropdown: false,
-            },
-            ctx,
-        );
-
-        let deferred_request = match (request.action, &request.file) {
-            (Some(NestedRepoGitAction::Commit), _) => Some(DeferredReviewRequest::OpenCommitDialog),
-            (Some(NestedRepoGitAction::Push), _) => Some(DeferredReviewRequest::OpenPushDialog),
-            (None, Some(file)) => Some(DeferredReviewRequest::RevealFile(file.clone())),
-            (None, None) => None,
-        };
-        if let Some(deferred_request) = deferred_request
-            && let Some(code_review_view) = self
-                .working_directories_model
-                .as_ref(ctx)
-                .get_code_review_view(pane_group_id, &repo_path)
+        if let Ok(mut state) = self.resizable_state_handle.lock()
+            && state.size() < COMFORTABLE_TWO_COLUMN_WIDTH
         {
-            code_review_view.update(ctx, |view, ctx| {
-                view.request_when_loaded(deferred_request, ctx);
-            });
+            state.set_size(COMFORTABLE_TWO_COLUMN_WIDTH);
+            state.clamp_size();
         }
-    }
-
-    /// The overview folder that the repository shown in the panel was opened from, if any.
-    #[cfg(feature = "local_fs")]
-    fn overview_folder_for_repo(
-        &self,
-        repo_path: &LocalOrRemotePath,
-        app: &AppContext,
-    ) -> Option<&Path> {
-        let folder = self.overview_folder.as_deref()?;
-        let repo_root = repo_path.to_local_path()?;
-        let pane_group_id = self.active_pane_group.as_ref()?.id();
-        (repo_root.starts_with(folder)
-            && self
-                .working_directories_model
-                .as_ref(app)
-                .is_opened_nested_repo(pane_group_id, repo_root))
-        .then_some(folder)
+        ctx.notify();
     }
 
     #[cfg(feature = "local_fs")]
-    fn render_all_repositories_button(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let theme = appearance.theme();
-        let button = Hoverable::new(
-            self.all_repositories_button_mouse_state.clone(),
-            |mouse_state| {
-                let highlight = ItemHighlightState::new(false, mouse_state);
-                let color = highlight.text_and_icon_color(appearance);
-                let mut container = Container::new(
-                    Flex::row()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(
-                            ConstrainedBox::new(
-                                Icon::ChevronLeft.to_warpui_icon(color.into()).finish(),
-                            )
-                            .with_width(14.)
-                            .with_height(14.)
-                            .finish(),
-                        )
-                        .with_child(
-                            Text::new_inline(
-                                "All repositories",
-                                appearance.ui_font_family(),
-                                appearance.ui_font_size(),
-                            )
-                            .with_color(color)
-                            .finish(),
-                        )
-                        .finish(),
-                )
-                .with_padding_left(2.)
-                .with_padding_right(6.)
-                .with_vertical_padding(2.);
-                if let Some(background) = highlight.background_color(appearance) {
-                    container = container.with_background(background);
-                }
-                if let Some(corner_radius) = highlight.corner_radius() {
-                    container = container.with_corner_radius(corner_radius);
-                }
-                container.finish()
-            },
-        )
-        .on_click(|ctx, _, _| ctx.dispatch_typed_action(RightPanelAction::ShowAllRepositories))
-        .with_cursor(Cursor::PointingHand)
-        .finish();
-
-        Container::new(button)
-            .with_margin_right(8.)
-            .with_border(Border::right(1.).with_border_fill(theme.outline()))
-            .with_padding_right(6.)
-            .finish()
+    fn open_file_from_overview(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+        let settings = EditorSettings::as_ref(ctx);
+        let target = resolve_file_target_with_editor_choice(
+            path,
+            *settings.open_code_panels_file_editor,
+            *settings.prefer_markdown_viewer,
+            *settings.open_file_layout,
+            None,
+        );
+        ctx.emit(RightPanelEvent::OpenFileWithTarget {
+            path: path.to_path_buf(),
+            target,
+            line_col: None,
+        });
     }
 
     #[cfg(feature = "local_fs")]
@@ -916,13 +810,8 @@ impl RightPanelView {
                     .as_ref()
                     .and_then(|s| s.selected_repo_path.clone());
 
-                let default_repo = default_review_repo(
-                    self.working_directories_model.as_ref(ctx),
-                    *pane_group_id,
-                    repositories,
-                );
                 if let Some(state) = self.code_review_state.as_mut() {
-                    state.set_available_repos(repositories.clone(), default_repo, ctx);
+                    state.set_available_repos(repositories.clone(), ctx);
                 }
 
                 let new_selected = self
@@ -989,15 +878,14 @@ impl RightPanelView {
         self.active_pane_group = Some(pane_group);
 
         if let Some(state) = &mut self.code_review_state {
-            let (active_repositories, default_repo, saved_selection) = working_directories_model
-                .read(ctx, |model, _| {
+            let (active_repositories, saved_selection) =
+                working_directories_model.read(ctx, |model, _| {
                     let repos: Vec<LocalOrRemotePath> = model
                         .most_recent_repositories_for_pane_group(pane_group_id)
                         .map(|repos| repos.collect())
                         .unwrap_or_default();
-                    let default_repo = default_review_repo(model, pane_group_id, &repos);
                     let saved = model.get_selected_review_repo(pane_group_id).cloned();
-                    (repos, default_repo, saved)
+                    (repos, saved)
                 });
 
             // Replace the carried-over selection from a different pane group
@@ -1006,7 +894,7 @@ impl RightPanelView {
             // (when it's still in the repo list) or falls back to auto-selecting
             // the first repo, instead of preserving the previous tab's repo.
             state.selected_repo_path = saved_selection;
-            state.set_available_repos(active_repositories, default_repo, ctx);
+            state.set_available_repos(active_repositories, ctx);
         }
 
         let selected = self
@@ -1312,19 +1200,8 @@ impl RightPanelView {
             .read(app, |model, ctx| model.get_current_branch_name(ctx));
         let diff_stats = crv.loaded_diff_stats();
 
-        #[cfg(feature = "local_fs")]
-        let overview_folder =
-            repo_path.and_then(|repo_path| self.overview_folder_for_repo(repo_path, app));
-        #[cfg(not(feature = "local_fs"))]
-        let overview_folder: Option<&Path> = None;
-
         let repo_path_element = repo_path.map(|repo_path| {
-            // Next to the control that leads back to the overview, the folder is redundant.
-            let display_path = overview_folder
-                .zip(repo_path.to_local_path())
-                .and_then(|(folder, repo_root)| repo_root.strip_prefix(folder).ok())
-                .map(|relative| relative.display().to_string())
-                .unwrap_or_else(|| display_path_with_host(repo_path, true, app));
+            let display_path = display_path_with_host(repo_path, true, app);
             Container::new(
                 Text::new_inline(
                     format!("{display_path}:"),
@@ -1358,10 +1235,6 @@ impl RightPanelView {
         let mut left_section = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
-        #[cfg(feature = "local_fs")]
-        if overview_folder.is_some() {
-            left_section.add_child(self.render_all_repositories_button(appearance));
-        }
         if let Some(repo_path_el) = repo_path_element {
             left_section.add_child(repo_path_el);
         }
@@ -1456,13 +1329,6 @@ impl RightPanelView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
         let has_nav_button = file_navigation_button.is_some();
-        #[cfg(feature = "local_fs")]
-        if self
-            .selected_repo_path()
-            .is_some_and(|repo_path| self.overview_folder_for_repo(repo_path, app).is_some())
-        {
-            left_section.add_child(self.render_all_repositories_button(appearance));
-        }
         if let Some(nav_button) = file_navigation_button {
             left_section.add_child(nav_button);
         }
@@ -2209,15 +2075,6 @@ impl TypedActionView for RightPanelView {
             RightPanelAction::ToggleMaximize => {
                 ctx.emit(RightPanelEvent::ToggleMaximize);
                 ctx.notify();
-            }
-            RightPanelAction::ShowAllRepositories => {
-                self.close_code_review(ctx);
-                if let Some(pane_group) = &self.active_pane_group {
-                    let pane_group_id = pane_group.id();
-                    self.working_directories_model.update(ctx, |model, _| {
-                        model.clear_selected_review_repo(pane_group_id);
-                    });
-                }
             }
             RightPanelAction::OpenRepository => {
                 if let Some(active_pane_group) = &self.active_pane_group {
