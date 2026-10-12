@@ -2193,6 +2193,8 @@ pub(crate) fn initialize_app(
     #[cfg(feature = "local_fs")]
     ctx.add_singleton_model(FileModel::new);
     ctx.add_singleton_model(GlobalBufferModel::new);
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(|_| code::blame::BlameModel::new());
     #[cfg(windows)]
     ctx.add_singleton_model(util::traffic_lights::windows::RendererState::new);
     #[cfg(feature = "local_fs")]

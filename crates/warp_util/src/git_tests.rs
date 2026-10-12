@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{WslGitCommand, build_wslenv, translate_for_wsl_unc_cwd};
+use super::{
+    WslGitCommand, build_wslenv, run_git_command_streaming, translate_for_wsl_unc_cwd,
+};
 
 /// Translates a git command in `cwd`, asserting that the working directory qualified for the WSL
 /// rewrite.
@@ -219,4 +221,35 @@ fn routes_through_login_shell_when_no_path() {
         ]
     );
     assert_eq!(translated.wslenv, "GIT_OPTIONAL_LOCKS/u");
+}
+
+#[test]
+fn streaming_command_passes_stdin_and_hands_over_stdout() {
+    let directory = tempfile::tempdir().expect("create temp dir");
+    let mut output = Vec::new();
+
+    futures_lite::future::block_on(run_git_command_streaming(
+        directory.path(),
+        &["hash-object", "--stdin"],
+        Some(b"hello\n"),
+        |chunk| output.extend_from_slice(chunk),
+    ))
+    .expect("git hash-object succeeds outside a repository");
+
+    assert_eq!(output, b"ce013625030ba8dba906f756967f9e9ca394464a\n");
+}
+
+#[test]
+fn streaming_command_reports_what_git_printed_on_failure() {
+    let directory = tempfile::tempdir().expect("create temp dir");
+
+    let error = futures_lite::future::block_on(run_git_command_streaming(
+        directory.path(),
+        &["rev-parse", "--verify", "refs/heads/a-branch-no-repository-has"],
+        None,
+        |_| {},
+    ))
+    .expect_err("the ref does not exist");
+
+    assert!(error.to_string().contains("Git command failed"), "{error}");
 }

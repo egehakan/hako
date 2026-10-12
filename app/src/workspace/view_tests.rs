@@ -1200,6 +1200,7 @@ fn test_open_file_with_target_event_preserves_requested_line() {
         app.add_singleton_model(|_| CodeManager::default());
         app.add_singleton_model(|_| LocalShellState::NotLoaded);
         app.add_singleton_model(GlobalBufferModel::new);
+        app.add_singleton_model(|_| crate::code::blame::BlameModel::new());
         let workspace = mock_workspace(&mut app);
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let code_path = temp_dir.path().join("main.rs");

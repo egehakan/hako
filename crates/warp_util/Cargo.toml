@@ -41,6 +41,7 @@ windows.workspace = true
 gloo.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+futures-lite.workspace = true
 is_executable = "1.0.1"
 
 [dev-dependencies]

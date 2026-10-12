@@ -54,6 +54,90 @@ pub async fn run_git_command_with_env(
     }
 }
 
+/// Runs a git command, writing `stdin` to it and handing its standard output to `on_stdout` piece
+/// by piece as git produces it. The output is passed on as bytes, so it need not be UTF-8 and is
+/// never held in memory as a whole. Dropping the returned future kills the command.
+#[cfg(not(target_family = "wasm"))]
+pub async fn run_git_command_streaming(
+    repo_path: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    mut on_stdout: impl FnMut(&[u8]),
+) -> Result<()> {
+    use command::Stdio;
+    use futures_lite::future::zip;
+    use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
+
+    log::debug!(
+        "[GIT OPERATION] git.rs run_git_command_streaming git {}",
+        args.join(" ")
+    );
+    let mut git_args = vec!["-c", "diff.autoRefreshIndex=false"];
+    git_args.extend_from_slice(args);
+
+    let mut cmd = git_command(repo_path, &git_args, &[("GIT_OPTIONAL_LOCKS", "0")]);
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("Failed to execute git command: {}", e))?;
+
+    let child_stdin = child.stdin.take();
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("git was started without a stdout pipe"))?;
+    let mut child_stderr = child.stderr.take();
+
+    let write_stdin = async {
+        if let (Some(mut pipe), Some(bytes)) = (child_stdin, stdin) {
+            // A failed write means git exited before reading everything; its exit status and
+            // stderr say why.
+            let _ = pipe.write_all(bytes).await;
+            let _ = pipe.close().await;
+        }
+    };
+    let read_stdout = async {
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            match child_stdout.read(&mut buffer).await {
+                Ok(0) => break Ok(()),
+                Ok(read) => on_stdout(&buffer[..read]),
+                Err(e) => break Err(e),
+            }
+        }
+    };
+    let read_stderr = async {
+        let mut stderr = Vec::new();
+        if let Some(pipe) = &mut child_stderr {
+            let _ = pipe.read_to_end(&mut stderr).await;
+        }
+        stderr
+    };
+    // The three pipes are served together: git blocks once one of them is full.
+    let ((), (read_result, stderr)) = zip(write_stdin, zip(read_stdout, read_stderr)).await;
+    read_result.map_err(|e| anyhow!("Failed to read git output: {}", e))?;
+
+    let status = child
+        .status()
+        .await
+        .map_err(|e| anyhow!("Failed to wait for git command: {}", e))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Git command failed: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ))
+    }
+}
+
 /// Builds the command that runs `git` with `args` in `repo_path`, with `env` set on the child.
 ///
 /// A WSL session's working directory is a `\\wsl$\<distro>\...` UNC path on a Windows host, and
@@ -195,6 +279,16 @@ pub async fn run_git_command_with_env(
     _args: &[&str],
     _path_env: Option<&str>,
 ) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn run_git_command_streaming(
+    _repo_path: &Path,
+    _args: &[&str],
+    _stdin: Option<&[u8]>,
+    _on_stdout: impl FnMut(&[u8]),
+) -> Result<()> {
     Err(anyhow!("Not supported on wasm"))
 }
 
