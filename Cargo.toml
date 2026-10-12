@@ -337,6 +337,11 @@ arborium = { version = "2", default-features = false, features = [
   "lang-vue",
   "lang-dockerfile",
   "lang-markdown",
+  "lang-scss",
+  "lang-svelte",
+  "lang-typst",
+  "lang-ini",
+  "lang-diff",
 ] }
 unicode-general-category = "1.1.0"
 unicode-linebreak = "0.1.5"

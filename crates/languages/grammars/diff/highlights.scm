@@ -1,0 +1,2 @@
+(command) @function
+(commit) @number

@@ -1,4 +1,3 @@
-use std::ops::Range;
 use std::path::Path;
 
 use arborium::tree_sitter::{Parser, QueryCursor, StreamingIterator};
@@ -25,8 +24,7 @@ fn language_name(filename: &str) -> Option<&'static str> {
     name
 }
 
-/// Parses `source` and returns `(capture name, captured text)` for every highlighted node. When
-/// several patterns capture the same node, only the last one is kept, as in the editor.
+/// Parses `source` and returns `(capture name, captured text)` for every highlight capture.
 fn highlights(language_name: &str, source: &str) -> Vec<(String, String)> {
     let language = language_by_name(language_name)
         .unwrap_or_else(|| panic!("{language_name} should be a supported language"));
@@ -43,20 +41,15 @@ fn highlights(language_name: &str, source: &str) -> Vec<(String, String)> {
         tree.root_node(),
         source.as_bytes(),
     );
-    let mut winners: Vec<(Range<usize>, &str)> = Vec::new();
+    let mut highlights = Vec::new();
     while let Some((query_match, capture_index)) = captures.next() {
         let capture = query_match.captures[*capture_index];
-        let range = capture.node.byte_range();
-        let name = capture_names[capture.index as usize];
-        match winners.iter_mut().find(|(existing, _)| *existing == range) {
-            Some(winner) => winner.1 = name,
-            None => winners.push((range, name)),
-        }
+        highlights.push((
+            capture_names[capture.index as usize].to_string(),
+            source[capture.node.byte_range()].to_string(),
+        ));
     }
-    winners
-        .into_iter()
-        .map(|(range, name)| (name.to_string(), source[range].to_string()))
-        .collect()
+    highlights
 }
 
 fn assert_highlights(language_name: &str, source: &str, expected: &[(&str, &str)]) {
@@ -339,6 +332,135 @@ fn blade_and_handlebars_markup_highlights_as_html() {
         "html",
         source,
         &[("tag", "h1"), ("attribute", "class"), ("string", "title")],
+    );
+}
+
+#[test]
+fn stylesheet_markup_and_config_extensions_resolve_to_their_grammar() {
+    assert_language_names(&[
+        ("theme.scss", "scss"),
+        ("App.svelte", "svelte"),
+        ("report.typ", "typst"),
+        ("alembic.ini", "ini"),
+        ("setup.cfg", "ini"),
+        ("app.service", "ini"),
+        (".npmrc", "ini"),
+        (".editorconfig", "ini"),
+        ("fix.patch", "diff"),
+        ("changes.diff", "diff"),
+    ]);
+}
+
+#[test]
+fn scss_highlights_rules_and_sass_directives() {
+    let source = "\
+// brand
+$primary: #673ab7;
+@mixin rounded($radius: 4px) {
+  border-radius: $radius;
+}
+.card {
+  @include rounded(8px);
+}
+";
+    assert_highlights(
+        "scss",
+        source,
+        &[
+            ("comment", "// brand"),
+            ("property", "$primary"),
+            ("keyword", "@mixin"),
+            ("function", "rounded"),
+            ("property", "border-radius"),
+            ("keyword.import", "@include"),
+            ("number", "8px"),
+        ],
+    );
+}
+
+#[test]
+fn svelte_highlights_markup_and_logic_blocks() {
+    let source = "\
+<main class=\"app\">
+  {#if count > 0}
+    <p>Hello</p>
+  {/if}
+</main>
+";
+    assert_highlights(
+        "svelte",
+        source,
+        &[
+            ("tag", "main"),
+            ("attribute", "class"),
+            ("string", "app"),
+            ("keyword.conditional", "if"),
+        ],
+    );
+}
+
+#[test]
+fn typst_highlights_markup_and_code() {
+    let source = "\
+#set page(paper: \"a4\", margin: 2cm)
+= Introduction
+// note
+";
+    assert_highlights(
+        "typst",
+        source,
+        &[
+            ("keyword.control", "set"),
+            ("function", "page"),
+            ("string", "\"a4\""),
+            ("constant.numeric", "2cm"),
+            ("markup.heading.1", "= Introduction"),
+            ("comment", "// note"),
+        ],
+    );
+}
+
+#[test]
+fn ini_highlights_keys_with_and_without_a_section() {
+    let source = "\
+# npm
+registry=https://registry.npmjs.org/
+[Unit]
+Description=Worker
+";
+    assert_highlights(
+        "ini",
+        source,
+        &[
+            ("comment", "# npm\n"),
+            ("property", "registry"),
+            ("type", "Unit"),
+            ("property", "Description"),
+        ],
+    );
+}
+
+#[test]
+fn diff_highlights_headers_and_changed_lines() {
+    let source = "\
+diff --git a/src/main.rs b/src/main.rs
+index 83db48f..bf2a3c1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,2 @@
+-old
++new
+";
+    assert_highlights(
+        "diff",
+        source,
+        &[
+            ("function", "diff --git a/src/main.rs b/src/main.rs"),
+            ("number", "83db48f"),
+            ("attribute", "@@ -1,2 +1,2 @@"),
+            ("keyword", "-old"),
+            ("string", "+new"),
+        ],
     );
 }
 

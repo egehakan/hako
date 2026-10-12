@@ -18,7 +18,7 @@ lazy_static! {
     static ref LANGUAGE_REGISTRY: LanguageRegistry = LanguageRegistry::new();
 }
 
-pub const SUPPORTED_LANGUAGES: [&str; 35] = [
+pub const SUPPORTED_LANGUAGES: [&str; 40] = [
     "rust",
     "golang",
     "yaml",
@@ -54,6 +54,11 @@ pub const SUPPORTED_LANGUAGES: [&str; 35] = [
     "dockerfile",
     "nix",
     "markdown",
+    "scss",
+    "svelte",
+    "typst",
+    "ini",
+    "diff",
 ];
 
 /// Registry that holds all of the supported languages.
@@ -123,6 +128,8 @@ fn normalize_language_name(name: &str) -> &str {
         "postgres" | "postgresql" | "pgsql" | "plpgsql" | "psql" => "sql",
         "handlebars" | "hbs" | "blade" => "html",
         "svg" | "plist" => "xml",
+        "typ" => "typst",
+        "patch" => "diff",
         other => other,
     }
 }
@@ -170,6 +177,7 @@ fn language_name_for_filename(filename: &str) -> Option<&'static str> {
         }
         // These rc files may hold either JSON or YAML; YAML is a superset, so it covers both.
         ".prettierrc" | ".eslintrc" | ".stylelintrc" | ".clang-format" | ".yamllint" => "yaml",
+        ".npmrc" | ".editorconfig" => "ini",
         _ => {
             if filename.starts_with("Dockerfile.") || filename.starts_with("Containerfile.") {
                 "dockerfile"
@@ -225,6 +233,11 @@ fn language_name_for_extension(extension: &str) -> Option<&'static str> {
         "vue" => "vue",
         "dockerfile" => "dockerfile",
         "md" | "markdown" | "mdx" | "mdc" => "markdown",
+        "scss" => "scss",
+        "svelte" => "svelte",
+        "typ" => "typst",
+        "ini" | "cfg" | "service" => "ini",
+        "diff" | "patch" => "diff",
         _ => return None,
     };
     Some(name)
@@ -324,6 +337,11 @@ fn get_arborium_highlight_query(lang: &str) -> Option<&'static str> {
         "vue" => Some(&arborium::lang_vue::HIGHLIGHTS_QUERY),
         "dockerfile" => Some(arborium::lang_dockerfile::HIGHLIGHTS_QUERY),
         "markdown" => Some(arborium::lang_markdown::HIGHLIGHTS_QUERY),
+        "scss" => Some(&arborium::lang_scss::HIGHLIGHTS_QUERY),
+        "svelte" => Some(&arborium::lang_svelte::HIGHLIGHTS_QUERY),
+        "typst" => Some(arborium::lang_typst::HIGHLIGHTS_QUERY),
+        "ini" => Some(arborium::lang_ini::HIGHLIGHTS_QUERY),
+        "diff" => Some(arborium::lang_diff::HIGHLIGHTS_QUERY),
         _ => None,
     }
 }

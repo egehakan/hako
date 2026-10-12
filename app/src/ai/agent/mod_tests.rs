@@ -419,6 +419,12 @@ fn test_programming_language_to_extension() {
         ("svg", "xml"),
         ("mdx", "md"),
         ("dotenv", "env"),
+        ("scss", "scss"),
+        ("svelte", "svelte"),
+        ("typst", "typ"),
+        ("ini", "ini"),
+        ("diff", "diff"),
+        ("patch", "diff"),
     ];
     for (token, expected_extension) in cases {
         let language = ProgrammingLanguage::from((*token).to_string());
