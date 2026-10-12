@@ -72,33 +72,39 @@ fn describe(rows: &[MenuRow], targets: &[DiffTarget]) -> Vec<String> {
 fn an_empty_search_lists_every_target_under_its_heading() {
     let targets = all_targets();
     let rows = menu_rows(&targets, "", &offering_revisions());
-    assert_eq!(describe(&rows, &targets), [
-        "Uncommitted changes",
-        "[Branches]",
-        "main",
-        "feature/login",
-        "[Remote branches]",
-        "origin/feature/login",
-        "[Tags]",
-        "v1.0",
-        "[Recent commits]",
-        "Fix the login form",
-        "Update dependencies",
-    ]);
+    assert_eq!(
+        describe(&rows, &targets),
+        [
+            "Uncommitted changes",
+            "[Branches]",
+            "main",
+            "feature/login",
+            "[Remote branches]",
+            "origin/feature/login",
+            "[Tags]",
+            "v1.0",
+            "[Recent commits]",
+            "Fix the login form",
+            "Update dependencies",
+        ]
+    );
 }
 
 #[test]
 fn a_search_filters_across_every_kind_and_drops_empty_headings() {
     let targets = all_targets();
     let rows = menu_rows(&targets, "login", &MenuRowOptions::default());
-    assert_eq!(describe(&rows, &targets), [
-        "[Branches]",
-        "feature/login",
-        "[Remote branches]",
-        "origin/feature/login",
-        "[Recent commits]",
-        "Fix the login form",
-    ]);
+    assert_eq!(
+        describe(&rows, &targets),
+        [
+            "[Branches]",
+            "feature/login",
+            "[Remote branches]",
+            "origin/feature/login",
+            "[Recent commits]",
+            "Fix the login form",
+        ]
+    );
 }
 
 #[test]
@@ -110,13 +116,19 @@ fn a_search_matches_commit_ids_authors_and_ages() {
     };
 
     assert_eq!(search("9a8b7"), ["[Recent commits]", "Fix the login form"]);
-    assert_eq!(search("hopper"), ["[Recent commits]", "Update dependencies"]);
-    assert_eq!(search("2 days"), [
-        "[Remote branches]",
-        "origin/feature/login",
-        "[Recent commits]",
-        "Update dependencies",
-    ]);
+    assert_eq!(
+        search("hopper"),
+        ["[Recent commits]", "Update dependencies"]
+    );
+    assert_eq!(
+        search("2 days"),
+        [
+            "[Remote branches]",
+            "origin/feature/login",
+            "[Recent commits]",
+            "Update dependencies",
+        ]
+    );
     assert_eq!(search("DEF5678"), ["[Tags]", "v1.0"]);
 }
 
@@ -126,29 +138,38 @@ fn names_match_loosely_but_commit_messages_only_literally() {
     // The letters of "flog" appear in order in the branch names and in the first commit's
     // message, which is too loose a match for prose.
     let rows = menu_rows(&targets, "flog", &MenuRowOptions::default());
-    assert_eq!(describe(&rows, &targets), [
-        "[Branches]",
-        "feature/login",
-        "[Remote branches]",
-        "origin/feature/login",
-    ]);
+    assert_eq!(
+        describe(&rows, &targets),
+        [
+            "[Branches]",
+            "feature/login",
+            "[Remote branches]",
+            "origin/feature/login",
+        ]
+    );
 }
 
 #[test]
 fn a_matched_label_reports_the_characters_to_emphasize() {
     let targets = all_targets();
     let rows = menu_rows(&targets, "LOGIN", &MenuRowOptions::default());
-    assert_eq!(rows[1], MenuRow::Target {
-        index: 2,
-        highlighted: vec![8, 9, 10, 11, 12],
-    });
+    assert_eq!(
+        rows[1],
+        MenuRow::Target {
+            index: 2,
+            highlighted: vec![8, 9, 10, 11, 12],
+        }
+    );
 
     // A match in the detail emphasizes nothing in the label.
     let rows = menu_rows(&targets, "hopper", &MenuRowOptions::default());
-    assert_eq!(rows[1], MenuRow::Target {
-        index: 6,
-        highlighted: vec![],
-    });
+    assert_eq!(
+        rows[1],
+        MenuRow::Target {
+            index: 6,
+            highlighted: vec![],
+        }
+    );
 }
 
 #[test]
@@ -184,7 +205,10 @@ fn a_failed_revision_shows_its_error_under_the_typed_text() {
         ..Default::default()
     };
     let rows = menu_rows(&targets, "nope", &options);
-    assert_eq!(describe(&rows, &targets), ["<typed>", "error: Not a commit"]);
+    assert_eq!(
+        describe(&rows, &targets),
+        ["<typed>", "error: Not a commit"]
+    );
 
     let checking = MenuRowOptions {
         offers_revisions: true,

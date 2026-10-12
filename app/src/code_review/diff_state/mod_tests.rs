@@ -96,7 +96,10 @@ fn only_revision_comparisons_are_historical() {
 
 #[test]
 fn base_label_names_the_base_and_how_it_is_compared() {
-    assert_eq!(DiffMode::Head.base_label(Some("main")), "Uncommitted changes");
+    assert_eq!(
+        DiffMode::Head.base_label(Some("main")),
+        "Uncommitted changes"
+    );
     assert_eq!(
         DiffMode::MainBranch.base_label(Some("trunk")),
         "trunk \u{b7} common ancestor"
@@ -164,7 +167,10 @@ fn serialized_diff_modes_leave_out_branch_and_revision_names() {
     let serialize = |mode: &DiffMode| serde_json::to_value(mode).expect("mode serializes");
 
     assert_eq!(serialize(&DiffMode::Head), serde_json::json!("Head"));
-    assert_eq!(serialize(&DiffMode::MainBranch), serde_json::json!("MainBranch"));
+    assert_eq!(
+        serialize(&DiffMode::MainBranch),
+        serde_json::json!("MainBranch")
+    );
     assert_eq!(
         serialize(&revision("secret-branch", RevisionComparison::Direct)),
         serde_json::json!({ "Revision": { "comparison": "Direct" } })

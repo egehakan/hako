@@ -173,7 +173,10 @@ impl fmt::Display for RevisionError {
             }
             RevisionError::Malformed => write!(f, "Not a valid revision"),
             RevisionError::NotFound(rev) => {
-                write!(f, "No branch, tag or commit named '{rev}' in this repository")
+                write!(
+                    f,
+                    "No branch, tag or commit named '{rev}' in this repository"
+                )
             }
             RevisionError::NotACommit(rev) => write!(f, "'{rev}' is not a commit"),
         }

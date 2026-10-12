@@ -15,21 +15,33 @@ fn tokenize_separates_words_whitespace_and_punctuation() {
         token_texts("a.b::c->d"),
         ["a", ".", "b", ":", ":", "c", "-", ">", "d"]
     );
-    assert_eq!(token_texts("\tif x != 3.14 {"), [
-        "\t", "if", " ", "x", " ", "!", "=", " ", "3", ".", "14", " ", "{"
-    ]);
+    assert_eq!(
+        token_texts("\tif x != 3.14 {"),
+        [
+            "\t", "if", " ", "x", " ", "!", "=", " ", "3", ".", "14", " ", "{"
+        ]
+    );
     assert!(tokenize("").is_empty());
 }
 
 #[test]
 fn tokenize_keeps_non_ascii_words_and_combined_characters_whole() {
-    assert_eq!(token_texts("größe = naïve"), ["größe", " ", "=", " ", "naïve"]);
+    assert_eq!(
+        token_texts("größe = naïve"),
+        ["größe", " ", "=", " ", "naïve"]
+    );
     // A letter followed by a combining accent is one character of its word.
     assert_eq!(token_texts("cafe\u{301}s!"), ["cafe\u{301}s", "!"]);
     // Emoji joined into one glyph are a single token.
     assert_eq!(
         token_texts("a \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} b"),
-        ["a", " ", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", " ", "b"]
+        [
+            "a",
+            " ",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+            " ",
+            "b"
+        ]
     );
     assert_eq!(token_texts("Привет, мир"), ["Привет", ",", " ", "мир"]);
 }
@@ -58,7 +70,10 @@ fn line_changes_mark_only_the_changed_words() {
         Some((vec![4..7], vec![4..7]))
     );
     assert_eq!(
-        line_changes("    let total = compute(a, b);", "    let total = compute(a, b, c);"),
+        line_changes(
+            "    let total = compute(a, b);",
+            "    let total = compute(a, b, c);"
+        ),
         Some((vec![], vec![28..31]))
     );
     assert_eq!(
@@ -70,7 +85,10 @@ fn line_changes_mark_only_the_changed_words() {
 #[test]
 fn line_changes_join_reworded_phrases_across_whitespace() {
     assert_eq!(
-        line_changes("the quick brown fox jumps over", "the slow red fox jumps over"),
+        line_changes(
+            "the quick brown fox jumps over",
+            "the slow red fox jumps over"
+        ),
         Some((vec![4..15], vec![4..12]))
     );
 }
@@ -139,7 +157,10 @@ fn paired_lines_keep_both_sides_in_order() {
 #[test]
 fn paired_lines_leave_unrelated_lines_unpaired() {
     let old = ["fn compute(a: u32) -> u32 {", "}"];
-    let new = ["struct Totally { different: bool }", "impl Other for Thing {}"];
+    let new = [
+        "struct Totally { different: bool }",
+        "impl Other for Thing {}",
+    ];
     assert!(paired_lines(&old, &new).is_empty());
     assert!(paired_lines(&[], &new).is_empty());
     assert!(paired_lines(&old, &[]).is_empty());
@@ -153,19 +174,25 @@ fn hunk_word_changes_cover_each_paired_line() {
         "log::info!(\"loaded\");\n",
         "let second = parse(&first);\n",
     ];
-    assert_eq!(hunk_word_changes(&old, &new), HunkWordChanges {
-        removed: vec![vec![], vec![]],
-        added: vec![vec![17..18], vec![], vec![19..20]],
-    });
+    assert_eq!(
+        hunk_word_changes(&old, &new),
+        HunkWordChanges {
+            removed: vec![vec![], vec![]],
+            added: vec![vec![17..18], vec![], vec![19..20]],
+        }
+    );
 }
 
 #[test]
 fn hunk_word_changes_ignore_line_terminators() {
     let changes = hunk_word_changes(&["value = 1;\r\n"], &["value = 2;"]);
-    assert_eq!(changes, HunkWordChanges {
-        removed: vec![vec![8..9]],
-        added: vec![vec![8..9]],
-    });
+    assert_eq!(
+        changes,
+        HunkWordChanges {
+            removed: vec![vec![8..9]],
+            added: vec![vec![8..9]],
+        }
+    );
 }
 
 #[test]

@@ -2143,7 +2143,10 @@ fn test_text_decoration_layers_are_replaced_independently() {
     assert!(decorations.set_text(TextDecorationLayer::Search, search.clone()));
 
     assert_eq!(decorations.text(TextDecorationLayer::Diff), diff);
-    assert_eq!(decorations.text(TextDecorationLayer::Diagnostic), diagnostics);
+    assert_eq!(
+        decorations.text(TextDecorationLayer::Diagnostic),
+        diagnostics
+    );
     assert_eq!(decorations.text(TextDecorationLayer::Search), search);
 
     // A new search and a refreshed diff each leave the other two layers alone.
@@ -2152,7 +2155,10 @@ fn test_text_decoration_layers_are_replaced_independently() {
     assert!(decorations.set_text(TextDecorationLayer::Diff, Vec::new()));
 
     assert!(decorations.text(TextDecorationLayer::Diff).is_empty());
-    assert_eq!(decorations.text(TextDecorationLayer::Diagnostic), diagnostics);
+    assert_eq!(
+        decorations.text(TextDecorationLayer::Diagnostic),
+        diagnostics
+    );
     assert_eq!(decorations.text(TextDecorationLayer::Search), next_search);
 }
 

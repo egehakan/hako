@@ -108,6 +108,7 @@ use crate::code_review::find_model::CodeReviewFindModel;
 use crate::code_review::git_repo_model::{GitRepoModels, GitRepoStatusEvent, GitRepoStatusModel};
 use crate::code_review::github_repo_model::{GitHubRepoEvent, GitHubRepoModel};
 use crate::code_review::hidden_lines::calculate_hidden_lines;
+use crate::code_review::revisions::{RevisionCandidates, list_revision_candidates, resolve_commit};
 #[cfg(feature = "local_fs")]
 use crate::code_review::telemetry_event::DiffSetContextScope;
 use crate::code_review::telemetry_event::{
@@ -142,9 +143,6 @@ use crate::util::bindings::{
 };
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
-use crate::code_review::revisions::{
-    RevisionCandidates, list_revision_candidates, resolve_commit,
-};
 use crate::util::git::{BranchEntry, PrInfo};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
@@ -287,8 +285,7 @@ pub fn get_discard_button_disabled_tooltip(git_operation_blocked: bool) -> Strin
 
 /// Shown on the actions that change the working tree while it is compared with a point in
 /// history, where they would restore that old state.
-pub const HISTORICAL_COMPARISON_TOOLTIP: &str =
-    "Not available while comparing with a past revision. Go back to uncommitted changes to discard or revert.";
+pub const HISTORICAL_COMPARISON_TOOLTIP: &str = "Not available while comparing with a past revision. Go back to uncommitted changes to discard or revert.";
 
 /// What discarding changes restores files to.
 enum DiscardBase {

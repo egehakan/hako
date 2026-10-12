@@ -72,22 +72,30 @@ fn targets_merge_every_source_in_a_fixed_order() {
         branch("current", false),
     ];
     let revisions = revisions();
-    let targets = targets(&DiffMode::Head, Some("current"), &branches, Some(&revisions));
+    let targets = targets(
+        &DiffMode::Head,
+        Some("current"),
+        &branches,
+        Some(&revisions),
+    );
 
     let listed: Vec<_> = targets
         .iter()
         .map(|target| (target.section, target.label.as_str()))
         .collect();
-    assert_eq!(listed, [
-        (DiffTargetSection::WorkingTree, "Uncommitted changes"),
-        // The main branch leads, and the checked-out branch is left out.
-        (DiffTargetSection::Branches, "main"),
-        (DiffTargetSection::Branches, "feature"),
-        (DiffTargetSection::RemoteBranches, "origin/main"),
-        (DiffTargetSection::Tags, "v1.0"),
-        (DiffTargetSection::Commits, "Fix the parser"),
-        (DiffTargetSection::Commits, "(no commit message)"),
-    ]);
+    assert_eq!(
+        listed,
+        [
+            (DiffTargetSection::WorkingTree, "Uncommitted changes"),
+            // The main branch leads, and the checked-out branch is left out.
+            (DiffTargetSection::Branches, "main"),
+            (DiffTargetSection::Branches, "feature"),
+            (DiffTargetSection::RemoteBranches, "origin/main"),
+            (DiffTargetSection::Tags, "v1.0"),
+            (DiffTargetSection::Commits, "Fix the parser"),
+            (DiffTargetSection::Commits, "(no commit message)"),
+        ]
+    );
     assert_eq!(selected_labels(&targets), ["Uncommitted changes"]);
 }
 
@@ -100,13 +108,16 @@ fn targets_describe_revisions_by_commit_author_and_age() {
         .iter()
         .map(|target| target.detail.as_deref())
         .collect();
-    assert_eq!(details, [
-        None,
-        Some("abc1234 \u{b7} 3 days ago"),
-        Some("abc1234 \u{b7} 3 days ago"),
-        Some("abc1234 \u{b7} Ada \u{b7} 3 days ago"),
-        Some("abc1234 \u{b7} Ada \u{b7} 3 days ago"),
-    ]);
+    assert_eq!(
+        details,
+        [
+            None,
+            Some("abc1234 \u{b7} 3 days ago"),
+            Some("abc1234 \u{b7} 3 days ago"),
+            Some("abc1234 \u{b7} Ada \u{b7} 3 days ago"),
+            Some("abc1234 \u{b7} Ada \u{b7} 3 days ago"),
+        ]
+    );
     assert_eq!(
         targets[3].base,
         DiffTargetBase::Revision(COMMIT_SHA.to_string())
@@ -137,7 +148,10 @@ fn the_selected_target_follows_the_diff_mode() {
     };
 
     assert_eq!(selected(DiffMode::MainBranch), ["main"]);
-    assert_eq!(selected(DiffMode::OtherBranch("feature".to_string())), ["feature"]);
+    assert_eq!(
+        selected(DiffMode::OtherBranch("feature".to_string())),
+        ["feature"]
+    );
     // A branch stays selected when it is compared directly.
     assert_eq!(
         selected(DiffMode::Revision {

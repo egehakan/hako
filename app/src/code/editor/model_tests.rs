@@ -1036,11 +1036,7 @@ fn test_diff_refresh_keeps_search_and_diagnostic_decorations() {
         editor.update(&mut app, |editor, ctx| {
             editor.render_state().update(ctx, |render, ctx| {
                 render.set_text_decorations(TextDecorationLayer::Search, vec![search_match], ctx);
-                render.set_text_decorations(
-                    TextDecorationLayer::Diagnostic,
-                    vec![diagnostic],
-                    ctx,
-                );
+                render.set_text_decorations(TextDecorationLayer::Diagnostic, vec![diagnostic], ctx);
             });
         });
 

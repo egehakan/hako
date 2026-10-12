@@ -180,7 +180,8 @@ fn pair_lines(old: &[LineTokens<'_>], new: &[LineTokens<'_>]) -> Vec<(usize, usi
         for new_index in (0..new_len).rev() {
             let share = old[old_index].common_share(&new[new_index]);
             shares[old_index * new_len + new_index] = share;
-            let mut total = best[cell(old_index + 1, new_index)].max(best[cell(old_index, new_index + 1)]);
+            let mut total =
+                best[cell(old_index + 1, new_index)].max(best[cell(old_index, new_index + 1)]);
             if share >= MIN_LINE_SIMILARITY {
                 total = total.max(best[cell(old_index + 1, new_index + 1)] + share);
             }

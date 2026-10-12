@@ -516,12 +516,10 @@ async fn resolve_diff_base_follows_the_comparison_of_a_revision() {
     let fork_point = init_diverged_repo(repo).await;
     let main = git(repo, &["rev-parse", "main"]).await;
 
-    let direct = LocalDiffStateModel::resolve_diff_base(
-        repo,
-        &revision("main", RevisionComparison::Direct),
-    )
-    .await
-    .expect("direct base resolves");
+    let direct =
+        LocalDiffStateModel::resolve_diff_base(repo, &revision("main", RevisionComparison::Direct))
+            .await
+            .expect("direct base resolves");
     assert_eq!(direct, main);
 
     let merge_base = LocalDiffStateModel::resolve_diff_base(

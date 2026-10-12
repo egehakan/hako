@@ -38,13 +38,28 @@ async fn repo_with_history(root: &Path) -> std::path::PathBuf {
 
     commit_file(&repo, "file.txt", "one\n", "First commit").await;
     commit_file(&repo, "file.txt", "one\ntwo\n", "Second commit").await;
-    commit_file(&repo, "file.txt", "one\ntwo\nthree\n", "Fix\ttabs and ünïcode").await;
+    commit_file(
+        &repo,
+        "file.txt",
+        "one\ntwo\nthree\n",
+        "Fix\ttabs and ünïcode",
+    )
+    .await;
     git(&repo, &["tag", "v1.0", "HEAD~1"]).await;
     git(&repo, &["tag", "-a", "v2.0", "-m", "Release two"]).await;
 
     let origin_url = origin.to_str().expect("utf-8 path");
     git(&repo, &["remote", "add", "origin", origin_url]).await;
-    git(&repo, &["push", "origin", "main:main", "HEAD~1:refs/heads/feature/remote"]).await;
+    git(
+        &repo,
+        &[
+            "push",
+            "origin",
+            "main:main",
+            "HEAD~1:refs/heads/feature/remote",
+        ],
+    )
+    .await;
     repo
 }
 
@@ -63,13 +78,16 @@ fn parse_ref_listing_reads_remote_branches_and_tags() {
         .iter()
         .map(|entry| (entry.kind, entry.rev.as_str(), entry.short_sha.as_str()))
         .collect();
-    assert_eq!(summary, [
-        (RevisionKind::RemoteBranch, "origin/main", "abc1234"),
-        (RevisionKind::RemoteBranch, "origin/feature/x", "def5678"),
-        (RevisionKind::Tag, "v1.0", "1111111"),
-        // An annotated tag is listed by the commit it points at.
-        (RevisionKind::Tag, "v2.0", "3333333"),
-    ]);
+    assert_eq!(
+        summary,
+        [
+            (RevisionKind::RemoteBranch, "origin/main", "abc1234"),
+            (RevisionKind::RemoteBranch, "origin/feature/x", "def5678"),
+            (RevisionKind::Tag, "v1.0", "1111111"),
+            // An annotated tag is listed by the commit it points at.
+            (RevisionKind::Tag, "v2.0", "3333333"),
+        ]
+    );
     assert_eq!(entries[1].subject, "Subject\twith a tab");
     assert_eq!(entries[1].relative_date, "2 weeks ago");
     assert!(entries.iter().all(|entry| entry.author.is_empty()));
@@ -87,14 +105,17 @@ fn parse_commit_listing_keeps_tabs_and_unicode_in_the_subject() {
 
     let entries = parse_commit_listing(&output);
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0], RevisionEntry {
-        kind: RevisionKind::Commit,
-        rev: sha.to_string(),
-        short_sha: "0123456".to_string(),
-        subject: "Fix\ttabs and ünïcode".to_string(),
-        author: "Zoë Größe".to_string(),
-        relative_date: "2 hours ago".to_string(),
-    });
+    assert_eq!(
+        entries[0],
+        RevisionEntry {
+            kind: RevisionKind::Commit,
+            rev: sha.to_string(),
+            short_sha: "0123456".to_string(),
+            subject: "Fix\ttabs and ünïcode".to_string(),
+            author: "Zoë Größe".to_string(),
+            relative_date: "2 hours ago".to_string(),
+        }
+    );
     assert_eq!(entries[1].subject, "");
 }
 
@@ -120,11 +141,20 @@ fn parse_revision_input_accepts_single_revisions() {
 fn parse_revision_input_rejects_what_is_not_one_revision() {
     assert_eq!(parse_revision_input(""), Err(RevisionError::Empty));
     assert_eq!(parse_revision_input("   "), Err(RevisionError::Empty));
-    assert_eq!(parse_revision_input("main..feature"), Err(RevisionError::Range));
-    assert_eq!(parse_revision_input("main...feature"), Err(RevisionError::Range));
+    assert_eq!(
+        parse_revision_input("main..feature"),
+        Err(RevisionError::Range)
+    );
+    assert_eq!(
+        parse_revision_input("main...feature"),
+        Err(RevisionError::Range)
+    );
     assert_eq!(parse_revision_input("--all"), Err(RevisionError::Malformed));
     assert_eq!(parse_revision_input("-n1"), Err(RevisionError::Malformed));
-    assert_eq!(parse_revision_input("main\nHEAD"), Err(RevisionError::Malformed));
+    assert_eq!(
+        parse_revision_input("main\nHEAD"),
+        Err(RevisionError::Malformed)
+    );
 }
 
 #[tokio::test]
@@ -136,13 +166,19 @@ async fn resolve_commit_resolves_branches_tags_commits_and_expressions() {
 
     assert_eq!(resolve_commit(&repo, "main").await, Ok(head.clone()));
     assert_eq!(resolve_commit(&repo, "origin/main").await, Ok(head.clone()));
-    assert_eq!(resolve_commit(&repo, "origin/feature/remote").await, Ok(previous.clone()));
+    assert_eq!(
+        resolve_commit(&repo, "origin/feature/remote").await,
+        Ok(previous.clone())
+    );
     assert_eq!(resolve_commit(&repo, "v1.0").await, Ok(previous.clone()));
     // An annotated tag resolves to its commit, not to the tag object.
     assert_eq!(resolve_commit(&repo, "v2.0").await, Ok(head.clone()));
     assert_eq!(resolve_commit(&repo, "HEAD~1").await, Ok(previous.clone()));
     assert_eq!(resolve_commit(&repo, &previous).await, Ok(previous.clone()));
-    assert_eq!(resolve_commit(&repo, &previous[..8]).await, Ok(previous.clone()));
+    assert_eq!(
+        resolve_commit(&repo, &previous[..8]).await,
+        Ok(previous.clone())
+    );
     assert_eq!(resolve_commit(&repo, " HEAD ").await, Ok(head));
     assert_eq!(resolve_commit(&repo, ":/Second commit").await, Ok(previous));
 }
@@ -164,8 +200,14 @@ async fn resolve_commit_reports_why_a_revision_cannot_be_used() {
         resolve_commit(&repo, "HEAD:file.txt").await,
         Err(RevisionError::NotACommit("HEAD:file.txt".to_string()))
     );
-    assert_eq!(resolve_commit(&repo, "main..v1.0").await, Err(RevisionError::Range));
-    assert_eq!(resolve_commit(&repo, "--all").await, Err(RevisionError::Malformed));
+    assert_eq!(
+        resolve_commit(&repo, "main..v1.0").await,
+        Err(RevisionError::Range)
+    );
+    assert_eq!(
+        resolve_commit(&repo, "--all").await,
+        Err(RevisionError::Malformed)
+    );
     assert_eq!(resolve_commit(&repo, "").await, Err(RevisionError::Empty));
 }
 
@@ -186,10 +228,9 @@ async fn list_revision_candidates_lists_remote_branches_tags_and_commits() {
     remote_branches.sort_unstable();
     assert_eq!(remote_branches, ["origin/feature/remote", "origin/main"]);
     assert!(
-        candidates
-            .remote_branches
-            .iter()
-            .all(|entry| entry.kind == RevisionKind::RemoteBranch && !entry.relative_date.is_empty())
+        candidates.remote_branches.iter().all(
+            |entry| entry.kind == RevisionKind::RemoteBranch && !entry.relative_date.is_empty()
+        )
     );
 
     let annotated = candidates
@@ -207,7 +248,10 @@ async fn list_revision_candidates_lists_remote_branches_tags_and_commits() {
         .iter()
         .map(|entry| entry.subject.as_str())
         .collect();
-    assert_eq!(subjects, ["Fix\ttabs and ünïcode", "Second commit", "First commit"]);
+    assert_eq!(
+        subjects,
+        ["Fix\ttabs and ünïcode", "Second commit", "First commit"]
+    );
     let newest = &candidates.commits[0];
     assert_eq!(newest.rev, head);
     assert_eq!(newest.short_sha, head_short);
