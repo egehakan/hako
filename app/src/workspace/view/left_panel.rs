@@ -90,7 +90,13 @@ struct MouseStateHandles {
 #[derive(Clone, Debug)]
 pub enum LeftPanelAction {
     ProjectExplorer,
-    GlobalSearch { entry_focus: GlobalSearchEntryFocus },
+    /// Start naming a new file in the Project Explorer.
+    NewFileInProjectExplorer,
+    /// Start naming a new folder in the Project Explorer.
+    NewFolderInProjectExplorer,
+    GlobalSearch {
+        entry_focus: GlobalSearchEntryFocus,
+    },
     WarpDrive,
     ConversationListView,
     SignIn,
@@ -224,6 +230,8 @@ pub struct LeftPanelView {
     resizable_state_handle: ResizableStateHandle,
     mouse_state_handles: MouseStateHandles,
     close_button_mouse_state: MouseStateHandle,
+    new_file_button_mouse_state: MouseStateHandle,
+    new_folder_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
     active_view: active_view_state::ActiveViewState,
@@ -474,6 +482,8 @@ impl LeftPanelView {
             resizable_state_handle,
             mouse_state_handles: Default::default(),
             close_button_mouse_state: Default::default(),
+            new_file_button_mouse_state: Default::default(),
+            new_folder_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
             active_view: active_view_state::new(active_view),
@@ -1133,6 +1143,33 @@ impl LeftPanelView {
         .finish()
     }
 
+    /// A button of the header row that starts naming a new file or folder in the Project
+    /// Explorer.
+    fn new_item_button(
+        icon: icons::Icon,
+        label: &str,
+        action: LeftPanelAction,
+        mouse_state: MouseStateHandle,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let tooltip = appearance
+            .ui_builder()
+            .tool_tip(label.to_string())
+            .build()
+            .finish();
+        let icon_color = appearance
+            .theme()
+            .sub_text_color(appearance.theme().background());
+        icon_button_with_color(appearance, icon, false, mouse_state, icon_color)
+            .with_tooltip(move || tooltip)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+            })
+            .with_cursor(Cursor::PointingHand)
+            .finish()
+    }
+
     fn update_button_active_states(&mut self) {
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
@@ -1146,7 +1183,9 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
-                LeftPanelAction::SignIn => false,
+                LeftPanelAction::SignIn
+                | LeftPanelAction::NewFileInProjectExplorer
+                | LeftPanelAction::NewFolderInProjectExplorer => false,
             };
         }
     }
@@ -1295,6 +1334,20 @@ impl LeftPanelView {
             LeftPanelAction::SignIn => {
                 ctx.emit(LeftPanelEvent::SignInRequested);
             }
+            LeftPanelAction::NewFileInProjectExplorer => {
+                self.start_creating_in_project_explorer(false, ctx);
+            }
+            LeftPanelAction::NewFolderInProjectExplorer => {
+                self.start_creating_in_project_explorer(true, ctx);
+            }
+        }
+    }
+
+    fn start_creating_in_project_explorer(&mut self, is_folder: bool, ctx: &mut ViewContext<Self>) {
+        if let Some(file_tree_view) = self.active_file_tree_view(ctx) {
+            file_tree_view.update(ctx, |view, ctx| {
+                view.start_creating_in_selection(is_folder, ctx);
+            });
         }
     }
 
@@ -1490,6 +1543,30 @@ impl View for LeftPanelView {
                 Flex::row().finish()
             };
 
+            let mut header_right = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min);
+            let shows_project_explorer = active_view == ToolPanelView::ProjectExplorer
+                && availability == ToolPanelAvailability::Available
+                && self.active_file_tree_view(app).is_some();
+            if shows_project_explorer {
+                header_right.add_child(Self::new_item_button(
+                    icons::Icon::FilePlus,
+                    "New file",
+                    LeftPanelAction::NewFileInProjectExplorer,
+                    self.new_file_button_mouse_state.clone(),
+                    appearance,
+                ));
+                header_right.add_child(Self::new_item_button(
+                    icons::Icon::FolderPlus,
+                    "New folder",
+                    LeftPanelAction::NewFolderInProjectExplorer,
+                    self.new_folder_button_mouse_state.clone(),
+                    appearance,
+                ));
+            }
+            header_right.add_child(self.close_button(appearance, app));
+
             let header_row = Container::new(
                 ConstrainedBox::new(
                     Flex::row()
@@ -1497,7 +1574,7 @@ impl View for LeftPanelView {
                         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_child(Shrinkable::new(1.0, header_left).finish())
-                        .with_child(self.close_button(appearance, app))
+                        .with_child(header_right.finish())
                         .finish(),
                 )
                 .with_height(PANE_HEADER_HEIGHT)

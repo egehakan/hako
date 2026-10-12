@@ -2,8 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use editing::sort_entries_for_file_tree;
+use instant::Instant;
 use itertools::Itertools;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
@@ -23,14 +25,14 @@ use warp_util::standardized_path::StandardizedPath;
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     AcceptedByDropTarget, Align, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container,
-    CrossAxisAlignment, Dismiss, Draggable, DraggableState, Empty, Flex, FormattedTextElement,
-    Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
-    ParentElement, ParentOffsetBounds, Percentage, Rect, SavePosition, ScrollStateHandle,
-    Scrollable, ScrollableElement, ScrollbarWidth, Shrinkable, Stack, Text, UniformList,
-    UniformListState,
+    CrossAxisAlignment, Dismiss, Draggable, DraggableState, DropTarget, DropTargetData, Empty,
+    Flex, FormattedTextElement, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Percentage, Rect,
+    SavePosition, ScrollStateHandle, Scrollable, ScrollableElement, ScrollbarWidth, Shrinkable,
+    Stack, Text, UniformList, UniformListState,
 };
 use warpui::fonts::{Properties, Style, Weight};
-use warpui::keymap::FixedBinding;
+use warpui::keymap::{self, FixedBinding, Keystroke};
 use warpui::platform::Cursor;
 use warpui::text_layout::TextAlignment;
 use warpui::{
@@ -49,9 +51,11 @@ use crate::menu::{Menu, MenuItem, MenuItemFields};
 use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 use crate::server::telemetry::TelemetryEvent;
 use crate::terminal::input::InputDropTargetData;
+use crate::terminal::keys::custom_action_to_display;
 use crate::terminal::view::{TerminalDropTargetData, TerminalView};
 use crate::ui_components::icons::Icon;
 use crate::ui_components::item_highlight::ItemHighlightState;
+use crate::util::bindings::{CustomAction, custom_tag_to_keystroke};
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::{
@@ -63,9 +67,18 @@ use crate::util::openable_file_type::{
 };
 
 mod editing;
+mod external_drop;
+mod operations;
 mod render;
 
+use external_drop::ExternalFileDropTarget;
+
+use super::undo::Step;
 use crate::settings::{CodeSettings, CodeSettingsChangedEvent};
+use crate::view_components::action_button::{
+    ActionButton, ButtonSize, KeystrokeSource, NakedTheme,
+};
+use crate::workspace::WorkspaceAction;
 
 const REMOTE_TEXT: &str = "The Project Explorer requires access to your local workspace, which isn’t supported in remote sessions.";
 const DISABLED_TEXT: &str = "The Project Explorer requires access to your local workspace. Open a new session or navigate to an active session to view.";
@@ -84,6 +97,7 @@ pub struct FileTreeIdentifier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingEditKind {
     CreateNewFile,
+    CreateNewFolder,
     RenameExisting,
 }
 
@@ -95,6 +109,14 @@ pub enum FileTreeAction {
     ItemDoubleClicked {
         id: FileTreeIdentifier,
     },
+    /// Adds the item to the selection, or takes it out when it is already part of it.
+    ToggleItemSelection {
+        id: FileTreeIdentifier,
+    },
+    /// Selects everything between the item the selection started from and this one.
+    ExtendSelectionTo {
+        id: FileTreeIdentifier,
+    },
     SelectPreviousItem,
     SelectNextItem,
     Expand,
@@ -103,6 +125,10 @@ pub enum FileTreeAction {
     OpenContextMenu {
         position: Vector2F,
         id: FileTreeIdentifier,
+    },
+    /// Opens the menu of the tree as a whole, for a click outside every item.
+    OpenRootContextMenu {
+        position: Vector2F,
     },
     CopyPath {
         id: FileTreeIdentifier,
@@ -119,10 +145,25 @@ pub enum FileTreeAction {
     Rename {
         id: FileTreeIdentifier,
     },
-    Delete {
+    RenameSelected,
+    CopySelection,
+    CutSelection,
+    Paste,
+    DuplicateSelection,
+    /// Moves the selected items to the trash.
+    DeleteSelection,
+    /// Forgets that items were cut and goes back to a single selected item.
+    ClearCutAndSelection,
+    /// Takes back the last file operation done from the tree.
+    Undo,
+    /// Does again the file operation last undone.
+    Redo,
+    /// Starts naming a new file in the folder at `id`, or next to the file at `id`.
+    NewFile {
         id: FileTreeIdentifier,
     },
-    NewFileBelowDirectory {
+    /// Starts naming a new folder in the folder at `id`, or next to the file at `id`.
+    NewFolder {
         id: FileTreeIdentifier,
     },
     OpenInNewPane {
@@ -143,6 +184,36 @@ pub enum FileTreeAction {
         id: FileTreeIdentifier,
         terminal_view: WeakViewHandle<TerminalView>,
     },
+    /// An item of the tree is being dragged over the item at `target`, or over none of them.
+    DragOverItem {
+        target: Option<FileTreeIdentifier>,
+    },
+    /// The item at `id` was dropped on the item at `target`.
+    ItemDroppedOnItem {
+        id: FileTreeIdentifier,
+        target: FileTreeIdentifier,
+    },
+    /// Files dragged in from another app were dropped on the item at `target`, or on the tree
+    /// outside every item.
+    ExternalFilesDropped {
+        paths: Vec<String>,
+        target: Option<FileTreeIdentifier>,
+    },
+}
+
+/// Keymap context of a file tree that holds cut items or a selection of several items.
+const HAS_CUT_OR_MULTI_SELECTION_CONTEXT: &str = "FileTree_HasCutOrMultiSelection";
+
+/// The identity of the row a dragged item of the tree can be dropped on.
+#[derive(Debug)]
+struct FileTreeDropTargetData {
+    id: FileTreeIdentifier,
+}
+
+impl DropTargetData for FileTreeDropTargetData {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 pub fn init(app: &mut AppContext) {
@@ -172,7 +243,80 @@ pub fn init(app: &mut AppContext) {
             FileTreeAction::ExecuteSelectedItem,
             id!(FileTreeView::ui_name()),
         ),
+        FixedBinding::new(
+            RENAME_KEYSTROKE,
+            FileTreeAction::RenameSelected,
+            id!(FileTreeView::ui_name()),
+        ),
+        // The forward-delete key. Plain Backspace is left unbound: it is too easy to hit.
+        FixedBinding::new(
+            DELETE_KEYSTROKE,
+            FileTreeAction::DeleteSelection,
+            id!(FileTreeView::ui_name()),
+        ),
+        // Only bound while there is something to clear, so that Escape keeps its meaning for the
+        // views around the tree the rest of the time.
+        FixedBinding::new(
+            "escape",
+            FileTreeAction::ClearCutAndSelection,
+            id!(FileTreeView::ui_name()) & id!(HAS_CUT_OR_MULTI_SELECTION_CONTEXT),
+        ),
+        // The bindings below only match the tree's own keymap context, so they apply while the
+        // tree has the focus and never while a terminal, an editor or the tree's own name field
+        // has it.
+        FixedBinding::custom(
+            CustomAction::Copy,
+            FileTreeAction::CopySelection,
+            "Copy",
+            id!(FileTreeView::ui_name()) & !id!("IMEOpen"),
+        ),
+        FixedBinding::custom(
+            CustomAction::Cut,
+            FileTreeAction::CutSelection,
+            "Cut",
+            id!(FileTreeView::ui_name()) & !id!("IMEOpen"),
+        ),
+        FixedBinding::custom(
+            CustomAction::Paste,
+            FileTreeAction::Paste,
+            "Paste",
+            id!(FileTreeView::ui_name()) & !id!("IMEOpen"),
+        ),
+        FixedBinding::custom(
+            CustomAction::Undo,
+            FileTreeAction::Undo,
+            "Undo",
+            id!(FileTreeView::ui_name()) & !id!("IMEOpen"),
+        ),
+        FixedBinding::custom(
+            CustomAction::Redo,
+            FileTreeAction::Redo,
+            "Redo",
+            id!(FileTreeView::ui_name()) & !id!("IMEOpen"),
+        ),
     ]);
+    if cfg!(target_os = "macos") {
+        app.register_fixed_bindings([FixedBinding::new(
+            MAC_DELETE_KEYSTROKE,
+            FileTreeAction::DeleteSelection,
+            id!(FileTreeView::ui_name()),
+        )]);
+    }
+}
+
+/// How long a path the tree removed is left out of it while its contents still list the path.
+const AWAITED_REMOVAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+const RENAME_KEYSTROKE: &str = "f2";
+const DELETE_KEYSTROKE: &str = "delete";
+/// Finder's shortcut for moving to the trash, bound on macOS next to `DELETE_KEYSTROKE`.
+const MAC_DELETE_KEYSTROKE: &str = "cmd-backspace";
+
+/// How `keystroke` is shown next to a menu item.
+fn shortcut_label(keystroke: &str) -> Option<String> {
+    Keystroke::parse(keystroke)
+        .ok()
+        .map(|keystroke| keystroke.displayed())
 }
 
 // Constants matching the Drive panel styling
@@ -208,6 +352,14 @@ impl FileTreeItem {
             FileTreeItem::DirectoryHeader { directory, .. } => &directory.path,
         }
     }
+
+    fn depth(&self) -> usize {
+        match self {
+            FileTreeItem::File { depth, .. } | FileTreeItem::DirectoryHeader { depth, .. } => {
+                *depth
+            }
+        }
+    }
 }
 
 struct ContextMenuState {
@@ -217,6 +369,8 @@ struct ContextMenuState {
 struct PendingEdit {
     kind: PendingEditKind,
     id: FileTreeIdentifier,
+    /// The folder a new item is being named in. `None` when an existing item is renamed.
+    new_item_parent: Option<StandardizedPath>,
 }
 
 /// Per-root directory state for the file tree.
@@ -255,6 +409,30 @@ pub struct FileTreeView {
     is_active: bool,
     /// Identifier of the currently selected item
     selected_item: Option<FileTreeIdentifier>,
+    /// Paths of all the selected items while more than one is selected, `selected_item`'s
+    /// included. Empty while at most one item is selected.
+    multi_selection: HashSet<StandardizedPath>,
+    /// Path of the item a shift-click extends the selection from.
+    selection_anchor: Option<StandardizedPath>,
+    /// Paths put on the pasteboard by Cut: pasting them moves them, and they are shown dimmed
+    /// until then.
+    cut_paths: HashSet<StandardizedPath>,
+    /// Paths trashed or moved away by the tree, with when that happened. They are left out of
+    /// the tree until its contents, which trail the disk, no longer list them.
+    paths_awaiting_removal: HashMap<StandardizedPath, Instant>,
+    /// Paths on their way to the trash. They leave the tree before the disk is touched, and come
+    /// back if they could not be trashed.
+    paths_being_trashed: HashSet<StandardizedPath>,
+    /// Path of the folder that an item dragged over the tree would be dropped into.
+    drop_folder: Option<StandardizedPath>,
+    /// The file operations done from the tree that can be undone, oldest first.
+    undo_stack: Vec<Step>,
+    /// The file operations undone since the last new one, oldest first.
+    redo_stack: Vec<Step>,
+    /// Whether an undo or redo is running, during which another one is not started.
+    is_reversing: bool,
+    /// The "Undo" button of the message shown after a file operation.
+    undo_button: ViewHandle<ActionButton>,
     /// State for the UniformList
     list_state: UniformListState,
     /// Scroll state handle for the NewScrollable wrapper
@@ -268,6 +446,10 @@ pub struct FileTreeView {
     position_id: String,
     /// The pending edit, if any
     pending_edit: Option<PendingEdit>,
+    /// Whether the item named in the pending edit is being created on disk.
+    is_creating: bool,
+    /// Mouse state of the part of the tree outside its items.
+    empty_space_mouse_state: MouseStateHandle,
     /// Editor view used for editing (renaming, creating) an item in the tree.
     editor_view: ViewHandle<EditorView>,
     /// Handle to track the currently focused file
@@ -701,13 +883,28 @@ impl FileTreeView {
         });
 
         ctx.subscribe_to_view(&editor_view, |me, _, event, ctx| match event {
-            crate::editor::Event::Enter => me.commit_pending_edit(ctx),
+            crate::editor::Event::Enter => me.commit_pending_edit(true, ctx),
             crate::editor::Event::Escape => me.cancel_pending_edit(ctx),
             _ => {}
         });
 
         #[cfg(feature = "local_fs")]
         let repository_metadata_model = RepoMetadataModel::handle(ctx);
+
+        // The button sits in a message shown by the workspace, so its click goes through the
+        // workspace back to this tree.
+        let view_id = ctx.view_id();
+        let undo_button = ctx.add_typed_action_view(move |ctx| {
+            let mut button = ActionButton::new("Undo", NakedTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(move |ctx| {
+                    ctx.dispatch_typed_action(WorkspaceAction::UndoInFileTree { view_id });
+                });
+            if let Some(keystroke) = custom_tag_to_keystroke(CustomAction::Undo.into()) {
+                button = button.with_keybinding(KeystrokeSource::Fixed(keystroke), ctx);
+            }
+            button
+        });
 
         Self {
             root_directories: HashMap::new(),
@@ -719,6 +916,16 @@ impl FileTreeView {
             #[cfg(feature = "local_fs")]
             is_active: false,
             selected_item: None,
+            multi_selection: HashSet::new(),
+            selection_anchor: None,
+            cut_paths: HashSet::new(),
+            paths_awaiting_removal: HashMap::new(),
+            paths_being_trashed: HashSet::new(),
+            drop_folder: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            is_reversing: false,
+            undo_button,
             list_state: UniformListState::new(),
             scroll_state: ScrollStateHandle::default(),
             view_handle: ctx.handle(),
@@ -726,6 +933,8 @@ impl FileTreeView {
             context_menu_state: None,
             position_id: format!("file_tree_{}", ctx.view_id()),
             pending_edit: None,
+            is_creating: false,
+            empty_space_mouse_state: MouseStateHandle::default(),
             editor_view,
             active_file_model: None,
             has_terminal_session: false,
@@ -1697,16 +1906,25 @@ impl FileTreeView {
     /// backing data has changed (e.g. a metadata update) to avoid
     /// unnecessarily re-flattening — and re-rendering — unrelated roots.
     fn rebuild_flattened_items_for_root(&mut self, target_root: &StandardizedPath) {
-        self.rebuild_flatten_items_impl(None, None, Some(target_root));
+        self.rebuild_flatten_items_impl(None, Some(target_root));
     }
 
-    /// Rebuilds the flattened items list from the current entry tree, optionally removing an item.
+    /// Rebuilds the flattened items list from the current entry tree.
     fn rebuild_flattened_items(&mut self) {
-        self.rebuild_flatten_items_impl(None, None, None);
+        self.rebuild_flatten_items_impl(None, None);
     }
 
-    fn rebuild_flattened_items_without(&mut self, path_to_remove: &StandardizedPath) -> bool {
-        self.rebuild_flatten_items_impl(None, Some(path_to_remove), None)
+    /// Stops leaving out the paths in `paths_awaiting_removal` that the tree's contents no longer
+    /// list. A path still listed long after it was removed is back on disk under the same name,
+    /// and is shown again too.
+    fn forget_removed_paths(&mut self) {
+        let root_directories = &self.root_directories;
+        self.paths_awaiting_removal.retain(|path, removed_at| {
+            removed_at.elapsed() < AWAITED_REMOVAL_TIMEOUT
+                && root_directories
+                    .values()
+                    .any(|root_dir| root_dir.entry.contains(path))
+        });
     }
 
     /// Core implementation for rebuilding the flattened items list.
@@ -1716,17 +1934,13 @@ impl FileTreeView {
     /// root is rebuilt.
     ///
     /// If `id_to_select` is `Some`, the item identified by that
-    /// `FileTreeIdentifier` will be selected. If `path_to_remove` is
-    /// `Some`, the item at that path will be excluded from the result.
-    ///
-    /// Returns `true` if an item was removed.
+    /// `FileTreeIdentifier` will be selected.
     fn rebuild_flatten_items_impl(
         &mut self,
         id_to_select: Option<&FileTreeIdentifier>,
-        path_to_remove: Option<&StandardizedPath>,
         target_root: Option<&StandardizedPath>,
-    ) -> bool {
-        let mut any_item_removed = false;
+    ) {
+        self.forget_removed_paths();
 
         // Clone the ID to preserve so we don't hold a borrow on self.selected_item
         let id_to_preserve = id_to_select.cloned().or_else(|| self.selected_item.clone());
@@ -1752,13 +1966,12 @@ impl FileTreeView {
                 .filter(|id| id.root == root_path)
                 .and_then(|id| root_dir.items.get(id.index).map(|item| item.path().clone()));
 
-            let (new_index, removed_item) = self.flatten_entry_for_root(
+            let new_index = self.flatten_entry_for_root(
                 &root_path,
                 &root_path,
                 &entry_state,
                 0,
                 selected_item_path.as_ref(),
-                path_to_remove,
                 &mut items,
             );
 
@@ -1774,7 +1987,7 @@ impl FileTreeView {
             {
                 if let Some(index) = new_index {
                     self.selected_item = Some(FileTreeIdentifier {
-                        root: root_path,
+                        root: root_path.clone(),
                         index,
                     });
                 } else if selected_item_path.is_some() {
@@ -1782,14 +1995,11 @@ impl FileTreeView {
                 }
             }
 
-            any_item_removed = any_item_removed || removed_item;
+            self.restore_new_item_placeholder(&root_path);
         }
-
-        any_item_removed
     }
     /// Recursively flattens entries for a specific root.
     /// Returns the index of the item matching `path_of_selected_item` within this root, if it exists.
-    #[allow(clippy::too_many_arguments)]
     fn flatten_entry_for_root(
         &mut self,
         root_path: &StandardizedPath,
@@ -1797,14 +2007,14 @@ impl FileTreeView {
         entry_map: &FileTreeEntry,
         depth: usize,
         path_of_selected_item: Option<&StandardizedPath>,
-        path_of_removed_item: Option<&StandardizedPath>,
         items: &mut Vec<FileTreeItem>,
-    ) -> (Option<usize>, bool) {
+    ) -> Option<usize> {
         let mut selected_item_index = None;
-        let mut removed_item = false;
 
-        if path_of_removed_item == Some(current_path) {
-            return (None, true);
+        if self.paths_awaiting_removal.contains_key(current_path)
+            || self.paths_being_trashed.contains(current_path)
+        {
+            return None;
         }
 
         // Filter hidden files/directories when show_hidden_files is disabled.
@@ -1815,7 +2025,7 @@ impl FileTreeView {
             && let Some(name) = current_path.file_name()
             && name.starts_with('.')
         {
-            return (selected_item_index, removed_item);
+            return selected_item_index;
         }
 
         if path_of_selected_item == Some(current_path) {
@@ -1873,30 +2083,27 @@ impl FileTreeView {
                         .child_paths(&dir.path)
                         .sorted_by(|a, b| sort_entries_for_file_tree(a, b, entry_map))
                     {
-                        let (child_selected_index, child_removed) = self.flatten_entry_for_root(
+                        let child_selected_index = self.flatten_entry_for_root(
                             root_path,
                             child,
                             entry_map,
                             depth + 1,
                             path_of_selected_item,
-                            path_of_removed_item,
                             items,
                         );
 
                         if selected_item_index.is_none() {
                             selected_item_index = child_selected_index;
                         }
-
-                        removed_item = removed_item || child_removed;
                     }
                 }
             }
             None => {
-                return (selected_item_index, removed_item);
+                return selected_item_index;
             }
         }
 
-        (selected_item_index, removed_item)
+        selected_item_index
     }
 
     /// Renders a file item with proper indentation and optional hover/selected styling
@@ -1963,7 +2170,10 @@ impl FileTreeView {
             .finish(),
         );
 
-        let text_color = item_highlight_state.text_and_icon_color(appearance);
+        let mut text_color = item_highlight_state.text_and_icon_color(appearance);
+        if render_state.is_cut {
+            text_color.a = (f32::from(text_color.a) * render::CUT_ITEM_OPACITY) as u8;
+        }
         let text_style = if render_state.is_ignored {
             Properties::default()
                 .style(Style::Italic)
@@ -2042,7 +2252,7 @@ impl FileTreeView {
         };
 
         let item_highlight_state = ItemHighlightState::Selected;
-        let render_state = item.to_render_state(None /* is_expanded */, appearance);
+        let render_state = item.to_render_state(None /* is_expanded */, false, appearance);
 
         let text_color = item_highlight_state.text_and_icon_color(appearance);
         let text = Text::new(
@@ -2076,15 +2286,18 @@ impl FileTreeView {
             return Empty::new().finish();
         };
 
-        let is_selected = self.selected_item.as_ref() == Some(id);
+        let is_selected = self.is_item_selected(id, item);
+        let is_drop_folder = self.drop_folder.as_ref() == Some(item.path());
         let is_expanded = self.is_item_expanded(&id.root, item);
-        let render_state = item.to_render_state(is_expanded, appearance);
+        let is_cut = self.cut_paths.contains(item.path());
+        let render_state = item.to_render_state(is_expanded, is_cut, appearance);
 
         let item_display_name = render_state.display_name.clone();
         let item_position_id = format!("file_tree_item:{item_display_name}");
 
         let position_id = self.position_id.clone();
         let draggable_state = render_state.draggable_state.clone();
+        let is_being_dragged = draggable_state.is_dragging();
 
         let is_pending_edit = self
             .pending_edit
@@ -2099,7 +2312,11 @@ impl FileTreeView {
         let id_for_drop = id.clone();
         let id_for_drag = id.clone();
         let hoverable = Hoverable::new(render_state.mouse_state.clone(), move |mouse_state| {
-            let item_highlight_state = ItemHighlightState::new(is_selected, mouse_state);
+            let item_highlight_state = if is_drop_folder && !is_selected {
+                ItemHighlightState::Hovered
+            } else {
+                ItemHighlightState::new(is_selected, mouse_state)
+            };
             Self::render_item_with_hover(
                 render_state,
                 appearance,
@@ -2107,12 +2324,23 @@ impl FileTreeView {
                 editor_view,
             )
         })
-        .on_click(
-            move |event_ctx: &mut EventContext, _app_ctx: &AppContext, _position| {
-                // Dispatch the action to select this item
-                event_ctx.dispatch_typed_action(FileTreeAction::ItemClicked {
-                    id: id_for_click.clone(),
-                });
+        .on_click_with_modifiers(
+            move |event_ctx: &mut EventContext, _app_ctx: &AppContext, _position, modifiers| {
+                let id = id_for_click.clone();
+                // Ctrl-click is the secondary click on macOS.
+                let toggles_selection = if cfg!(target_os = "macos") {
+                    modifiers.cmd
+                } else {
+                    modifiers.ctrl
+                };
+                let action = if toggles_selection {
+                    FileTreeAction::ToggleItemSelection { id }
+                } else if modifiers.shift {
+                    FileTreeAction::ExtendSelectionTo { id }
+                } else {
+                    FileTreeAction::ItemClicked { id }
+                };
+                event_ctx.dispatch_typed_action(action);
             },
         )
         .on_double_click(
@@ -2147,20 +2375,22 @@ impl FileTreeView {
             })
             .use_copy_cursor_when_dragging_over_drop_target()
             .with_accepted_by_drop_target_fn(move |drop_target_data, _| {
-                // Allow drops on terminal input and terminal block list
-                if drop_target_data
-                    .as_any()
-                    .downcast_ref::<InputDropTargetData>()
-                    .is_some()
-                    || drop_target_data
-                        .as_any()
-                        .downcast_ref::<TerminalDropTargetData>()
-                        .is_some()
+                // Allow drops on terminal input, the terminal block list and the tree's own rows
+                let data = drop_target_data.as_any();
+                if data.downcast_ref::<InputDropTargetData>().is_some()
+                    || data.downcast_ref::<TerminalDropTargetData>().is_some()
+                    || data.downcast_ref::<FileTreeDropTargetData>().is_some()
                 {
                     AcceptedByDropTarget::Yes
                 } else {
                     AcceptedByDropTarget::No
                 }
+            })
+            .on_drag(move |ctx, _app, _drag_position, data| {
+                let target = data
+                    .and_then(|data| data.as_any().downcast_ref::<FileTreeDropTargetData>())
+                    .map(|data| data.id.clone());
+                ctx.dispatch_typed_action(FileTreeAction::DragOverItem { target });
             })
             .on_drop(move |ctx, _app, _drag_position, data| {
                 if let Some(terminal_input_data) = data
@@ -2179,13 +2409,31 @@ impl FileTreeView {
                         id: id_for_drop.clone(),
                         terminal_view: terminal_drop_data.terminal_view.clone(),
                     });
+                } else if let Some(tree_drop_data) = data
+                    .as_ref()
+                    .and_then(|data| data.as_any().downcast_ref::<FileTreeDropTargetData>())
+                {
+                    ctx.dispatch_typed_action(FileTreeAction::ItemDroppedOnItem {
+                        id: id_for_drop.clone(),
+                        target: tree_drop_data.id.clone(),
+                    });
+                } else {
+                    ctx.dispatch_typed_action(FileTreeAction::DragOverItem { target: None });
                 }
             })
             .with_alternate_drag_element(self.render_item_while_dragging(&id_for_drag, appearance))
             .with_keep_original_visible(true)
             .finish();
 
-        SavePosition::new(draggable, item_position_id.as_str()).finish()
+        // The row being dragged is not a place to drop itself on.
+        let row = if is_being_dragged {
+            draggable
+        } else {
+            DropTarget::new(draggable, FileTreeDropTargetData { id: id.clone() }).finish()
+        };
+        let row = ExternalFileDropTarget::new(row, Some(id.clone())).finish();
+
+        SavePosition::new(row, item_position_id.as_str()).finish()
     }
 
     fn selected_item_std_path(&self) -> Option<StandardizedPath> {
@@ -2417,6 +2665,8 @@ impl FileTreeView {
         // An explicit selection (user click, keyboard nav, editor focus)
         // supersedes any pending focus-follow target.
         self.pending_focus_target = None;
+        self.multi_selection.clear();
+        self.selection_anchor = self.item_at(id).map(|item| item.path().clone());
         self.selected_item = Some(id.clone());
         self.perform_scroll(id);
         ctx.notify();
@@ -2473,14 +2723,6 @@ impl FileTreeView {
                     }
                 }
                 FileTreeItem::DirectoryHeader { .. } => {
-                    items.push(
-                        MenuItemFields::new("New file")
-                            .with_on_select_action(FileTreeAction::NewFileBelowDirectory {
-                                id: id.clone(),
-                            })
-                            .into_item(),
-                    );
-                    items.push(MenuItem::Separator);
                     if self.has_terminal_session {
                         items.push(
                             MenuItemFields::new("cd to directory")
@@ -2498,6 +2740,48 @@ impl FileTreeView {
                 }
             };
 
+            // For now, the root repo is always the zero index. This may not always be the case if we allow
+            // multiple repos in a project view, for instance. This disallows cutting, deleting and
+            // renaming the root repo.
+            let is_repo_root_dir = id.index == 0;
+
+            items.push(MenuItem::Separator);
+            items.extend([
+                MenuItemFields::new("New file")
+                    .with_on_select_action(FileTreeAction::NewFile { id: id.clone() })
+                    .into_item(),
+                MenuItemFields::new("New folder")
+                    .with_on_select_action(FileTreeAction::NewFolder { id: id.clone() })
+                    .into_item(),
+                MenuItem::Separator,
+            ]);
+            if !is_repo_root_dir {
+                items.push(
+                    MenuItemFields::new("Cut")
+                        .with_on_select_action(FileTreeAction::CutSelection)
+                        .with_key_shortcut_label(custom_action_to_display(CustomAction::Cut))
+                        .into_item(),
+                );
+            }
+            items.extend([
+                MenuItemFields::new("Copy")
+                    .with_on_select_action(FileTreeAction::CopySelection)
+                    .with_key_shortcut_label(custom_action_to_display(CustomAction::Copy))
+                    .into_item(),
+                MenuItemFields::new("Paste")
+                    .with_on_select_action(FileTreeAction::Paste)
+                    .with_key_shortcut_label(custom_action_to_display(CustomAction::Paste))
+                    .into_item(),
+            ]);
+            if !is_repo_root_dir {
+                items.push(
+                    MenuItemFields::new("Duplicate")
+                        .with_on_select_action(FileTreeAction::DuplicateSelection)
+                        .into_item(),
+                );
+            }
+            items.push(MenuItem::Separator);
+
             let open_text = if cfg!(target_os = "macos") {
                 "Reveal in Finder"
             } else if cfg!(target_os = "windows") {
@@ -2511,18 +2795,27 @@ impl FileTreeView {
                     .into_item(),
             );
 
-            // For now, the root repo is always the zero index. This may not always be the case if we allow
-            // multiple repos in a project view, for instance. This disallows deletion/renaming of the root repo.
-            let is_repo_root_dir = id.index == 0;
             if !is_repo_root_dir {
+                let delete_keystroke = if cfg!(target_os = "macos") {
+                    MAC_DELETE_KEYSTROKE
+                } else {
+                    DELETE_KEYSTROKE
+                };
+                let delete_text = if cfg!(target_os = "macos") {
+                    "Move to Trash"
+                } else {
+                    "Delete"
+                };
                 items.push(
                     MenuItemFields::new("Rename")
                         .with_on_select_action(FileTreeAction::Rename { id: id.clone() })
+                        .with_key_shortcut_label(shortcut_label(RENAME_KEYSTROKE))
                         .into_item(),
                 );
                 items.push(
-                    MenuItemFields::new("Delete")
-                        .with_on_select_action(FileTreeAction::Delete { id: id.clone() })
+                    MenuItemFields::new(delete_text)
+                        .with_on_select_action(FileTreeAction::DeleteSelection)
+                        .with_key_shortcut_label(shortcut_label(delete_keystroke))
                         .into_item(),
                 );
             }
@@ -2561,28 +2854,38 @@ impl FileTreeView {
             .map(|root_dir| (**root_dir.entry.root_directory()).clone())
     }
 
+    /// Copies the path of the item at `id` relative to its root, or one line per selected item
+    /// when that item is one of several selected.
     fn copy_relative_path_for_id(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(relative_path) = self.relative_path_for_item(id) else {
+        let relative_paths: Vec<String> = self
+            .ids_acted_on_with(id)
+            .iter()
+            .filter_map(|id| self.relative_path_for_item(id))
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        if relative_paths.is_empty() {
             return;
-        };
-
-        ctx.clipboard().write(ClipboardContent::plain_text(
-            relative_path.to_string_lossy().to_string(),
-        ));
-    }
-
-    fn copy_absolute_path_for_id(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(root_dir) = self.root_directories.get(&id.root) else {
-            return;
-        };
-        let Some(item) = root_dir.items.get(id.index) else {
-            return;
-        };
-
-        let path = item.path().as_str();
+        }
 
         ctx.clipboard()
-            .write(ClipboardContent::plain_text(path.to_string()));
+            .write(ClipboardContent::plain_text(relative_paths.join("\n")));
+    }
+
+    /// Copies the path of the item at `id`, or one line per selected item when that item is one
+    /// of several selected.
+    fn copy_absolute_path_for_id(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
+        let paths: Vec<String> = self
+            .ids_acted_on_with(id)
+            .iter()
+            .filter_map(|id| self.item_at(id))
+            .map(|item| item.path().as_str().to_owned())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+
+        ctx.clipboard()
+            .write(ClipboardContent::plain_text(paths.join("\n")));
         ctx.notify();
     }
 
@@ -2670,53 +2973,6 @@ impl FileTreeView {
             .is_some();
         if exists {
             self.start_rename(id, ctx);
-        }
-    }
-
-    fn delete_item(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(root_dir) = self.root_directories.get(&id.root) else {
-            return;
-        };
-        let Some(item) = root_dir.items.get(id.index) else {
-            return;
-        };
-
-        let path = item.path().to_local_path_lossy();
-        let std_path = item.path().clone();
-
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(e) = result {
-            log::warn!("Failed to delete {}: {e}", path.display());
-        } else {
-            // Update in-memory tree immediately so the UI reflects the deletion.
-            // Find all root directories that contain this path (could be nested roots).
-            let affected_roots: Vec<StandardizedPath> = self
-                .root_directories
-                .keys()
-                .filter(|root_path| std_path.starts_with(root_path))
-                .cloned()
-                .collect();
-
-            // Update each affected root
-            for root_path in &affected_roots {
-                let removed = self.rebuild_flattened_items_without(&std_path);
-                if !removed {
-                    log::warn!(
-                        "FileTreeView.delete: did not find {} in root {} in-memory model to remove",
-                        path.display(),
-                        root_path
-                    );
-                }
-            }
-
-            // Emit event to notify workspace that a file was deleted
-            ctx.emit(FileTreeEvent::FileDeleted { path: path.clone() });
-
-            ctx.notify();
         }
     }
 
@@ -2822,6 +3078,20 @@ impl FileTreeView {
             .with_horizontal_padding(8.)
             .finish();
 
+        // A right click that lands on no item is about the tree as a whole.
+        let position_id = self.position_id.clone();
+        let container = Hoverable::new(self.empty_space_mouse_state.clone(), |_| container)
+            .with_defer_events_to_children()
+            .on_right_click(move |event, _app, position| {
+                let Some(tree_bounds) = event.element_position_by_id(&position_id) else {
+                    return;
+                };
+                event.dispatch_typed_action(FileTreeAction::OpenRootContextMenu {
+                    position: position - tree_bounds.origin(),
+                });
+            })
+            .finish();
+        let container = ExternalFileDropTarget::new(container, None).finish();
         let positioned_content = SavePosition::new(container, &self.position_id).finish();
         let mut stack = Stack::new();
         stack.add_child(positioned_content);
@@ -3102,6 +3372,14 @@ impl View for FileTreeView {
             self.handle_pending_edit(ctx);
         }
     }
+
+    fn keymap_context(&self, _: &AppContext) -> keymap::Context {
+        let mut context = Self::default_keymap_context();
+        if !self.cut_paths.is_empty() || !self.multi_selection.is_empty() {
+            context.set.insert(HAS_CUT_OR_MULTI_SELECTION_CONTEXT);
+        }
+        context
+    }
 }
 
 impl TypedActionView for FileTreeView {
@@ -3119,6 +3397,14 @@ impl TypedActionView for FileTreeView {
                 ctx.focus_self();
                 self.select_and_execute_item_at_id(id, TabOpenMode::Keep, ctx);
                 ctx.notify();
+            }
+            FileTreeAction::ToggleItemSelection { id } => {
+                ctx.focus_self();
+                self.toggle_item_selection(id, ctx);
+            }
+            FileTreeAction::ExtendSelectionTo { id } => {
+                ctx.focus_self();
+                self.extend_selection_to(id, ctx);
             }
             FileTreeAction::SelectPreviousItem => {
                 if let Some(selected_item) = &self.selected_item {
@@ -3194,12 +3480,48 @@ impl TypedActionView for FileTreeView {
                     position: *position,
                 });
                 let menu_items = self.context_menu_items(item, id);
+                let is_in_multi_selection = self.multi_selection.contains(item.path());
                 self.context_menu.update(ctx, move |menu, ctx| {
                     menu.set_items(menu_items, ctx);
                     ctx.notify();
                 });
-                self.select_id(id, ctx);
+                // A menu opened on one of several selected items acts on all of them.
+                if !is_in_multi_selection {
+                    self.select_id(id, ctx);
+                }
                 ctx.notify();
+            }
+            FileTreeAction::OpenRootContextMenu { position } => {
+                let Some(root_id) = self.first_local_root_id() else {
+                    return;
+                };
+                self.context_menu_state = Some(ContextMenuState {
+                    position: *position,
+                });
+                let menu_items = vec![
+                    MenuItemFields::new("New file")
+                        .with_on_select_action(FileTreeAction::NewFile {
+                            id: root_id.clone(),
+                        })
+                        .into_item(),
+                    MenuItemFields::new("New folder")
+                        .with_on_select_action(FileTreeAction::NewFolder {
+                            id: root_id.clone(),
+                        })
+                        .into_item(),
+                    MenuItem::Separator,
+                    MenuItemFields::new("Paste")
+                        .with_on_select_action(FileTreeAction::Paste)
+                        .with_key_shortcut_label(custom_action_to_display(CustomAction::Paste))
+                        .into_item(),
+                ];
+                self.context_menu.update(ctx, move |menu, ctx| {
+                    menu.set_items(menu_items, ctx);
+                    ctx.notify();
+                });
+                // Pasting from this menu goes into the root.
+                ctx.focus_self();
+                self.select_id(&root_id, ctx);
             }
             FileTreeAction::CopyPath { id } => {
                 self.copy_absolute_path_for_id(id, ctx);
@@ -3212,10 +3534,17 @@ impl TypedActionView for FileTreeView {
             FileTreeAction::AttachAsContext { id } => {
                 self.attach_as_context(id, ctx);
             }
-            FileTreeAction::NewFileBelowDirectory { id } => {
+            FileTreeAction::NewFile { id } => {
                 if !self.is_remote_item(id) {
-                    self.create_new_file(id, ctx);
+                    self.start_creating(id, PendingEditKind::CreateNewFile, ctx);
                 }
+                self.context_menu_state.take();
+            }
+            FileTreeAction::NewFolder { id } => {
+                if !self.is_remote_item(id) {
+                    self.start_creating(id, PendingEditKind::CreateNewFolder, ctx);
+                }
+                self.context_menu_state.take();
             }
             FileTreeAction::OpenInNewPane { id } => {
                 if !self.is_remote_item(id) {
@@ -3249,11 +3578,57 @@ impl TypedActionView for FileTreeView {
                 }
                 self.context_menu_state.take();
             }
-            FileTreeAction::Delete { id } => {
-                if !self.is_remote_item(id) {
-                    self.delete_item(id, ctx);
+            FileTreeAction::RenameSelected => {
+                // The root of a tree keeps its name, as in the context menu.
+                if let Some(id) = self.selected_item.clone()
+                    && id.index != 0
+                    && !self.is_remote_item(&id)
+                    && self.pending_edit.is_none()
+                {
+                    self.rename_item(&id, ctx);
                 }
+            }
+            FileTreeAction::CopySelection => {
+                self.copy_selection(false, ctx);
                 self.context_menu_state.take();
+            }
+            FileTreeAction::CutSelection => {
+                self.copy_selection(true, ctx);
+                self.context_menu_state.take();
+            }
+            FileTreeAction::Paste => {
+                self.paste_from_clipboard(ctx);
+                self.context_menu_state.take();
+            }
+            FileTreeAction::DuplicateSelection => {
+                self.duplicate_selection(ctx);
+                self.context_menu_state.take();
+            }
+            FileTreeAction::DeleteSelection => {
+                self.delete_selection(ctx);
+                self.context_menu_state.take();
+            }
+            FileTreeAction::ClearCutAndSelection => {
+                self.cut_paths.clear();
+                self.multi_selection.clear();
+                ctx.notify();
+            }
+            FileTreeAction::Undo => self.undo(ctx),
+            FileTreeAction::Redo => self.redo(ctx),
+            FileTreeAction::DragOverItem { target } => {
+                let drop_folder = target
+                    .as_ref()
+                    .and_then(|target| self.folder_for_drop_on(Some(target)));
+                if self.drop_folder != drop_folder {
+                    self.drop_folder = drop_folder;
+                    ctx.notify();
+                }
+            }
+            FileTreeAction::ItemDroppedOnItem { id, target } => {
+                self.drop_items_on(id, target, ctx);
+            }
+            FileTreeAction::ExternalFilesDropped { paths, target } => {
+                self.drop_external_files(paths, target.as_ref(), ctx);
             }
             FileTreeAction::DismissEditor => {
                 self.handle_pending_edit(ctx);

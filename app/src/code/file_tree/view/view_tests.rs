@@ -12,6 +12,7 @@ use repo_metadata::watcher::DirectoryWatcher;
 use repo_metadata::{RepoMetadataModel, RepositoryIdentifier};
 use settings::Setting;
 use virtual_fs::{Stub, VirtualFS};
+use warp_core::telemetry::testing::MockTelemetryContextProvider;
 use warp_core::ui::appearance::Appearance;
 use warpui::r#async::Timer;
 use warpui::platform::WindowStyle;
@@ -30,11 +31,11 @@ use crate::workspace::ToastStack;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
-fn std_path(path: &std::path::Path) -> warp_util::standardized_path::StandardizedPath {
+pub(super) fn std_path(path: &std::path::Path) -> warp_util::standardized_path::StandardizedPath {
     warp_util::standardized_path::StandardizedPath::try_from_local(path).unwrap()
 }
 
-fn initialize_app(
+pub(super) fn initialize_app(
     app: &mut App,
 ) -> (
     ModelHandle<DetectedRepositories>,
@@ -134,7 +135,7 @@ fn flattened_paths(
         .collect()
 }
 
-async fn await_repository_indexed(
+pub(super) async fn await_repository_indexed(
     app: &mut App,
     repository_metadata_model: &ModelHandle<RepoMetadataModel>,
     repo_root: &Path,
@@ -153,7 +154,7 @@ async fn await_repository_indexed(
     futures_lite::future::yield_now().await;
 }
 
-async fn await_directory_loaded(
+pub(super) async fn await_directory_loaded(
     app: &mut App,
     repository_metadata_model: &ModelHandle<RepoMetadataModel>,
     repo_root: &Path,
@@ -1402,7 +1403,7 @@ fn reveal_file_uses_the_root_that_contains_it_and_ignores_files_outside_every_ro
 }
 
 /// Records the files the tree asks to open and how.
-fn record_opened_files(
+pub(super) fn record_opened_files(
     app: &mut App,
     file_tree_view: &ViewHandle<FileTreeView>,
 ) -> Rc<RefCell<Vec<(PathBuf, TabOpenMode)>>> {
@@ -1419,7 +1420,7 @@ fn record_opened_files(
     opened
 }
 
-fn item_id(
+pub(super) fn item_id(
     app: &App,
     file_tree_view: &ViewHandle<FileTreeView>,
     root: &Path,
@@ -1444,6 +1445,8 @@ fn clicks_and_enter_open_a_file_in_the_tab_mode_they_stand_for() {
 
         App::test((), |mut app| async move {
             let (_, repository_metadata_model) = initialize_app(&mut app);
+            // Opening a file is reported to telemetry.
+            app.update(MockTelemetryContextProvider::register);
             let (_, file_tree_view) = app.add_window(WindowStyle::NotStealFocus, FileTreeView::new);
             file_tree_view.update(&mut app, |view, ctx| {
                 view.set_is_active(true, ctx);

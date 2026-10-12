@@ -263,6 +263,7 @@ use crate::code::editor_management::CodeManager;
 use crate::code::editor_management::CodeSource;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::TabOpenMode;
+use crate::code::file_tree::FileTreeView;
 #[cfg(feature = "local_fs")]
 use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::GlobalCodeReviewModel;
@@ -24973,6 +24974,16 @@ impl TypedActionView for Workspace {
             UninstallWarpctrl => self.uninstall_warpctrl(ctx),
             UndoRevertInCodeReviewPane { window_id, view_id } => {
                 self.undo_revert_in_code_review_pane(*window_id, *view_id, ctx)
+            }
+            UndoInFileTree { view_id } => {
+                let file_tree_view = ctx
+                    .views_of_type::<FileTreeView>(ctx.window_id())
+                    .into_iter()
+                    .flatten()
+                    .find(|view| view.id() == *view_id);
+                if let Some(file_tree_view) = file_tree_view {
+                    file_tree_view.update(ctx, |view, ctx| view.undo(ctx));
+                }
             }
             ToggleRecordingMode => self.toggle_recording_mode(ctx),
             ToggleInBandGenerators => self.toggle_in_band_generators(ctx),

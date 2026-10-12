@@ -671,6 +671,10 @@ pub enum WorkspaceAction {
         window_id: WindowId,
         view_id: EntityId,
     },
+    /// Undo the last file operation of the Project Explorer with this view id.
+    UndoInFileTree {
+        view_id: EntityId,
+    },
     /// Handle a file being renamed in the file tree
     #[cfg(feature = "local_fs")]
     FileRenamed {
@@ -1168,6 +1172,7 @@ impl WorkspaceAction {
             | CancelActiveRename
             | StartNewConversation { .. }
             | UndoRevertInCodeReviewPane { .. }
+            | UndoInFileTree { .. }
             | JumpToLatestToast
             | NavigatePrevPaneOrPanel
             | NavigateNextPaneOrPanel
