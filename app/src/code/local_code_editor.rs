@@ -317,8 +317,8 @@ struct ShownBlame {
 pub(super) struct InlineBlame {
     debounce_tx: async_channel::Sender<()>,
     pub(super) annotation_mouse_state: MouseStateHandle,
-    /// Set once the editor has had the focus. Until then nothing is blamed, so that tabs
-    /// restored in the background do not each start git.
+    /// Set once the editor has been on screen or had the focus. Until then nothing is blamed,
+    /// so that tabs restored in the background do not each start git.
     pub(super) activated: bool,
     /// The answer for the cursor line was not known the last time it was asked for.
     pub(super) awaiting_blame: bool,
@@ -546,6 +546,7 @@ impl LocalCodeEditorView {
                 ctx.emit(LocalCodeEditorEvent::RequestOpenComment(*uuid));
             }
             CodeEditorEvent::ViewportUpdated => {
+                me.activate_inline_blame_once_shown(ctx);
                 ctx.emit(LocalCodeEditorEvent::ViewportUpdated);
             }
             CodeEditorEvent::LayoutInvalidated => {
@@ -1398,6 +1399,18 @@ impl LocalCodeEditorView {
             git_status: None,
             last_unwatched_head_check: None,
         });
+    }
+
+    /// Starts showing blame the first time the editor is laid out, which only happens while its
+    /// tab is the one on screen.
+    fn activate_inline_blame_once_shown(&mut self, ctx: &mut ViewContext<Self>) {
+        let is_waiting = self
+            .inline_blame
+            .as_ref()
+            .is_some_and(|inline_blame| !inline_blame.activated);
+        if is_waiting {
+            self.activate_inline_blame(ctx);
+        }
     }
 
     fn activate_inline_blame(&mut self, ctx: &mut ViewContext<Self>) {
