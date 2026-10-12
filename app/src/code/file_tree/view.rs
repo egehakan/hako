@@ -50,7 +50,7 @@ use crate::server::telemetry::TelemetryEvent;
 use crate::terminal::input::InputDropTargetData;
 use crate::terminal::view::{TerminalDropTargetData, TerminalView};
 use crate::ui_components::icons::Icon;
-use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
+use crate::ui_components::item_highlight::ItemHighlightState;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::{
@@ -1855,14 +1855,9 @@ impl FileTreeView {
         );
 
         // Add the icon for the item.
-        let icon_color = item_highlight_state.text_and_icon_color(appearance);
-        let icon = match render_state.icon {
-            ImageOrIcon::Icon(icon) => icon.to_warpui_icon(icon_color.into()).finish(),
-            ImageOrIcon::Image(image) => image,
-        };
         header_row.add_child(
             Container::new(
-                ConstrainedBox::new(icon)
+                ConstrainedBox::new(render_state.icon)
                     .with_width(FOLDER_INDENT)
                     .with_height(FOLDER_INDENT)
                     .finish(),

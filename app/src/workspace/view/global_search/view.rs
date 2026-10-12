@@ -41,7 +41,7 @@ use warpui::{
 };
 
 use crate::TelemetryEvent;
-use crate::code::icon_from_file_path;
+use crate::code::{default_file_icon, icon_from_file_path, icon_from_folder_path};
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::editor::{
     EditorOptions, EditorView, Event as EditorEvent, InteractionState,
@@ -50,7 +50,7 @@ use crate::editor::{
 use crate::search::ItemHighlightState as SearchHighlightState;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon as UiIcon;
-use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
+use crate::ui_components::item_highlight::ItemHighlightState;
 use crate::ui_components::render_file_search_row::{FileSearchRowOptions, render_file_search_row};
 use crate::util::path::{display_name_with_host, display_path_with_host};
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
@@ -1224,17 +1224,8 @@ impl GlobalSearchView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
                 .finish();
 
-            let icon_from_file_path = icon_from_file_path(&file_path.display_path(), appearance)
-                .map(ImageOrIcon::Image)
-                .unwrap_or(ImageOrIcon::Icon(Icon::File));
-
-            let icon_color = list_highlight_state.text_and_icon_color(appearance);
-            let file_icon = match icon_from_file_path {
-                ImageOrIcon::Icon(icon) => {
-                    icon.to_warpui_icon(ThemeFill::from(icon_color)).finish()
-                }
-                ImageOrIcon::Image(image) => image,
-            };
+            let file_icon = icon_from_file_path(&file_path.display_path(), appearance)
+                .unwrap_or_else(default_file_icon);
 
             let file_icon_element = Container::new(
                 ConstrainedBox::new(file_icon)
@@ -1937,6 +1928,7 @@ impl GlobalSearchView {
             display_name_with_host(directory_path, app)
         };
         let directory_path_for_click = directory_path.clone();
+        let folder_path = directory_path.display_path();
         let tooltip_text = display_path_with_host(directory_path, false, app);
 
         Hoverable::new(mouse_state, move |mouse_state| {
@@ -1960,10 +1952,7 @@ impl GlobalSearchView {
             let chevron_container = Container::new(chevron_icon).with_margin_right(8.).finish();
 
             // Folder icon
-            let icon_color = list_highlight_state.text_and_icon_color(appearance);
-            let folder_icon = Icon::Folder
-                .to_warpui_icon(ThemeFill::from(icon_color))
-                .finish();
+            let folder_icon = icon_from_folder_path(&folder_path, !is_collapsed);
             let folder_icon_element = Container::new(
                 ConstrainedBox::new(folder_icon)
                     .with_width(icon_size)
