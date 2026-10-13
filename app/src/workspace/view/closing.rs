@@ -1,12 +1,12 @@
 use itertools::Itertools;
-use warpui::{EntityId, SingletonEntity, ViewContext, ViewHandle};
+use warpui::{AppContext, EntityId, SingletonEntity, ViewContext, ViewHandle};
 
 use super::{OpenDialogSource, Workspace, group_member_indices};
 use crate::pane_group::{PaneGroup, PaneId};
 use crate::quit_warning::UnsavedStateSummary;
 use crate::workspace::close_confirmation::{
-    CloseConfirmationEvent, CloseDecision, CloseStakes, CloseSubject, close_decision,
-    confirms_every_close,
+    CloseConfirmationEvent, CloseDecision, CloseStakes, CloseSubject, PaneLabel, close_decision,
+    confirms_every_close, pane_label,
 };
 use crate::workspace::tab_folders::TabFolders;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
@@ -45,12 +45,40 @@ pub enum WindowCloseConfirmation {
     NotNeeded,
 }
 
+/// The name the pane `pane_id` of `pane_group` goes by in the confirmation.
+fn pane_close_label(pane_group: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> String {
+    let title = pane_group
+        .pane_by_id(pane_id)
+        .map(|pane| pane.pane_configuration().as_ref(ctx).title().to_string())
+        .unwrap_or_default();
+    let pane = if let Some(code_view) = pane_group.code_view_from_pane_id(pane_id, ctx) {
+        PaneLabel::File {
+            file_name: code_view.as_ref(ctx).active_tab_name(ctx),
+        }
+    } else if let Some(terminal_view) = pane_group.terminal_view_from_pane_id(pane_id, ctx) {
+        PaneLabel::Terminal {
+            directory: terminal_view.as_ref(ctx).display_working_directory(ctx),
+        }
+    } else {
+        PaneLabel::Other
+    };
+    pane_label(&title, pane)
+}
+
 impl Workspace {
+    /// The name the tab at `tab_index` goes by in the confirmation: the title it shows, or the
+    /// name of its focused pane while that pane has not set a title.
     fn tab_title(&self, tab_index: usize, ctx: &ViewContext<Self>) -> String {
-        self.tabs
-            .get(tab_index)
-            .map(|tab| tab.pane_group.as_ref(ctx).display_title(ctx))
-            .unwrap_or_default()
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return String::new();
+        };
+        let pane_group = tab.pane_group.as_ref(ctx);
+        let title = pane_group.display_title(ctx);
+        if title.trim().is_empty() {
+            pane_close_label(pane_group, pane_group.focused_pane_id(ctx), ctx)
+        } else {
+            title
+        }
     }
 
     /// What closing the tabs at `tab_indices` would lose. Saves what auto-save can first.
@@ -164,11 +192,7 @@ impl Workspace {
                 closes_window: self.tabs.len() == 1,
             },
             Some(_) | None => CloseSubject::Pane {
-                title: pane_group
-                    .as_ref(ctx)
-                    .pane_by_id(pane_id)
-                    .map(|pane| pane.pane_configuration().as_ref(ctx).title().to_string())
-                    .unwrap_or_default(),
+                title: pane_close_label(pane_group.as_ref(ctx), pane_id, ctx),
             },
         };
         self.ask_before_closing(

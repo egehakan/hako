@@ -87,6 +87,37 @@ pub enum CloseSubject {
     },
 }
 
+/// What a pane holds, as far as naming it goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneLabel {
+    /// An editor or file viewer, with the name of the file in its active tab.
+    File { file_name: Option<String> },
+    Terminal {
+        /// Where the session is, for a terminal that has no title yet.
+        directory: Option<String>,
+    },
+    Other,
+}
+
+/// The name a pane goes by in the confirmation, given its title, which is empty for a pane that
+/// has not got round to setting one: a terminal still starting its shell, an editor still
+/// loading its file. The name is never empty.
+pub fn pane_label(title: &str, pane: PaneLabel) -> String {
+    let non_empty = |name: &str| Some(name.trim().to_string()).filter(|name| !name.is_empty());
+    let title = non_empty(title);
+    match pane {
+        PaneLabel::File { file_name } => file_name
+            .as_deref()
+            .and_then(non_empty)
+            .or(title)
+            .unwrap_or_else(|| "Untitled".to_string()),
+        PaneLabel::Terminal { directory } => title
+            .or_else(|| directory.as_deref().and_then(non_empty))
+            .unwrap_or_else(|| "Terminal".to_string()),
+        PaneLabel::Other => title.unwrap_or_else(|| "Untitled".to_string()),
+    }
+}
+
 /// What would be lost by closing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CloseStakes {
@@ -131,18 +162,26 @@ fn tabs(count: usize) -> String {
     }
 }
 
+/// Names `kind` by `name` in quotes, or without a name when there is none to quote.
+fn named(kind: &str, name: &str) -> String {
+    match name.trim() {
+        "" => format!("This {kind}"),
+        name => format!("The {kind} \"{name}\""),
+    }
+}
+
 fn confirmation_text(subject: &CloseSubject, stakes: CloseStakes) -> CloseConfirmationText {
     let (title, mut body, confirm_label) = match subject {
         CloseSubject::Pane { title } => (
             "Close this pane?".to_string(),
-            format!("The pane \"{title}\" will be closed."),
+            format!("{} will be closed.", named("pane", title)),
             "Close pane",
         ),
         CloseSubject::Tab {
             title,
             closes_window,
         } => {
-            let mut body = format!("The tab \"{title}\" will be closed.");
+            let mut body = format!("{} will be closed.", named("tab", title));
             if *closes_window {
                 body.push_str(" It is the last tab, so the window closes with it.");
             }
@@ -166,8 +205,12 @@ fn confirmation_text(subject: &CloseSubject, stakes: CloseStakes) -> CloseConfir
                     tabs(*tab_count)
                 )
             };
+            let question = match name.trim() {
+                "" => "Remove this group?".to_string(),
+                name => format!("Remove the group \"{name}\"?"),
+            };
             (
-                format!("Remove the group \"{name}\"?"),
+                question,
                 format!("{body} Nothing on disk is deleted."),
                 "Remove group",
             )
@@ -177,7 +220,10 @@ fn confirmation_text(subject: &CloseSubject, stakes: CloseStakes) -> CloseConfir
             tab_count,
             removes_group: false,
         } => (
-            format!("Close all tabs in \"{name}\"?"),
+            match name.trim() {
+                "" => "Close all tabs in this group?".to_string(),
+                name => format!("Close all tabs in \"{name}\"?"),
+            },
             format!(
                 "{} will be closed. The group stays in the tab list.",
                 tabs(*tab_count)

@@ -206,3 +206,82 @@ fn the_dialog_opens_with_cancel_focused() {
     let dialog = CloseConfirmationDialog::new();
     assert_eq!(dialog.focused_button, DialogButton::Cancel);
 }
+
+#[test]
+fn a_subject_without_a_name_is_never_put_in_empty_quotes() {
+    let pane = asked(
+        &CloseSubject::Pane {
+            title: String::new(),
+        },
+        CloseStakes {
+            running_commands: 1,
+            ..NOTHING_AT_STAKE
+        },
+    );
+    assert_eq!(
+        pane.body,
+        "This pane will be closed. A command is still running."
+    );
+
+    let tab = asked(
+        &CloseSubject::Tab {
+            title: "  ".to_string(),
+            closes_window: false,
+        },
+        NOTHING_AT_STAKE,
+    );
+    assert_eq!(tab.body, "This tab will be closed.");
+
+    for removes_group in [true, false] {
+        let group = asked(
+            &CloseSubject::Group {
+                name: String::new(),
+                tab_count: 2,
+                removes_group,
+            },
+            NOTHING_AT_STAKE,
+        );
+        assert!(group.title.ends_with("this group?"), "{}", group.title);
+    }
+
+    for subject in every_subject() {
+        let text = asked(&subject, NOTHING_AT_STAKE);
+        assert!(!text.title.contains("\"\""), "{}", text.title);
+        assert!(!text.body.contains("\"\""), "{}", text.body);
+    }
+}
+
+#[test]
+fn an_editor_pane_is_named_after_the_file_in_its_active_tab() {
+    let file = |file_name: Option<&str>| PaneLabel::File {
+        file_name: file_name.map(str::to_string),
+    };
+    assert_eq!(
+        pane_label("~/project/src/main.rs", file(Some("main.rs"))),
+        "main.rs"
+    );
+    // The pane has no title while the file of a restored tab is still loading.
+    assert_eq!(pane_label("", file(Some("dump.sql"))), "dump.sql");
+    assert_eq!(pane_label("~/project/notes", file(None)), "~/project/notes");
+    assert_eq!(pane_label("", file(None)), "Untitled");
+    assert_eq!(pane_label("", file(Some(""))), "Untitled");
+}
+
+#[test]
+fn a_terminal_pane_is_named_after_its_title_and_then_its_directory() {
+    let terminal = |directory: Option<&str>| PaneLabel::Terminal {
+        directory: directory.map(str::to_string),
+    };
+    assert_eq!(pane_label("vim notes.txt", terminal(Some("~/project"))), "vim notes.txt");
+    // A terminal whose shell has not started yet has no title.
+    assert_eq!(pane_label("", terminal(Some("~/project"))), "~/project");
+    assert_eq!(pane_label("  ", terminal(Some("~/project"))), "~/project");
+    assert_eq!(pane_label("", terminal(None)), "Terminal");
+    assert_eq!(pane_label("", terminal(Some(" "))), "Terminal");
+}
+
+#[test]
+fn any_other_pane_is_named_after_its_title() {
+    assert_eq!(pane_label("Settings", PaneLabel::Other), "Settings");
+    assert_eq!(pane_label("", PaneLabel::Other), "Untitled");
+}
