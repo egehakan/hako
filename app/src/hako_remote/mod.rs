@@ -1,8 +1,8 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
-//! watch and use a terminal, read, change, download and upload files, and use source control in
-//! the repositories under the folders. It also tells the owner's devices when a terminal wants
-//! them, and keeps the computer awake while it is on.
+//! add a folder, watch and use a terminal, read, change, download and upload files, make a
+//! directory, and use source control in the repositories under the folders. It also tells the
+//! owner's devices when a terminal wants them, and keeps the computer awake while it is on.
 
 mod app_info;
 mod handlers;
@@ -20,9 +20,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_changed};
 use ::hako_remote::protocol::{
-    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FsDownloadParams, FsPathParams,
-    FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams, GitChanged,
-    GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
+    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FolderCreateParams, FsDownloadParams,
+    FsPathParams, FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams,
+    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
     NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
@@ -35,9 +35,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use settings::Setting as _;
 use warpui::r#async::{FutureExt as _, Timer};
-use warpui::{Entity, EntityId, ModelContext, SingletonEntity, WindowId};
+use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity, WindowId};
 
-use self::handlers::{NewTab, parse, to_json};
+use self::handlers::{NewFolder, NewTab, parse, to_json};
 use self::keep_awake::KeepAwake;
 pub(crate) use self::notifications::FinishedCommand;
 use self::notifications::Notifications;
@@ -52,9 +52,10 @@ const KEY_FILE_NAME: &str = "remote.key";
 const WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const KEY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often, and how many times, a window opened for a new tab is looked at for that tab.
-const NEW_WINDOW_TAB_CHECK_INTERVAL: Duration = Duration::from_millis(100);
-const NEW_WINDOW_TAB_CHECKS: usize = 50;
+/// How often, and how many times, a window opened for a request is looked at for what the
+/// request asked for.
+const NEW_WINDOW_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+const NEW_WINDOW_CHECKS: usize = 50;
 
 /// How long a source control request waits to learn the `PATH` of the owner's shell before git
 /// is run with the app's own.
@@ -351,11 +352,13 @@ impl HakoRemote {
                 match parse(params).and_then(|params| handlers::create_tab(params, ctx)) {
                     Ok(NewTab::Open(tab)) => to_json(&tab),
                     Ok(NewTab::InNewWindow(window_id)) => {
-                        return self.answer_with_first_tab(
+                        return self.answer_from_new_window(
                             window_id,
                             responder,
-                            NEW_WINDOW_TAB_CHECKS,
+                            NEW_WINDOW_CHECKS,
+                            "The window opened without a terminal",
                             ctx,
+                            |window_id, ctx| handlers::first_tab(window_id, ctx),
                         );
                     }
                     Err(error) => Err(error),
@@ -367,6 +370,7 @@ impl HakoRemote {
             Method::TabClose => {
                 done(parse(params).and_then(|params| handlers::close_tab(params, ctx)))
             }
+            Method::FolderCreate => return Self::create_folder(params, responder, ctx),
             Method::TermSubscribe => {
                 return match parse(params) {
                     Ok(params) => {
@@ -410,6 +414,14 @@ impl HakoRemote {
                     responder,
                     ctx,
                     |params: FsWriteParams| files::write(&params),
+                );
+            }
+            Method::FsMkdir => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsPathParams| files::mkdir(&params.path).map(|()| json!({})),
                 );
             }
             Method::FsTransferInfo => to_json(&transfers::info()),
@@ -565,6 +577,30 @@ impl HakoRemote {
                 responder.respond(outcome);
             },
             |_, (), _| {},
+        );
+    }
+
+    /// Answers `folder.create`. The directory is examined off the app's main thread, which must
+    /// not wait for the file system, and the folder is added on it.
+    fn create_folder(params: Value, responder: Responder, ctx: &mut ModelContext<Self>) {
+        ctx.spawn(
+            async move {
+                let params: FolderCreateParams = parse(params)?;
+                files::readable_directory(&params.directory)?;
+                Ok::<_, RpcError>(params)
+            },
+            |me, params, ctx| match params.and_then(|params| handlers::create_folder(params, ctx)) {
+                Ok(NewFolder::Added(folder)) => responder.respond(to_json(&folder)),
+                Ok(NewFolder::InNewWindow(window_id, directory)) => me.answer_from_new_window(
+                    window_id,
+                    responder,
+                    NEW_WINDOW_CHECKS,
+                    "The window opened without its tab list",
+                    ctx,
+                    move |window_id, ctx| handlers::folder_in_window(window_id, &directory, ctx),
+                ),
+                Err(error) => responder.respond(Err(error)),
+            },
         );
     }
 
@@ -739,28 +775,33 @@ impl HakoRemote {
         }
     }
 
-    /// Answers `tab.create` with the first tab of a window that was opened for it, looking
-    /// again in a moment while the window does not hold one.
-    fn answer_with_first_tab(
+    /// Answers a request with what `look` finds in a window that was opened for it, looking
+    /// again in a moment while it finds nothing, and with `missing` when it never does.
+    fn answer_from_new_window<R, L>(
         &mut self,
         window_id: WindowId,
         responder: Responder,
         checks_left: usize,
+        missing: &'static str,
         ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(tab) = handlers::first_tab(window_id, ctx) {
-            return responder.respond(to_json(&tab));
+        look: L,
+    ) where
+        R: Serialize,
+        L: Fn(WindowId, &mut AppContext) -> Option<R> + 'static,
+    {
+        if let Some(found) = look(window_id, ctx) {
+            return responder.respond(to_json(&found));
         }
         let Some(checks_left) = checks_left.checked_sub(1) else {
-            return responder.respond(Err(RpcError::failed(
-                "The window opened without a terminal",
-            )));
+            return responder.respond(Err(RpcError::failed(missing)));
         };
         ctx.spawn(
             async move {
-                Timer::after(NEW_WINDOW_TAB_CHECK_INTERVAL).await;
+                Timer::after(NEW_WINDOW_CHECK_INTERVAL).await;
             },
-            move |me, _, ctx| me.answer_with_first_tab(window_id, responder, checks_left, ctx),
+            move |me, _, ctx| {
+                me.answer_from_new_window(window_id, responder, checks_left, missing, ctx, look);
+            },
         );
     }
 

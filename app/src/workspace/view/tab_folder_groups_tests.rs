@@ -289,6 +289,28 @@ fn a_folder_keeps_its_place_when_its_last_tab_is_closed() {
 }
 
 #[test]
+fn a_folder_added_again_is_the_one_already_there_and_opens_no_tab() {
+    with_tab_sidebar(|app| {
+        let fixture = Fixture::new();
+        let workspace = mock_workspace(app);
+        workspace.update(app, |workspace, ctx| {
+            let tabs_before = workspace.tab_count();
+
+            let plain_id = workspace.add_tab_folder_for_directory(fixture.plain.clone(), ctx);
+            let again = workspace.add_tab_folder_for_directory(fixture.plain.clone(), ctx);
+
+            assert_eq!(again, plain_id);
+            let added: Vec<_> = folders_in_order(workspace)
+                .into_iter()
+                .filter(|directory| *directory == fixture.plain)
+                .collect();
+            assert_eq!(added, [fixture.plain.clone()]);
+            assert_eq!(workspace.tab_count(), tabs_before);
+        });
+    });
+}
+
+#[test]
 fn the_add_button_opens_a_tab_in_the_folder_it_belongs_to() {
     with_tab_sidebar(|app| {
         let fixture = Fixture::new();

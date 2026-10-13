@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use ::hako_remote::files;
 use ::hako_remote::protocol::{
-    FsRoots, RpcError, TabCreateParams, TabCreateResult, TabParams, TerminalColors, Theme,
+    FolderCreateParams, FolderCreateResult, FsRoots, RpcError, TabCreateParams, TabCreateResult,
+    TabParams, TerminalColors, Theme,
 };
 use pathfinder_color::ColorU;
 use serde::Serialize;
@@ -88,7 +89,24 @@ fn tab_destination(params: TabCreateParams, ctx: &AppContext) -> Result<TabDesti
         }
         None => None,
     };
-    let window_id = match params.window_id {
+    let Some(workspace) = requested_window(params.window_id, windows, ctx)? else {
+        return Ok(TabDestination::NewWindow(directory));
+    };
+    let place = match directory {
+        Some(directory) => RemoteTabPlace::Directory(directory),
+        None => RemoteTabPlace::Default,
+    };
+    Ok(TabDestination::Window(workspace, place))
+}
+
+/// The window a request names, or the active one when it names none, among `windows`. `None`
+/// when there is no window to take.
+fn requested_window(
+    requested: Option<String>,
+    windows: Vec<(WindowId, ViewHandle<Workspace>)>,
+    ctx: &AppContext,
+) -> Result<Option<ViewHandle<Workspace>>, RpcError> {
+    let window_id = match requested {
         Some(requested) => windows
             .iter()
             .map(|(window_id, _)| *window_id)
@@ -96,18 +114,14 @@ fn tab_destination(params: TabCreateParams, ctx: &AppContext) -> Result<TabDesti
             .ok_or_else(|| RpcError::not_found("No such window"))?,
         None => match snapshot::active_window(&windows, ctx) {
             Some(window_id) => window_id,
-            None => return Ok(TabDestination::NewWindow(directory)),
+            None => return Ok(None),
         },
     };
-    let workspace = windows
+    windows
         .into_iter()
         .find_map(|(id, workspace)| (id == window_id).then_some(workspace))
-        .ok_or_else(|| RpcError::not_found("No such window"))?;
-    let place = match directory {
-        Some(directory) => RemoteTabPlace::Directory(directory),
-        None => RemoteTabPlace::Default,
-    };
-    Ok(TabDestination::Window(workspace, place))
+        .ok_or_else(|| RpcError::not_found("No such window"))
+        .map(Some)
 }
 
 /// A tab that was asked for.
@@ -163,6 +177,54 @@ fn tab_with_terminal(
         tab_id: snapshot::tab_id(pane_group.id()),
         session_id,
     })
+}
+
+/// A folder that was asked for.
+pub(super) enum NewFolder {
+    Added(FolderCreateResult),
+    /// The folder goes into a window that has just been opened, which can take it a moment
+    /// after it appears.
+    InNewWindow(WindowId, PathBuf),
+}
+
+/// Adds the folder of an existing directory to a window, as adding it on the Mac does. A window
+/// that already has the folder keeps the one it has.
+pub(super) fn create_folder(
+    params: FolderCreateParams,
+    ctx: &mut AppContext,
+) -> Result<NewFolder, RpcError> {
+    let directory = PathBuf::from(params.directory);
+    let windows = snapshot::workspace_windows(ctx);
+    Ok(match requested_window(params.window_id, windows, ctx)? {
+        Some(workspace) => NewFolder::Added(add_folder(&workspace, directory, ctx)),
+        None => {
+            let (window_id, _) = open_new_window_get_handles(None, ctx);
+            NewFolder::InNewWindow(window_id, directory)
+        }
+    })
+}
+
+/// Adds the folder to a window, once the window is there to take it.
+pub(super) fn folder_in_window(
+    window_id: WindowId,
+    directory: &Path,
+    ctx: &mut AppContext,
+) -> Option<FolderCreateResult> {
+    let workspace = WorkspaceRegistry::as_ref(ctx).get(window_id, ctx)?;
+    Some(add_folder(&workspace, directory.to_path_buf(), ctx))
+}
+
+fn add_folder(
+    workspace: &ViewHandle<Workspace>,
+    directory: PathBuf,
+    ctx: &mut AppContext,
+) -> FolderCreateResult {
+    let group_id = workspace.update(ctx, |workspace, ctx| {
+        workspace.add_tab_folder_for_directory(directory, ctx)
+    });
+    FolderCreateResult {
+        folder_id: snapshot::folder_id(group_id),
+    }
 }
 
 pub(super) fn activate_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError> {
