@@ -17,6 +17,8 @@ mod nested_repo_actions;
 #[cfg(feature = "local_fs")]
 mod nested_repo_file_diff;
 #[cfg(feature = "local_fs")]
+mod nested_repo_history;
+#[cfg(feature = "local_fs")]
 pub(crate) mod nested_repos;
 #[cfg(feature = "local_fs")]
 pub(crate) mod nested_repos_view;
