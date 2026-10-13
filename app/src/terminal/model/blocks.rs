@@ -2328,7 +2328,9 @@ impl BlockList {
             None,
             None,
             move |b| {
-                if active_block_index == b.index() || update_old_blocks {
+                // A block that still takes output, such as one for background output, is written
+                // to at the new size like the active block, whatever happens to finished ones.
+                if active_block_index == b.index() || update_old_blocks || !b.finished() {
                     b.resize(size);
                 }
             },
