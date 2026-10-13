@@ -1,8 +1,8 @@
 //! The file methods of the remote protocol: the places browsing starts from, the listing of a
-//! directory, the contents of a file, and replacing the contents of one. Everything but the
-//! roots waits for the file system.
+//! directory, the contents of a file, replacing the contents of one, and making a directory.
+//! Everything but the roots waits for the file system.
 
-use std::fs::{self, File, Metadata, OpenOptions, Permissions};
+use std::fs::{self, File, Metadata, OpenOptions, Permissions, ReadDir};
 use std::io::{self, ErrorKind, Read as _, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +16,7 @@ use crate::protocol::{
     ErrorCode, FsEntry, FsEntryKind, FsLinkTarget, FsList, FsRead, FsRoot, FsRootSource, FsRoots,
     FsWrite, FsWriteParams, MAX_FRAME_BYTES, RpcError, Workspace,
 };
+use crate::upload_names::MAX_NAME_BYTES;
 
 /// The longest file that is sent as text, and the longest text that is written.
 pub const TEXT_LIMIT: u64 = 2 * 1024 * 1024;
@@ -84,17 +85,26 @@ pub fn list(path: &str) -> Result<FsList, RpcError> {
     list_at_most(path, LIST_LIMIT)
 }
 
-fn list_at_most(path: &str, limit: usize) -> Result<FsList, RpcError> {
+/// Checks that `path` is a directory that can be read, which links are followed to.
+pub fn readable_directory(path: &str) -> Result<(), RpcError> {
+    open_directory(path).map(drop)
+}
+
+fn open_directory(path: &str) -> Result<ReadDir, RpcError> {
     let directory = checked(path)?;
     let metadata = fs::metadata(directory).map_err(|error| failure(&error, path))?;
     if !metadata.is_dir() {
-        return Err(RpcError::new(
-            ErrorCode::NotADirectory,
-            format!("Not a directory: {path}"),
-        ));
+        return Err(not_a_directory(path));
     }
-    let mut entries: Vec<FsEntry> = fs::read_dir(directory)
-        .map_err(|error| failure(&error, path))?
+    fs::read_dir(directory).map_err(|error| failure(&error, path))
+}
+
+fn not_a_directory(path: &str) -> RpcError {
+    RpcError::new(ErrorCode::NotADirectory, format!("Not a directory: {path}"))
+}
+
+fn list_at_most(path: &str, limit: usize) -> Result<FsList, RpcError> {
+    let mut entries: Vec<FsEntry> = open_directory(path)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             // A name that is not UTF-8 cannot be put into JSON.
@@ -356,6 +366,35 @@ fn write_new(path: &Path, bytes: &[u8], permissions: Permissions) -> io::Result<
     file.set_permissions(permissions)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+/// Makes the one directory at `path`, in a directory that is already there.
+pub fn mkdir(path: &str) -> Result<(), RpcError> {
+    let directory = checked(path)?;
+    let Some(parent) = directory.parent() else {
+        return Err(already_exists(path));
+    };
+    if last_segment(path).len() > MAX_NAME_BYTES {
+        return Err(RpcError::bad_request(format!(
+            "A name may be at most {MAX_NAME_BYTES} bytes long"
+        )));
+    }
+    let within = parent.to_string_lossy();
+    let metadata = fs::metadata(parent).map_err(|error| failure(&error, &within))?;
+    if !metadata.is_dir() {
+        return Err(not_a_directory(&within));
+    }
+    fs::create_dir(directory).map_err(|error| {
+        if error.kind() == ErrorKind::AlreadyExists {
+            already_exists(path)
+        } else {
+            failure(&error, path)
+        }
+    })
+}
+
+fn already_exists(path: &str) -> RpcError {
+    RpcError::new(ErrorCode::Conflict, format!("Already exists: {path}"))
 }
 
 /// The path as the file system takes it, if it has the one form the protocol accepts: absolute,

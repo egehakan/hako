@@ -280,6 +280,43 @@ fn refuses_to_list_what_is_not_a_directory_it_may_read() {
 }
 
 #[test]
+fn takes_only_a_directory_it_may_read_for_a_readable_directory() {
+    let (_directory, root) = tree();
+    fs::write(format!("{root}/file"), "").unwrap();
+    fs::create_dir(format!("{root}/open")).unwrap();
+    symlink("open", format!("{root}/to-open")).unwrap();
+    symlink("nowhere", format!("{root}/to-nowhere")).unwrap();
+    fs::create_dir(format!("{root}/closed")).unwrap();
+    set_mode(&format!("{root}/closed"), 0o000);
+
+    assert_eq!(readable_directory(&format!("{root}/open")), Ok(()));
+    assert_eq!(readable_directory(&format!("{root}/to-open")), Ok(()));
+    assert_eq!(
+        code(readable_directory(&format!("{root}/open/"))),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(code(readable_directory("open")), ErrorCode::BadRequest);
+    assert_eq!(
+        code(readable_directory(&format!("{root}/missing"))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        code(readable_directory(&format!("{root}/to-nowhere"))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        code(readable_directory(&format!("{root}/file"))),
+        ErrorCode::NotADirectory
+    );
+    assert_eq!(
+        code(readable_directory(&format!("{root}/closed"))),
+        ErrorCode::PermissionDenied
+    );
+
+    set_mode(&format!("{root}/closed"), 0o755);
+}
+
+#[test]
 fn reads_text_exactly_as_it_is() {
     let (_directory, root) = tree();
     let path = format!("{root}/notes.txt");
@@ -594,4 +631,114 @@ fn refuses_text_over_the_limit() {
             .size,
         TEXT_LIMIT
     );
+}
+
+#[test]
+fn makes_one_directory() {
+    let (_directory, root) = tree();
+    fs::create_dir(format!("{root}/real")).unwrap();
+    symlink("real", format!("{root}/link")).unwrap();
+    let longest = "n".repeat(255);
+
+    assert_eq!(mkdir(&format!("{root}/new")), Ok(()));
+    assert_eq!(mkdir(&format!("{root}/new/below")), Ok(()));
+    assert_eq!(mkdir(&format!("{root}/link/through a link")), Ok(()));
+    assert_eq!(mkdir(&format!("{root}/.hidden")), Ok(()));
+    assert_eq!(mkdir(&format!("{root}/{longest}")), Ok(()));
+
+    assert!(Path::new(&format!("{root}/new/below")).is_dir());
+    assert!(Path::new(&format!("{root}/real/through a link")).is_dir());
+    assert!(Path::new(&format!("{root}/.hidden")).is_dir());
+    assert!(Path::new(&format!("{root}/{longest}")).is_dir());
+}
+
+#[test]
+fn never_makes_the_directories_on_the_way() {
+    let (_directory, root) = tree();
+    fs::write(format!("{root}/file"), "").unwrap();
+    symlink("nowhere", format!("{root}/to-nowhere")).unwrap();
+
+    let missing = mkdir(&format!("{root}/a/b")).unwrap_err();
+    assert_eq!(missing.code, ErrorCode::NotFound);
+    assert_eq!(
+        missing.message,
+        format!("No such file or directory: {root}/a")
+    );
+    assert_eq!(
+        code(mkdir(&format!("{root}/to-nowhere/b"))),
+        ErrorCode::NotFound
+    );
+    let in_a_file = mkdir(&format!("{root}/file/b")).unwrap_err();
+    assert_eq!(in_a_file.code, ErrorCode::NotADirectory);
+    assert_eq!(in_a_file.message, format!("Not a directory: {root}/file"));
+    assert_eq!(
+        code(mkdir(&format!("{root}/file/b/c"))),
+        ErrorCode::NotFound
+    );
+
+    assert_eq!(names(&list(&root).unwrap()), ["file", "to-nowhere"]);
+}
+
+#[test]
+fn refuses_to_make_a_directory_where_something_is() {
+    let (_directory, root) = tree();
+    fs::create_dir(format!("{root}/directory")).unwrap();
+    fs::write(format!("{root}/directory/kept"), "").unwrap();
+    fs::write(format!("{root}/file"), "kept").unwrap();
+    symlink("nowhere", format!("{root}/to-nowhere")).unwrap();
+
+    let taken = mkdir(&format!("{root}/directory")).unwrap_err();
+    assert_eq!(taken.code, ErrorCode::Conflict);
+    assert_eq!(taken.message, format!("Already exists: {root}/directory"));
+    assert_eq!(code(mkdir(&format!("{root}/file"))), ErrorCode::Conflict);
+    assert_eq!(
+        code(mkdir(&format!("{root}/to-nowhere"))),
+        ErrorCode::Conflict
+    );
+    assert_eq!(code(mkdir("/")), ErrorCode::Conflict);
+
+    assert_eq!(
+        names(&list(&format!("{root}/directory")).unwrap()),
+        ["kept"]
+    );
+    assert_eq!(fs::read_to_string(format!("{root}/file")).unwrap(), "kept");
+}
+
+#[test]
+fn refuses_to_make_a_directory_where_the_user_may_not() {
+    let (_directory, root) = tree();
+    fs::create_dir(format!("{root}/closed")).unwrap();
+    set_mode(&format!("{root}/closed"), 0o555);
+
+    let refused = mkdir(&format!("{root}/closed/new")).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        refused.message,
+        format!("Permission denied: {root}/closed/new")
+    );
+
+    assert!(list(&format!("{root}/closed")).unwrap().entries.is_empty());
+    set_mode(&format!("{root}/closed"), 0o755);
+}
+
+#[test]
+fn refuses_a_directory_name_that_cannot_be_given() {
+    let (_directory, root) = tree();
+    let too_long = "n".repeat(256);
+
+    for path in [
+        format!("{root}/{too_long}"),
+        format!("{root}/."),
+        format!("{root}/.."),
+        format!("{root}/new/"),
+        format!("{root}//new"),
+        format!("{root}/new\0"),
+        "new".to_owned(),
+        "~/new".to_owned(),
+        String::new(),
+    ] {
+        assert_eq!(code(mkdir(&path)), ErrorCode::BadRequest, "{path:?}");
+    }
+
+    assert!(list(&root).unwrap().entries.is_empty());
 }
