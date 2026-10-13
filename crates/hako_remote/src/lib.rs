@@ -1,11 +1,12 @@
 //! The desktop side of Hako remote access: the wire protocol shared with the relay, the
 //! outbound connection that carries it, the bookkeeping of a terminal's output on its way out,
-//! and the file methods. Nothing here knows about the app's windows or views.
+//! and the file and source control methods. Nothing here knows about the app's windows or views.
 
 pub mod backoff;
 pub mod boundary;
 pub mod connection;
 pub mod files;
+pub mod git;
 mod git_run;
 mod git_status;
 #[cfg(test)]

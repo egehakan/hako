@@ -361,18 +361,23 @@ fn write_new(path: &Path, bytes: &[u8], permissions: Permissions) -> io::Result<
 /// The path as the file system takes it, if it has the one form the protocol accepts: absolute,
 /// with single slashes, and without `.`, `..` or a slash at the end.
 fn checked(path: &str) -> Result<&Path, RpcError> {
-    let is_normal = path == "/"
-        || path.strip_prefix('/').is_some_and(|rest| {
-            rest.split('/')
-                .all(|segment| !matches!(segment, "" | "." | ".."))
-        });
-    if is_normal && !path.contains('\0') {
+    if is_normal(path) {
         Ok(Path::new(path))
     } else {
         Err(RpcError::bad_request(
             "path must be absolute, with single slashes and without . or .. or a slash at the end",
         ))
     }
+}
+
+/// Whether `path` has the one form the protocol accepts for an absolute path.
+pub(crate) fn is_normal(path: &str) -> bool {
+    let is_absolute = path == "/"
+        || path.strip_prefix('/').is_some_and(|rest| {
+            rest.split('/')
+                .all(|segment| !matches!(segment, "" | "." | ".."))
+        });
+    is_absolute && !path.contains('\0')
 }
 
 /// The metadata of the regular file at `file`, which links are followed to.
