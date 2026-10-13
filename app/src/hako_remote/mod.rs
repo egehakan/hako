@@ -1,10 +1,11 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
 //! watch and use a terminal, read and change files, and use source control in the repositories
-//! under the folders.
+//! under the folders. It also keeps the computer awake while it is on.
 
 mod app_info;
 mod handlers;
+mod keep_awake;
 mod snapshot;
 mod terminal;
 mod terminal_snapshot;
@@ -31,6 +32,7 @@ use warpui::r#async::{FutureExt as _, Timer};
 use warpui::{Entity, ModelContext, SingletonEntity, WindowId};
 
 use self::handlers::{NewTab, parse, to_json};
+use self::keep_awake::KeepAwake;
 use self::terminal::{ECHO_DELAY, PUMP_INTERVAL, Terminals};
 use crate::settings::RemoteAccessSettings;
 
@@ -94,6 +96,7 @@ pub struct HakoRemote {
     pump: u64,
     source_control: Arc<SourceControl>,
     git_changes: ChangeLimiter,
+    keep_awake: KeepAwake,
 }
 
 /// What a source control request is answered with.
@@ -121,6 +124,7 @@ impl HakoRemote {
             pump: 0,
             source_control: Arc::new(SourceControl::new(handlers::working_trees)),
             git_changes: ChangeLimiter::default(),
+            keep_awake: KeepAwake::default(),
         };
         me.apply_settings(ctx);
         me
@@ -657,6 +661,10 @@ impl HakoRemote {
     fn set_status(&mut self, status: RemoteAccessStatus, ctx: &mut ModelContext<Self>) {
         if self.status != status {
             self.status = status;
+            self.keep_awake.set(matches!(
+                self.status,
+                RemoteAccessStatus::Connecting { .. } | RemoteAccessStatus::Connected
+            ));
             ctx.emit(HakoRemoteEvent::StatusChanged);
         }
     }

@@ -24,6 +24,12 @@ use crate::settings_view::settings_page::{LocalOnlyIconState, ToggleState, rende
 
 const SERVER_ADDRESS_EDITOR_WIDTH: f32 = 280.;
 
+#[cfg(target_os = "macos")]
+const KEEP_AWAKE_NOTE: &str =
+    "\n\nKeeps your Mac awake while remote access is on. Closing the lid still puts it to sleep.";
+#[cfg(not(target_os = "macos"))]
+const KEEP_AWAKE_NOTE: &str = "";
+
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
     ToggleEnabled,
@@ -226,7 +232,7 @@ impl View for RemoteAccessView {
                     })
                     .finish(),
                 Some(format!(
-                    "Connects this computer to the remote access server, so that a browser signed in there can see its windows, tabs and terminals and open, switch to and close tabs. The access key is read from {}.",
+                    "Connects this computer to the remote access server, so that a browser signed in there can see its windows, tabs and terminals and open, switch to and close tabs. The access key is read from {}.{KEEP_AWAKE_NOTE}",
                     HakoRemote::key_path().display()
                 )),
             ))
