@@ -182,7 +182,7 @@ fn size(metadata: &Metadata) -> u64 {
 }
 
 /// The time of the last change in whole milliseconds since the Unix epoch, rounded down.
-fn mtime(metadata: &Metadata) -> i64 {
+pub(crate) fn mtime(metadata: &Metadata) -> i64 {
     let Ok(modified) = metadata.modified() else {
         return 0;
     };
@@ -360,7 +360,7 @@ fn write_new(path: &Path, bytes: &[u8], permissions: Permissions) -> io::Result<
 
 /// The path as the file system takes it, if it has the one form the protocol accepts: absolute,
 /// with single slashes, and without `.`, `..` or a slash at the end.
-fn checked(path: &str) -> Result<&Path, RpcError> {
+pub(crate) fn checked(path: &str) -> Result<&Path, RpcError> {
     if is_normal(path) {
         Ok(Path::new(path))
     } else {
@@ -381,7 +381,7 @@ pub(crate) fn is_normal(path: &str) -> bool {
 }
 
 /// The metadata of the regular file at `file`, which links are followed to.
-fn regular_file(file: &Path, path: &str) -> Result<Metadata, RpcError> {
+pub(crate) fn regular_file(file: &Path, path: &str) -> Result<Metadata, RpcError> {
     let metadata = fs::metadata(file).map_err(|error| failure(&error, path))?;
     if metadata.is_dir() {
         return Err(RpcError::new(
@@ -396,7 +396,7 @@ fn regular_file(file: &Path, path: &str) -> Result<Metadata, RpcError> {
 }
 
 /// What to answer when the file system refuses, with its own words for the owner.
-fn failure(error: &io::Error, path: &str) -> RpcError {
+pub(crate) fn failure(error: &io::Error, path: &str) -> RpcError {
     let code = match error.kind() {
         ErrorKind::NotFound | ErrorKind::NotADirectory => ErrorCode::NotFound,
         ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
