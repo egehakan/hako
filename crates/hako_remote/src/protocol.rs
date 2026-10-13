@@ -123,6 +123,11 @@ pub enum ErrorCode {
     NotFound,
     NotSupported,
     Failed,
+    NotADirectory,
+    IsADirectory,
+    PermissionDenied,
+    Conflict,
+    TooLarge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,6 +366,115 @@ pub struct TerminalColors {
     pub selection: String,
     /// Black, red, green, yellow, blue, magenta, cyan, white, then the bright eight.
     pub ansi: [String; 16],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsRoots {
+    pub home: String,
+    /// Each path once.
+    pub roots: Vec<FsRoot>,
+}
+
+/// A directory that browsing starts from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsRoot {
+    pub path: String,
+    pub name: String,
+    pub source: FsRootSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsRootSource {
+    Folder,
+    Terminal,
+    Home,
+}
+
+/// Params of the methods that act on one path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsPathParams {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsList {
+    pub entries: Vec<FsEntry>,
+    /// Whether the directory holds more entries than these.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsEntry {
+    pub name: String,
+    pub kind: FsEntryKind,
+    /// What a symbolic link leads to in the end; `None` for one that leads nowhere, and for
+    /// everything that is not a link.
+    pub target: Option<FsLinkTarget>,
+    /// In bytes, and of what a link leads to. Zero for a directory.
+    pub size: u64,
+    /// In milliseconds since the Unix epoch, and of what a link leads to.
+    pub mtime: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsEntryKind {
+    Dir,
+    File,
+    Symlink,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsLinkTarget {
+    Dir,
+    File,
+    Other,
+}
+
+/// The result of `fs.read`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FsRead {
+    Text {
+        content: String,
+        mtime: i64,
+        size: u64,
+    },
+    Image {
+        mime: String,
+        /// The file's bytes in base64.
+        data: String,
+        mtime: i64,
+        size: u64,
+    },
+    Binary {
+        size: u64,
+    },
+    TooLarge {
+        size: u64,
+        /// The most bytes a file of this kind may have to be sent.
+        limit: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsWriteParams {
+    pub path: String,
+    pub content: String,
+    /// The `mtime` the file is expected to have, or `None` to write whatever it has. It has to
+    /// be given either way.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub expected_mtime: Option<i64>,
+}
+
+/// The result of `fs.write`: what the file is like afterwards.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsWrite {
+    pub mtime: i64,
+    pub size: u64,
 }
 
 #[cfg(test)]

@@ -9,7 +9,9 @@ license.workspace = true
 [dependencies]
 async-channel.workspace = true
 async-tungstenite = { version = "0.28.2", features = ["tokio-rustls-manual-roots"] }
+base64.workspace = true
 futures.workspace = true
+libc.workspace = true
 log.workspace = true
 rustls.workspace = true
 rustls-platform-verifier = "0.7.0"
@@ -19,3 +21,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26.4"
 url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

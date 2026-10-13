@@ -102,6 +102,11 @@ fn names_every_error_code_as_the_protocol_does() {
         ErrorCode::NotFound,
         ErrorCode::NotSupported,
         ErrorCode::Failed,
+        ErrorCode::NotADirectory,
+        ErrorCode::IsADirectory,
+        ErrorCode::PermissionDenied,
+        ErrorCode::Conflict,
+        ErrorCode::TooLarge,
     ];
 
     assert_eq!(
@@ -112,7 +117,12 @@ fn names_every_error_code_as_the_protocol_does() {
             "bad_request",
             "not_found",
             "not_supported",
-            "failed"
+            "failed",
+            "not_a_directory",
+            "is_a_directory",
+            "permission_denied",
+            "conflict",
+            "too_large"
         ])
     );
 }
@@ -144,6 +154,108 @@ fn knows_the_workspace_and_terminal_methods_only() {
     // Input is a notification, which has no answer.
     assert_eq!(Method::from_name("term.input"), None);
     assert_eq!(Method::from_name("fs.list"), None);
+}
+
+#[test]
+fn encodes_a_listing_as_the_protocol_names_its_fields() {
+    let list = FsList {
+        entries: vec![
+            FsEntry {
+                name: "docs".to_owned(),
+                kind: FsEntryKind::Symlink,
+                target: Some(FsLinkTarget::Dir),
+                size: 0,
+                mtime: 1_760_000_000_123,
+            },
+            FsEntry {
+                name: "a.txt".to_owned(),
+                kind: FsEntryKind::File,
+                target: None,
+                size: 5,
+                mtime: -1,
+            },
+        ],
+        truncated: false,
+    };
+
+    assert_eq!(
+        serde_json::to_value(list).unwrap(),
+        json!({
+            "entries": [
+                { "name": "docs", "kind": "symlink", "target": "dir", "size": 0, "mtime": 1_760_000_000_123_i64 },
+                { "name": "a.txt", "kind": "file", "target": null, "size": 5, "mtime": -1 },
+            ],
+            "truncated": false,
+        })
+    );
+}
+
+#[test]
+fn encodes_each_kind_of_file_contents() {
+    let text = FsRead::Text {
+        content: "hi".to_owned(),
+        mtime: 7,
+        size: 2,
+    };
+    let image = FsRead::Image {
+        mime: "image/png".to_owned(),
+        data: "AQID".to_owned(),
+        mtime: 7,
+        size: 3,
+    };
+    let too_large = FsRead::TooLarge { size: 9, limit: 8 };
+
+    assert_eq!(
+        serde_json::to_value(text).unwrap(),
+        json!({ "kind": "text", "content": "hi", "mtime": 7, "size": 2 })
+    );
+    assert_eq!(
+        serde_json::to_value(image).unwrap(),
+        json!({ "kind": "image", "mime": "image/png", "data": "AQID", "mtime": 7, "size": 3 })
+    );
+    assert_eq!(
+        serde_json::to_value(FsRead::Binary { size: 4 }).unwrap(),
+        json!({ "kind": "binary", "size": 4 })
+    );
+    assert_eq!(
+        serde_json::to_value(too_large).unwrap(),
+        json!({ "kind": "too_large", "size": 9, "limit": 8 })
+    );
+}
+
+#[test]
+fn requires_the_expected_mtime_of_a_write_to_be_given() {
+    let params = |value| serde_json::from_value::<FsWriteParams>(value);
+
+    let checked = params(json!({ "path": "/a", "content": "x", "expected_mtime": 7 })).unwrap();
+    let unchecked =
+        params(json!({ "path": "/a", "content": "x", "expected_mtime": null })).unwrap();
+
+    assert_eq!(checked.expected_mtime, Some(7));
+    assert_eq!(unchecked.expected_mtime, None);
+    assert!(params(json!({ "path": "/a", "content": "x" })).is_err());
+    assert!(params(json!({ "path": "/a", "content": 1, "expected_mtime": null })).is_err());
+    assert!(params(json!({ "path": "/a", "content": "x", "expected_mtime": "7" })).is_err());
+}
+
+#[test]
+fn encodes_the_roots_with_their_sources() {
+    let roots = FsRoots {
+        home: "/Users/ege".to_owned(),
+        roots: vec![FsRoot {
+            path: "/".to_owned(),
+            name: "/".to_owned(),
+            source: FsRootSource::Terminal,
+        }],
+    };
+
+    assert_eq!(
+        serde_json::to_value(roots).unwrap(),
+        json!({
+            "home": "/Users/ege",
+            "roots": [{ "path": "/", "name": "/", "source": "terminal" }],
+        })
+    );
 }
 
 #[test]
