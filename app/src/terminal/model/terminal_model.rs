@@ -391,6 +391,10 @@ pub struct TerminalModel {
 
     alt_screen_active: bool,
 
+    /// Whether a synchronized output frame has begun and not ended. Its bytes have been read
+    /// from the PTY but are held back, so the grids do not show them yet.
+    synchronized_output_pending: bool,
+
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
     title_stack: Vec<Option<String>>,
@@ -1090,6 +1094,7 @@ impl TerminalModel {
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
+            synchronized_output_pending: false,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -2056,6 +2061,12 @@ impl TerminalModel {
         self.alt_screen_active
     }
 
+    /// Whether output that has been read from the PTY is being held back until the program that
+    /// wrote it ends the frame.
+    pub fn is_synchronized_output_pending(&self) -> bool {
+        self.synchronized_output_pending
+    }
+
     pub fn set_pending_shell_launch_data(&mut self, shell_launch_data: ShellLaunchData) {
         self.active_shell_launch_data = Some(shell_launch_data.clone());
         self.pending_shell_launch_data = Some(shell_launch_data);
@@ -2875,6 +2886,10 @@ impl ansi::Handler for TerminalModel {
             return;
         }
 
+        if mode == ansi::Mode::SyncOutput {
+            self.synchronized_output_pending = true;
+        }
+
         self.alt_screen.set_mode(mode);
         self.block_list.set_mode(mode);
         self.emit_handler_event(HandlerEvent::SetMode { mode });
@@ -2889,6 +2904,7 @@ impl ansi::Handler for TerminalModel {
                 return;
             }
             ansi::Mode::SyncOutput => {
+                self.synchronized_output_pending = false;
                 // When synchronized output is turned off, we should redraw.
                 self.event_proxy.send_wakeup_event();
             }
@@ -3361,8 +3377,12 @@ impl ansi::Handler for TerminalModel {
 
         let bytes = input.bytes();
 
-        // Send a copy of the bytes to subscribers.
-        self.event_proxy.send_pty_read_event(bytes);
+        // Send a copy of the bytes to subscribers. The bytes of a synchronized output frame come
+        // by here twice, as they are read and again as the frame is flushed, and subscribers get
+        // them as the PTY produced them.
+        if !input.is_synchronized_output_frame() {
+            self.event_proxy.send_pty_read_event(bytes);
+        }
 
         // Send a copy of the bytes for the active shared session, if applicable.
         // When processing a synchronized output frame, `on_finish_byte_processing` is called

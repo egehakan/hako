@@ -173,7 +173,12 @@ where
                         child_exited: false,
                     };
                 }
-                Message::Resize(size) => self.pty.on_resize(&size),
+                Message::Resize(size) => {
+                    self.pty.on_resize(&size);
+                    // An empty read tells whoever follows the PTY's output where in it the
+                    // size changed: what was read before was written for the old size.
+                    self.event_listener.send_pty_read_event(&[]);
+                }
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
             }
         }

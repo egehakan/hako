@@ -2985,6 +2985,10 @@ pub struct TerminalView {
     /// Per-session PTY recorder for writing PTY bytes to a file.
     pty_recorder: ModelHandle<PtyRecorder>,
 
+    /// Where the bytes read from the PTY can be received from; `None` for a terminal without a
+    /// PTY of its own.
+    pty_reads_rx: Option<async_broadcast::InactiveReceiver<Arc<Vec<u8>>>>,
+
     /// When viewer-driven sizing is active on the sharer, this stores the
     /// viewer's last reported (rows, cols).
     /// Used by `SizeUpdateBuilder::build()` to prevent `AfterLayout` from
@@ -4539,6 +4543,7 @@ impl TerminalView {
             pending_cloud_mode_start_callback: None,
             pending_cloud_mode_start_abort_handle: None,
             ephemeral_message_model,
+            pty_reads_rx: inactive_pty_reads_rx.clone(),
             pty_recorder: ctx
                 .add_model(|ctx| PtyRecorder::new(inactive_pty_reads_rx, window_id, ctx)),
             active_viewer_driven_size: None,
@@ -9980,6 +9985,14 @@ impl TerminalView {
                 sessions.observe_ctrl_c_write(terminal_view_id, ctx);
             });
         }
+    }
+
+    /// Starts receiving the bytes read from the PTY. Every read is copied for as long as a
+    /// receiver lives, so it should be dropped once nobody needs the bytes.
+    pub(crate) fn pty_reads(&self) -> Option<async_broadcast::Receiver<Arc<Vec<u8>>>> {
+        self.pty_reads_rx
+            .as_ref()
+            .map(async_broadcast::InactiveReceiver::activate_cloned)
     }
 
     /// Ends the current line before writing the given bytes to the PTY.
