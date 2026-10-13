@@ -122,9 +122,6 @@ impl PaneContent for CodePane {
                 CodeViewEvent::Pane(pane_event) => {
                     pane_group.handle_pane_event(pane_id, pane_event, ctx)
                 }
-                CodeViewEvent::CloseRequested => {
-                    pane_group.close_pane_with_confirmation(pane_id, ctx);
-                }
                 CodeViewEvent::TabChanged { location, .. } => {
                     if let Some(loc) = location {
                         pane_group.active_file_model().update(ctx, |model, ctx| {

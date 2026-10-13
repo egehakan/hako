@@ -62,6 +62,13 @@ pub fn confirms_every_close(app: &AppContext) -> bool {
         && ChannelState::channel() != Channel::Integration
 }
 
+/// Whether closing a single pane asks first while every close is to be confirmed. A pane of
+/// files does not: all that closing one can lose is unsaved changes, which are asked about
+/// separately and whatever this setting says.
+pub fn confirms_pane_close(always_confirm: bool, holds_files: bool) -> bool {
+    always_confirm && !holds_files
+}
+
 /// What is about to be closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloseSubject {

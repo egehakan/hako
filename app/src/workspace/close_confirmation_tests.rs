@@ -284,6 +284,16 @@ fn a_terminal_pane_is_named_after_its_title_and_then_its_directory() {
 }
 
 #[test]
+fn a_pane_of_files_closes_without_the_confirmation() {
+    // Terminals and every other pane ask when the setting is on.
+    assert!(confirms_pane_close(true, false));
+    // Files never do, and nothing does with the setting off.
+    assert!(!confirms_pane_close(true, true));
+    assert!(!confirms_pane_close(false, false));
+    assert!(!confirms_pane_close(false, true));
+}
+
+#[test]
 fn any_other_pane_is_named_after_its_title() {
     assert_eq!(pane_label("Settings", PaneLabel::Other), "Settings");
     assert_eq!(pane_label("", PaneLabel::Other), "Untitled");

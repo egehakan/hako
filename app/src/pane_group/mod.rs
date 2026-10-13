@@ -167,7 +167,9 @@ use crate::util::openable_file_type::FileTarget;
 use crate::view_components::ToastFlavor;
 use crate::workflows::workflow::Workflow;
 use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
-use crate::workspace::close_confirmation::{CloseStakes, confirms_every_close};
+use crate::workspace::close_confirmation::{
+    CloseStakes, confirms_every_close, confirms_pane_close,
+};
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::{
     self, CommandSearchOptions, PaneViewLocator, TabBarLocation, WorkspaceAction,
@@ -4482,7 +4484,8 @@ impl PaneGroup {
             return;
         }
 
-        if confirms_every_close(ctx) {
+        let holds_files = pane_id.is_code_pane() || pane_id.is_file_pane();
+        if confirms_pane_close(confirms_every_close(ctx), holds_files) {
             let summary = UnsavedStateSummary::for_pane(self, pane_id, ctx);
             let stakes = CloseStakes {
                 running_commands: summary.total_long_running_commands,

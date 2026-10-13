@@ -95,7 +95,6 @@ use crate::ui_components::buttons::icon_button;
 use crate::util::bindings::CustomAction;
 use crate::util::path::{display_name_with_host, display_path_with_host};
 use crate::view_components::{DismissibleToast, MarkdownToggleEvent, MarkdownToggleView};
-use crate::workspace::close_confirmation::confirms_every_close;
 use crate::workspace::util::get_context_target_terminal_view;
 use crate::workspace::{ActiveSession, TabBarDropTargetData, ToastStack, WorkspaceAction};
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
@@ -271,8 +270,6 @@ pub enum CodeViewAction {
 #[derive(Debug, Clone)]
 pub enum CodeViewEvent {
     Pane(PaneEvent),
-    /// The pane was asked to close while every close has to be confirmed first.
-    CloseRequested,
     TabChanged {
         location: Option<LocalOrRemotePath>,
         tab_index: usize,
@@ -3569,11 +3566,7 @@ impl BackingView for CodeView {
     }
 
     fn close(&mut self, ctx: &mut ViewContext<Self>) {
-        if confirms_every_close(ctx) {
-            ctx.emit(CodeViewEvent::CloseRequested);
-        } else {
-            self.handle_action(&CodeViewAction::CloseAll, ctx);
-        }
+        self.handle_action(&CodeViewAction::CloseAll, ctx);
     }
 
     fn focus_contents(&mut self, ctx: &mut ViewContext<Self>) {
