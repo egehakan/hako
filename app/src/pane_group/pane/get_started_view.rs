@@ -2,9 +2,10 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::color::blend::Blend as _;
 use warp_core::ui::{self};
+use warpui::assets::asset_cache::AssetSource;
 use warpui::elements::{
-    Align, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Icon,
-    MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement as _, Radius,
+    Align, CacheOption, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    Flex, Image, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement as _, Radius,
 };
 use warpui::keymap::EditableBinding;
 use warpui::platform::Cursor;
@@ -213,7 +214,13 @@ impl GetStartedView {
             .with_children([
                 Container::new(
                     ConstrainedBox::new(
-                        Icon::new("bundled/svg/warp-logo-neutral.svg", theme.foreground()).finish(),
+                        Image::new(
+                            AssetSource::Bundled {
+                                path: "bundled/svg/hako-mark.svg",
+                            },
+                            CacheOption::BySize,
+                        )
+                        .finish(),
                     )
                     .with_height(40.)
                     .with_width(40.)
