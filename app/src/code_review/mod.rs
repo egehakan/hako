@@ -1,3 +1,5 @@
+#[cfg(feature = "local_fs")]
+mod branch_menu;
 pub mod code_review_view;
 pub mod comment_list_view;
 pub mod context;
@@ -119,6 +121,8 @@ pub fn init(app: &mut AppContext) {
     diff_menu::init(app);
     diff_selector::init(app);
     git_dialog::init(app);
+    #[cfg(feature = "local_fs")]
+    branch_menu::init(app);
     #[cfg(feature = "local_fs")]
     nested_repos_view::init(app);
 }

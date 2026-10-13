@@ -87,7 +87,7 @@ impl MenuRow {
 }
 
 /// Position of `needle` in `haystack` ignoring case, as the indices of the matched characters.
-fn substring_match(haystack: &str, needle: &str) -> Option<Vec<usize>> {
+pub(super) fn substring_match(haystack: &str, needle: &str) -> Option<Vec<usize>> {
     let fold = |text: &str| -> Vec<char> {
         text.chars()
             .map(|character| character.to_lowercase().next().unwrap_or(character))
