@@ -1,15 +1,20 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
-//! a remote client asks about its windows and tabs, and says when they change.
+//! a remote client asks about its windows and tabs, says when they change, and lets the client
+//! watch and use a terminal.
 
 mod app_info;
 mod handlers;
 mod snapshot;
+mod terminal;
+mod terminal_snapshot;
 
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ::hako_remote::protocol::{EVENT_WORKSPACE_CHANGED, Method, RpcError, Workspace};
+use ::hako_remote::protocol::{
+    EVENT_WORKSPACE_CHANGED, Method, NOTIFICATION_TERM_INPUT, RpcError, Workspace,
+};
 use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder};
 use serde_json::{Value, json};
 use settings::Setting as _;
@@ -17,6 +22,7 @@ use warpui::r#async::Timer;
 use warpui::{Entity, ModelContext, SingletonEntity, WindowId};
 
 use self::handlers::{NewTab, parse, to_json};
+use self::terminal::{ECHO_DELAY, PUMP_INTERVAL, Terminals};
 use crate::settings::RemoteAccessSettings;
 
 const KEY_FILE_NAME: &str = "remote.key";
@@ -69,6 +75,10 @@ pub struct HakoRemote {
     status: RemoteAccessStatus,
     /// The workspace as clients were last told about.
     announced: Option<Workspace>,
+    terminals: Terminals,
+    /// Bumped whenever the next collection of terminal output is scheduled, so that only the
+    /// latest one runs.
+    pump: u64,
 }
 
 impl HakoRemote {
@@ -83,6 +93,8 @@ impl HakoRemote {
             check: 0,
             status: RemoteAccessStatus::Off,
             announced: None,
+            terminals: Terminals::default(),
+            pump: 0,
         };
         me.apply_settings(ctx);
         me
@@ -118,6 +130,7 @@ impl HakoRemote {
         self.generation += 1;
         self.check += 1;
         self.announced = None;
+        self.stop_terminals(ctx);
         self.target = target;
         let status = match &self.target {
             None => RemoteAccessStatus::Off,
@@ -173,8 +186,8 @@ impl HakoRemote {
                 params,
                 responder,
             } => self.handle_request(&method, params, responder, ctx),
-            Incoming::Notification { method, .. } => {
-                log::debug!("[Remote access] ignoring the notification {method}");
+            Incoming::Notification { method, params } => {
+                self.handle_notification(&method, params, ctx);
             }
         }
     }
@@ -188,6 +201,10 @@ impl HakoRemote {
     ) {
         let Some(known_method) = Method::from_name(method) else {
             return responder.respond(Err(RpcError::not_supported(method)));
+        };
+        // A request arrives over the connection, so there is one for as long as it is handled.
+        let Some(connection) = &self.connection else {
+            return;
         };
         let done = |outcome: Result<(), RpcError>| outcome.map(|()| json!({}));
         let outcome = match known_method {
@@ -213,8 +230,44 @@ impl HakoRemote {
             Method::TabClose => {
                 done(parse(params).and_then(|params| handlers::close_tab(params, ctx)))
             }
+            Method::TermSubscribe => {
+                return match parse(params) {
+                    Ok(params) => {
+                        self.terminals.subscribe(params, responder, connection, ctx);
+                        self.schedule_pump(PUMP_INTERVAL, ctx);
+                    }
+                    Err(error) => responder.respond(Err(error)),
+                };
+            }
+            Method::TermUnsubscribe => {
+                done(parse(params).map(|params| self.terminals.unsubscribe(params, ctx)))
+            }
+            Method::TermResize => parse(params)
+                .and_then(|params| self.terminals.resize(params, connection, ctx))
+                .and_then(|size| to_json(&size)),
+            Method::TermReleaseSize => done(
+                parse(params)
+                    .and_then(|params| self.terminals.release_size(params, connection, ctx)),
+            ),
+            Method::ThemeGet => to_json(&handlers::theme(ctx)),
         };
         responder.respond(outcome);
+    }
+
+    fn handle_notification(&mut self, method: &str, params: Value, ctx: &mut ModelContext<Self>) {
+        if method != NOTIFICATION_TERM_INPUT {
+            log::debug!("[Remote access] ignoring the notification {method}");
+            return;
+        }
+        match parse(params) {
+            Ok(params) => {
+                self.terminals.input(params, ctx);
+                if self.terminals.pump_interval().is_some() {
+                    self.schedule_pump(ECHO_DELAY, ctx);
+                }
+            }
+            Err(error) => log::debug!("[Remote access] ignoring input: {}", error.message),
+        }
     }
 
     /// Answers `tab.create` with the first tab of a window that was opened for it, looking
@@ -242,6 +295,40 @@ impl HakoRemote {
         );
     }
 
+    /// Collects the output of the watched terminals after `delay`, and from then on for as long
+    /// as any is watched.
+    fn schedule_pump(&mut self, delay: Duration, ctx: &mut ModelContext<Self>) {
+        self.pump += 1;
+        let pump = self.pump;
+        ctx.spawn(
+            async move {
+                Timer::after(delay).await;
+            },
+            move |me, _, ctx| {
+                if me.pump == pump {
+                    me.pump_terminals(ctx);
+                }
+            },
+        );
+    }
+
+    fn pump_terminals(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        self.terminals.pump(connection, ctx);
+        if let Some(interval) = self.terminals.pump_interval() {
+            self.schedule_pump(interval, ctx);
+        }
+    }
+
+    /// Stops following every terminal, which also gives back the size of those a client had
+    /// resized.
+    fn stop_terminals(&mut self, ctx: &mut ModelContext<Self>) {
+        self.pump += 1;
+        self.terminals.stop_all(ctx);
+    }
+
     fn connection_state_changed(&mut self, state: ConnectionState, ctx: &mut ModelContext<Self>) {
         let status = match state {
             ConnectionState::Connecting => match &self.status {
@@ -250,6 +337,7 @@ impl HakoRemote {
                 | RemoteAccessStatus::MissingKey
                 | RemoteAccessStatus::Misconfigured { .. }
                 | RemoteAccessStatus::Connected => {
+                    self.stop_terminals(ctx);
                     RemoteAccessStatus::Connecting { last_error: None }
                 }
             },
@@ -260,6 +348,9 @@ impl HakoRemote {
                 RemoteAccessStatus::Connected
             }
             ConnectionState::Waiting { error, retry_in: _ } => {
+                // The relay forgets every subscription with the connection, and clients
+                // subscribe again when the app is back.
+                self.stop_terminals(ctx);
                 // The key may be what was wrong, so a key file that has changed since is put to
                 // use right away.
                 let generation = self.generation;
@@ -319,6 +410,9 @@ impl HakoRemote {
             }
             RemoteAccessStatus::Connected => {
                 self.announce_workspace_change(ctx);
+                if let Some(connection) = &self.connection {
+                    self.terminals.close_ended(connection, ctx);
+                }
                 self.schedule_check(ctx);
             }
             RemoteAccessStatus::Off

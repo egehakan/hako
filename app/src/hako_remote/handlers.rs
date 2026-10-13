@@ -2,16 +2,22 @@
 
 use std::path::PathBuf;
 
-use ::hako_remote::protocol::{RpcError, TabCreateParams, TabCreateResult, TabParams};
+use ::hako_remote::protocol::{
+    RpcError, TabCreateParams, TabCreateResult, TabParams, TerminalColors, Theme,
+};
+use pathfinder_color::ColorU;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use warp_core::ui::theme::AnsiColors;
 use warpui::{AppContext, EntityId, SingletonEntity, ViewHandle, WindowId};
 
 use super::snapshot;
+use crate::appearance::Appearance;
 use crate::pane_group::PaneGroup;
 use crate::root_view::{OpenPath, open_new_from_path, open_new_window_get_handles};
 use crate::terminal::general_settings::GeneralSettings;
+use crate::workspace::tab_folders::format_hex_color;
 use crate::workspace::view::{RemoteCloseRefusal, RemoteTabPlace};
 use crate::workspace::{Workspace, WorkspaceRegistry};
 
@@ -191,4 +197,45 @@ fn closing_a_window_quits_the_app(ctx: &AppContext) -> bool {
     let quits_with_last_window = cfg!(any(target_os = "linux", target_os = "freebsd", windows))
         || *GeneralSettings::as_ref(ctx).quit_on_last_window_closed;
     quits_with_last_window && ctx.window_ids().count() == 1
+}
+
+/// The colours and the font the app draws its terminals with.
+pub(super) fn theme(ctx: &AppContext) -> Theme {
+    let appearance = Appearance::as_ref(ctx);
+    let theme = appearance.theme();
+    let colors = theme.terminal_colors();
+    let eight = |colors: &AnsiColors| {
+        [
+            colors.black,
+            colors.red,
+            colors.green,
+            colors.yellow,
+            colors.blue,
+            colors.magenta,
+            colors.cyan,
+            colors.white,
+        ]
+        .map(|color| format_hex_color(color.into()))
+    };
+    let [normal, bright] = [eight(&colors.normal), eight(&colors.bright)];
+    let mut ansi = normal.into_iter().chain(bright);
+    let selection = theme.text_selection_color().into_solid();
+    Theme {
+        terminal: TerminalColors {
+            background: format_hex_color(theme.background().into_solid()),
+            foreground: format_hex_color(theme.foreground().into_solid()),
+            cursor: format_hex_color(theme.cursor().into_solid()),
+            selection: format_hex_color_with_alpha(selection),
+            ansi: std::array::from_fn(|_| ansi.next().unwrap_or_default()),
+        },
+        font_family: ctx
+            .font_cache()
+            .load_family_name_from_id(appearance.monospace_font_family())
+            .unwrap_or_default(),
+        font_size: appearance.monospace_font_size(),
+    }
+}
+
+fn format_hex_color_with_alpha(color: ColorU) -> String {
+    format!("{}{:02X}", format_hex_color(color), color.a)
 }
