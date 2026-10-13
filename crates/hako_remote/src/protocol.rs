@@ -22,6 +22,7 @@ pub const EVENT_WORKSPACE_CHANGED: &str = "workspace.changed";
 pub const EVENT_TERM_SIZE: &str = "term.size";
 pub const EVENT_TERM_CLOSED: &str = "term.closed";
 pub const EVENT_GIT_CHANGED: &str = "git.changed";
+pub const EVENT_NOTIFY: &str = "notify";
 
 pub const NOTIFICATION_TERM_INPUT: &str = "term.input";
 
@@ -655,6 +656,29 @@ pub struct GitChanged {
     /// The repository that may have changed; `None` when any of them may have.
     pub repo: Option<String>,
 }
+
+/// Data of the `notify` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notify {
+    pub kind: NotifyKind,
+    /// One line of at most [`NOTIFY_TITLE_MAX_CHARS`] characters.
+    pub title: String,
+    /// At most [`NOTIFY_BODY_MAX_CHARS`] characters, lines separated by `\n`.
+    pub body: String,
+    pub session_id: String,
+    pub tab_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyKind {
+    AgentWaiting,
+    AgentDone,
+    CommandDone,
+}
+
+pub const NOTIFY_TITLE_MAX_CHARS: usize = 100;
+pub const NOTIFY_BODY_MAX_CHARS: usize = 300;
 
 #[cfg(test)]
 #[path = "protocol_tests.rs"]

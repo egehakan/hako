@@ -11,6 +11,7 @@ mod git_run;
 mod git_status;
 #[cfg(test)]
 mod git_test_support;
+pub mod notify;
 pub mod output_frame;
 pub mod output_stream;
 pub mod prompt_lines;

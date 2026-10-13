@@ -218,9 +218,10 @@ impl Connection {
         ))
     }
 
-    /// Sends an event to the relay. Events raised while not connected are dropped.
-    pub fn send_event(&self, event: &str, data: Value) {
-        self.send(Message::Text(Frame::event(event, data).encode()));
+    /// Sends an event to the relay. Events raised while not connected are dropped. Returns whether
+    /// the event was queued.
+    pub fn send_event(&self, event: &str, data: Value) -> bool {
+        self.send(Message::Text(Frame::event(event, data).encode()))
     }
 
     /// Sends terminal output to the relay. Output produced while not connected is dropped.
