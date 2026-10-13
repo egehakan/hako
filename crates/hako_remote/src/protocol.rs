@@ -19,6 +19,10 @@ pub const CLOSE_REPLACED: u16 = 4001;
 pub const REPLACED_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 pub const EVENT_WORKSPACE_CHANGED: &str = "workspace.changed";
+pub const EVENT_TERM_SIZE: &str = "term.size";
+pub const EVENT_TERM_CLOSED: &str = "term.closed";
+
+pub const NOTIFICATION_TERM_INPUT: &str = "term.input";
 
 /// A text frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -163,6 +167,11 @@ pub enum Method {
     TabCreate,
     TabActivate,
     TabClose,
+    TermSubscribe,
+    TermUnsubscribe,
+    TermResize,
+    TermReleaseSize,
+    ThemeGet,
 }
 
 impl Method {
@@ -174,6 +183,11 @@ impl Method {
             "tab.create" => Some(Self::TabCreate),
             "tab.activate" => Some(Self::TabActivate),
             "tab.close" => Some(Self::TabClose),
+            "term.subscribe" => Some(Self::TermSubscribe),
+            "term.unsubscribe" => Some(Self::TermUnsubscribe),
+            "term.resize" => Some(Self::TermResize),
+            "term.release_size" => Some(Self::TermReleaseSize),
+            "theme.get" => Some(Self::ThemeGet),
             _ => None,
         }
     }
@@ -282,6 +296,71 @@ pub struct TabCreateResult {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabParams {
     pub tab_id: String,
+}
+
+/// Params of the methods that act on one terminal session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionParams {
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermSubscribeResult {
+    pub cols: usize,
+    pub rows: usize,
+    /// Offset of the first output byte the snapshot does not cover.
+    pub seq: u64,
+    /// Base64 of the bytes that bring a terminal emulator that has just been reset to the
+    /// session's present state.
+    pub snapshot: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermInputParams {
+    pub session_id: String,
+    /// Text to write to the PTY as it is.
+    pub data: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermResizeParams {
+    pub session_id: String,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// The size of a terminal, as the result of `term.resize`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermSize {
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// Data of the `term.size` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermSizeChanged {
+    pub session_id: String,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Theme {
+    pub terminal: TerminalColors,
+    pub font_family: String,
+    /// In points.
+    pub font_size: f32,
+}
+
+/// Colours as `#RRGGBB`, or `#RRGGBBAA` for one that is not opaque.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalColors {
+    pub background: String,
+    pub foreground: String,
+    pub cursor: String,
+    pub selection: String,
+    /// Black, red, green, yellow, blue, magenta, cyan, white, then the bright eight.
+    pub ansi: [String; 16],
 }
 
 #[cfg(test)]

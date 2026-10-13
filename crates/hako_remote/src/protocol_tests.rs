@@ -118,7 +118,7 @@ fn names_every_error_code_as_the_protocol_does() {
 }
 
 #[test]
-fn knows_the_workspace_methods_only() {
+fn knows_the_workspace_and_terminal_methods_only() {
     assert_eq!(Method::from_name("app.info"), Some(Method::AppInfo));
     assert_eq!(
         Method::from_name("workspace.list"),
@@ -127,7 +127,23 @@ fn knows_the_workspace_methods_only() {
     assert_eq!(Method::from_name("tab.create"), Some(Method::TabCreate));
     assert_eq!(Method::from_name("tab.activate"), Some(Method::TabActivate));
     assert_eq!(Method::from_name("tab.close"), Some(Method::TabClose));
-    assert_eq!(Method::from_name("term.subscribe"), None);
+    assert_eq!(
+        Method::from_name("term.subscribe"),
+        Some(Method::TermSubscribe)
+    );
+    assert_eq!(
+        Method::from_name("term.unsubscribe"),
+        Some(Method::TermUnsubscribe)
+    );
+    assert_eq!(Method::from_name("term.resize"), Some(Method::TermResize));
+    assert_eq!(
+        Method::from_name("term.release_size"),
+        Some(Method::TermReleaseSize)
+    );
+    assert_eq!(Method::from_name("theme.get"), Some(Method::ThemeGet));
+    // Input is a notification, which has no answer.
+    assert_eq!(Method::from_name("term.input"), None);
+    assert_eq!(Method::from_name("fs.list"), None);
 }
 
 #[test]
@@ -270,5 +286,20 @@ fn reads_tab_create_params_with_any_field_left_out() {
             folder_id: Some("f1".to_owned()),
             directory: None,
         }
+    );
+}
+
+#[test]
+fn encodes_a_subscription_as_the_protocol_names_its_fields() {
+    let result = TermSubscribeResult {
+        cols: 80,
+        rows: 24,
+        seq: 4096,
+        snapshot: "aGk=".to_owned(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        json!({ "cols": 80, "rows": 24, "seq": 4096, "snapshot": "aGk=" })
     );
 }
