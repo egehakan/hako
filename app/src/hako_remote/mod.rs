@@ -9,13 +9,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ::hako_remote::protocol::{EVENT_WORKSPACE_CHANGED, Workspace};
-use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming};
-use serde_json::json;
+use ::hako_remote::protocol::{EVENT_WORKSPACE_CHANGED, Method, RpcError, Workspace};
+use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder};
+use serde_json::{Value, json};
 use settings::Setting as _;
 use warpui::r#async::Timer;
-use warpui::{Entity, ModelContext, SingletonEntity};
+use warpui::{Entity, ModelContext, SingletonEntity, WindowId};
 
+use self::handlers::{NewTab, parse, to_json};
 use crate::settings::RemoteAccessSettings;
 
 const KEY_FILE_NAME: &str = "remote.key";
@@ -24,6 +25,10 @@ const KEY_FILE_NAME: &str = "remote.key";
 /// often they are told that it changed.
 const WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const KEY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How often, and how many times, a window opened for a new tab is looked at for that tab.
+const NEW_WINDOW_TAB_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+const NEW_WINDOW_TAB_CHECKS: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteAccessStatus {
@@ -167,11 +172,74 @@ impl HakoRemote {
                 method,
                 params,
                 responder,
-            } => responder.respond(handlers::handle_request(&method, params, ctx)),
+            } => self.handle_request(&method, params, responder, ctx),
             Incoming::Notification { method, .. } => {
                 log::debug!("[Remote access] ignoring the notification {method}");
             }
         }
+    }
+
+    fn handle_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(known_method) = Method::from_name(method) else {
+            return responder.respond(Err(RpcError::not_supported(method)));
+        };
+        let done = |outcome: Result<(), RpcError>| outcome.map(|()| json!({}));
+        let outcome = match known_method {
+            Method::AppInfo => to_json(&app_info::app_info()),
+            Method::WorkspaceList => to_json(&snapshot::workspace(ctx)),
+            Method::TabCreate => {
+                match parse(params).and_then(|params| handlers::create_tab(params, ctx)) {
+                    Ok(NewTab::Open(tab)) => to_json(&tab),
+                    Ok(NewTab::InNewWindow(window_id)) => {
+                        return self.answer_with_first_tab(
+                            window_id,
+                            responder,
+                            NEW_WINDOW_TAB_CHECKS,
+                            ctx,
+                        );
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Method::TabActivate => {
+                done(parse(params).and_then(|params| handlers::activate_tab(params, ctx)))
+            }
+            Method::TabClose => {
+                done(parse(params).and_then(|params| handlers::close_tab(params, ctx)))
+            }
+        };
+        responder.respond(outcome);
+    }
+
+    /// Answers `tab.create` with the first tab of a window that was opened for it, looking
+    /// again in a moment while the window does not hold one.
+    fn answer_with_first_tab(
+        &mut self,
+        window_id: WindowId,
+        responder: Responder,
+        checks_left: usize,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(tab) = handlers::first_tab(window_id, ctx) {
+            return responder.respond(to_json(&tab));
+        }
+        let Some(checks_left) = checks_left.checked_sub(1) else {
+            return responder.respond(Err(RpcError::failed(
+                "The window opened without a terminal",
+            )));
+        };
+        ctx.spawn(
+            async move {
+                Timer::after(NEW_WINDOW_TAB_CHECK_INTERVAL).await;
+            },
+            move |me, _, ctx| me.answer_with_first_tab(window_id, responder, checks_left, ctx),
+        );
     }
 
     fn connection_state_changed(&mut self, state: ConnectionState, ctx: &mut ModelContext<Self>) {

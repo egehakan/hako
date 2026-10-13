@@ -2,13 +2,12 @@
 
 use std::path::PathBuf;
 
-use ::hako_remote::protocol::{Method, RpcError, TabCreateParams, TabCreateResult, TabParams};
+use ::hako_remote::protocol::{RpcError, TabCreateParams, TabCreateResult, TabParams};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use warpui::{AppContext, EntityId, SingletonEntity, ViewHandle, WindowId};
 
-use super::app_info::app_info;
 use super::snapshot;
 use crate::pane_group::PaneGroup;
 use crate::root_view::{OpenPath, open_new_from_path, open_new_window_get_handles};
@@ -16,29 +15,12 @@ use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::view::{RemoteCloseRefusal, RemoteTabPlace};
 use crate::workspace::{Workspace, WorkspaceRegistry};
 
-pub(super) fn handle_request(
-    method: &str,
-    params: Value,
-    ctx: &mut AppContext,
-) -> Result<Value, RpcError> {
-    let Some(known_method) = Method::from_name(method) else {
-        return Err(RpcError::not_supported(method));
-    };
-    match known_method {
-        Method::AppInfo => to_json(&app_info()),
-        Method::WorkspaceList => to_json(&snapshot::workspace(ctx)),
-        Method::TabCreate => to_json(&create_tab(parse(params)?, ctx)?),
-        Method::TabActivate => activate_tab(parse(params)?, ctx).map(|()| json!({})),
-        Method::TabClose => close_tab(parse(params)?, ctx).map(|()| json!({})),
-    }
-}
-
-fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
+pub(super) fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
     serde_json::from_value(params)
         .map_err(|error| RpcError::bad_request(format!("Invalid params: {error}")))
 }
 
-fn to_json<T: Serialize>(result: &T) -> Result<Value, RpcError> {
+pub(super) fn to_json<T: Serialize>(result: &T) -> Result<Value, RpcError> {
     serde_json::to_value(result).map_err(|error| RpcError::failed(error.to_string()))
 }
 
@@ -119,49 +101,62 @@ fn tab_destination(params: TabCreateParams, ctx: &AppContext) -> Result<TabDesti
     Ok(TabDestination::Window(workspace, place))
 }
 
-fn create_tab(params: TabCreateParams, ctx: &mut AppContext) -> Result<TabCreateResult, RpcError> {
-    let pane_group = match tab_destination(params, ctx)? {
-        TabDestination::Window(workspace, place) => workspace
-            .update(ctx, |workspace, ctx| {
-                workspace.open_tab_for_remote(place, ctx)
-            })
-            .ok_or_else(|| RpcError::failed("The tab could not be opened"))?,
-        TabDestination::NewWindow(directory) => open_window_with_tab(directory, ctx)?,
-    };
-    let session_id = pane_group
-        .read(ctx, |pane_group, ctx| {
-            let pane_id = pane_group.active_session_id(ctx)?;
-            snapshot::session_id(pane_group, pane_id.into())
-        })
-        .ok_or_else(|| RpcError::failed("The new tab has no terminal"))?;
-    Ok(TabCreateResult {
+/// A tab that was asked for.
+pub(super) enum NewTab {
+    Open(TabCreateResult),
+    /// The tab is the first one of a window that has just been opened, which gets it a moment
+    /// after it appears.
+    InNewWindow(WindowId),
+}
+
+pub(super) fn create_tab(
+    params: TabCreateParams,
+    ctx: &mut AppContext,
+) -> Result<NewTab, RpcError> {
+    match tab_destination(params, ctx)? {
+        TabDestination::Window(workspace, place) => {
+            let pane_group = workspace
+                .update(ctx, |workspace, ctx| {
+                    workspace.open_tab_for_remote(place, ctx)
+                })
+                .ok_or_else(|| RpcError::failed("The tab could not be opened"))?;
+            tab_with_terminal(&pane_group, ctx)
+                .map(NewTab::Open)
+                .ok_or_else(|| RpcError::failed("The new tab has no terminal"))
+        }
+        TabDestination::NewWindow(directory) => {
+            let (window_id, _) = match directory {
+                Some(path) => open_new_from_path(&OpenPath { path }, ctx),
+                None => open_new_window_get_handles(None, ctx),
+            };
+            Ok(first_tab(window_id, ctx).map_or(NewTab::InNewWindow(window_id), NewTab::Open))
+        }
+    }
+}
+
+/// The tab a window opened with, once it is there and holds a terminal.
+pub(super) fn first_tab(window_id: WindowId, ctx: &AppContext) -> Option<TabCreateResult> {
+    let workspace = WorkspaceRegistry::as_ref(ctx).get(window_id, ctx)?;
+    let workspace = workspace.as_ref(ctx);
+    let pane_group = workspace.get_pane_group_view(workspace.active_tab_index())?;
+    tab_with_terminal(pane_group, ctx)
+}
+
+fn tab_with_terminal(
+    pane_group: &ViewHandle<PaneGroup>,
+    ctx: &AppContext,
+) -> Option<TabCreateResult> {
+    let session_id = pane_group.read(ctx, |pane_group, ctx| {
+        let pane_id = pane_group.active_session_id(ctx)?;
+        snapshot::session_id(pane_group, pane_id.into())
+    })?;
+    Some(TabCreateResult {
         tab_id: snapshot::tab_id(pane_group.id()),
         session_id,
     })
 }
 
-/// Opens a window, which comes with one terminal tab, and returns that tab.
-fn open_window_with_tab(
-    directory: Option<PathBuf>,
-    ctx: &mut AppContext,
-) -> Result<ViewHandle<PaneGroup>, RpcError> {
-    let (window_id, _) = match directory {
-        Some(path) => open_new_from_path(&OpenPath { path }, ctx),
-        None => open_new_window_get_handles(None, ctx),
-    };
-    // A window that opens on the sign-in screen has no tabs yet.
-    WorkspaceRegistry::as_ref(ctx)
-        .get(window_id, ctx)
-        .and_then(|workspace| {
-            let workspace = workspace.as_ref(ctx);
-            workspace
-                .get_pane_group_view(workspace.active_tab_index())
-                .cloned()
-        })
-        .ok_or_else(|| RpcError::failed("The window opened without a tab"))
-}
-
-fn activate_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError> {
+pub(super) fn activate_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError> {
     let (window_id, workspace, pane_group_id) = find_tab(&params.tab_id, ctx)?;
     workspace.update(ctx, |workspace, ctx| {
         workspace.activate_tab_by_pane_group_id(pane_group_id, ctx);
@@ -170,7 +165,7 @@ fn activate_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError>
     Ok(())
 }
 
-fn close_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError> {
+pub(super) fn close_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), RpcError> {
     let (_, workspace, pane_group_id) = find_tab(&params.tab_id, ctx)?;
     // A window goes with its last tab. Where the app quits with its last window, that would end
     // remote access too, with nobody at the Mac to start it again.
