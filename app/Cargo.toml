@@ -1,6 +1,6 @@
 [package]
 authors = ["Warp Team <dev@warp.dev>"]
-default-run = "warp-oss"
+default-run = "hako"
 description = "The cloud-backed terminal for individuals and teams"
 edition = "2024"
 autobins = false
@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # flag overrides). Otherwise these binaries are exactly identical to our main binary.
 
 [[bin]]
-name = "warp-oss"
+name = "hako"
 path = "src/bin/oss.rs"
 test = false
 
@@ -1041,11 +1041,11 @@ history_search_ranking_v2 = []
 stored_screenshots = []
 cloud_agent_shell_respawn = []
 
-[package.metadata.bundle.bin.warp-oss]
+[package.metadata.bundle.bin.hako]
 category = "public.app-category.developer-tools"
 copyright = "© 2025, Denver Technologies, Inc"
-identifier = "dev.warp.WarpOss"
-name = "WarpOss"
+identifier = "dev.hako.Hako"
+name = "Hako"
 resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
 short_description = "The open-source, cloud-backed terminal for individuals and teams."

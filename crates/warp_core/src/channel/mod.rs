@@ -55,7 +55,7 @@ impl Channel {
             Channel::Preview => "oz-preview",
             Channel::Local => "oz-local",
             Channel::Integration => "oz-integration",
-            Channel::Oss => "warp-oss",
+            Channel::Oss => "hako",
         }
     }
 
