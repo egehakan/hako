@@ -6,7 +6,10 @@ pub mod backoff;
 pub mod boundary;
 pub mod connection;
 pub mod files;
+mod git_run;
 mod git_status;
+#[cfg(test)]
+mod git_test_support;
 pub mod output_frame;
 pub mod output_stream;
 pub mod prompt_lines;

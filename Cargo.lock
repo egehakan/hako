@@ -6305,8 +6305,10 @@ name = "hako_remote"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "async-process",
  "async-tungstenite",
  "base64 0.22.1",
+ "command",
  "futures",
  "libc",
  "log",
