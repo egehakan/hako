@@ -1232,7 +1232,7 @@ fn tui_cli_shell_command_uses_channel_entry_points() {
     );
     assert_eq!(
         super::tui_cli_shell_command(Channel::Oss, "--version"),
-        "warp-oss --version"
+        "hako --version"
     );
     assert_eq!(
         super::tui_cli_shell_command(Channel::Integration, "--version"),
