@@ -28,6 +28,8 @@ pub(super) struct TerminalSnapshot {
     /// Whether the shell's line editor takes the command line to start in the first column
     /// although it has printed a prompt, which holds for the output that follows as well.
     pub prompt_has_no_width: bool,
+    /// The rows of the prompt when the snapshot ends on the command line right below it.
+    pub prompt_rows_above: Option<usize>,
 }
 
 pub(super) fn terminal_snapshot(model: &TerminalModel) -> TerminalSnapshot {
@@ -45,6 +47,7 @@ pub(super) fn terminal_snapshot(model: &TerminalModel) -> TerminalSnapshot {
             prompt_printing(model, model.block_list().active_block()),
             PromptPrinting::WithoutWidth
         ),
+        prompt_rows_above: prompt_rows_above(model),
     }
 }
 
@@ -88,6 +91,56 @@ enum Live {
     Finished,
 }
 
+fn live(model: &TerminalModel) -> Live {
+    if model.is_alt_screen_active() {
+        return Live::AlternateScreen;
+    }
+    match model.block_list().active_block().state() {
+        BlockState::BeforeExecution => Live::Prompt,
+        BlockState::Executing => Live::Program,
+        BlockState::DoneWithExecution
+        | BlockState::DoneWithNoExecution
+        | BlockState::Background
+        | BlockState::Static => Live::Finished,
+    }
+}
+
+/// Splits the block that follows the prompt on an ordinary terminal off the blocks before the
+/// active one. Output that arrives while the shell waits at its prompt, which what is typed
+/// there is until the shell runs it, is kept in a block of its own right before the active one.
+fn split_output_after_prompt<'a>(
+    live: &Live,
+    earlier: &'a [Block],
+) -> (&'a [Block], Option<&'a Block>) {
+    match (live, earlier.split_last()) {
+        (Live::Prompt, Some((last, rest))) if last.is_background() && !last.finished() => {
+            (rest, Some(last))
+        }
+        (Live::Prompt | Live::Program | Live::AlternateScreen | Live::Finished, _) => {
+            (earlier, None)
+        }
+    }
+}
+
+fn prompt_rows_above(model: &TerminalModel) -> Option<usize> {
+    let block_list = model.block_list();
+    if !block_list.is_bootstrapped() {
+        return None;
+    }
+    let active = block_list.active_block();
+    let earlier = &block_list.blocks()[..block_list.active_block_index().0];
+    let live = live(model);
+    let is_on_command_line = match (&live, prompt_printing(model, active)) {
+        (Live::Prompt, PromptPrinting::WithoutWidth) => {
+            split_output_after_prompt(&live, earlier).1.is_none()
+        }
+        (Live::Prompt, PromptPrinting::WithCommand | PromptPrinting::Never)
+        | (Live::Program | Live::AlternateScreen | Live::Finished, _) => false,
+    };
+    let rows = active.prompt_grid().len();
+    (is_on_command_line && rows > 0).then_some(rows)
+}
+
 fn replay(model: &TerminalModel, history_rows: usize) -> Vec<u8> {
     let block_list = model.block_list();
     let mut replay = Replay::new();
@@ -98,29 +151,8 @@ fn replay(model: &TerminalModel, history_rows: usize) -> Vec<u8> {
 
     let active = block_list.active_block();
     let earlier = &block_list.blocks()[..block_list.active_block_index().0];
-    let live = if model.is_alt_screen_active() {
-        Live::AlternateScreen
-    } else {
-        match active.state() {
-            BlockState::BeforeExecution => Live::Prompt,
-            BlockState::Executing => Live::Program,
-            BlockState::DoneWithExecution
-            | BlockState::DoneWithNoExecution
-            | BlockState::Background
-            | BlockState::Static => Live::Finished,
-        }
-    };
-    // Output that arrives while the shell waits at its prompt, which what is typed there is
-    // until the shell runs it, is kept in a block of its own right before the active one. On
-    // an ordinary terminal it follows the prompt.
-    let (earlier, after_prompt) = match (&live, earlier.split_last()) {
-        (Live::Prompt, Some((last, rest))) if last.is_background() && !last.finished() => {
-            (rest, Some(last))
-        }
-        (Live::Prompt | Live::Program | Live::AlternateScreen | Live::Finished, _) => {
-            (earlier, None)
-        }
-    };
+    let live = live(model);
+    let (earlier, after_prompt) = split_output_after_prompt(&live, earlier);
 
     // Every mode a program sets is also set on the alternate screen's grid, whichever grid is
     // active, so that grid has the modes of the terminal as a whole. A block's grid starts

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use ::hako_remote::boundary::Boundary;
 use ::hako_remote::output_frame::OutputFrame;
 use ::hako_remote::output_stream::{MAX_FRAME_PAYLOAD, MAX_HELD_OUTPUT, OutputStream};
-use ::hako_remote::prompt_end::PromptEndFinder;
+use ::hako_remote::prompt_lines::PromptLines;
 use ::hako_remote::protocol::{
     EVENT_TERM_CLOSED, EVENT_TERM_SIZE, RpcError, SessionParams, TermInputParams, TermResizeParams,
     TermSize, TermSizeChanged, TermSubscribeResult,
@@ -75,9 +75,9 @@ struct Stream {
     started: Instant,
     output: OutputStream,
     boundary: Boundary,
-    prompt_end: PromptEndFinder,
-    /// Whether the shell prints its prompt as if it took no room. A line break is then sent
-    /// after each prompt, since the line editor draws the command line from the first column.
+    prompt_lines: PromptLines,
+    /// Whether the shell prints its prompt as if it took no room. The prompt is then kept on a
+    /// line of its own, since the line editor draws the command line from the first column.
     prompt_has_no_width: bool,
     /// The size clients were last told.
     size: TermSize,
@@ -108,7 +108,7 @@ impl Stream {
             started: Instant::now(),
             output: OutputStream::new(seq, MAX_HELD_OUTPUT),
             boundary: Boundary::new(),
-            prompt_end: PromptEndFinder::default(),
+            prompt_lines: PromptLines::default(),
             prompt_has_no_width: false,
             size: size_of(terminal),
             sized_by_client: false,
@@ -135,15 +135,12 @@ impl Stream {
                         Phase::Joining | Phase::SettingUp => continue,
                         Phase::Live => {}
                     }
-                    let mut sent = 0;
-                    for prompt_end in self.prompt_end.find(&bytes) {
-                        self.output.push(&bytes[sent..prompt_end]);
-                        if self.prompt_has_no_width {
-                            self.output.push(b"\r\n");
-                        }
-                        sent = prompt_end;
+                    if self.prompt_has_no_width {
+                        self.prompt_lines
+                            .rewrite(&bytes, |piece| self.output.push(piece));
+                    } else {
+                        self.output.push(&bytes);
                     }
-                    self.output.push(&bytes[sent..]);
                 }
                 Err(TryRecvError::Empty) => break Read::UpToDate(count),
                 Err(TryRecvError::Closed) => break Read::Closed,
@@ -340,6 +337,9 @@ impl Terminals {
             stream.boundary.assume_ground();
         }
         stream.prompt_has_no_width = snapshot.prompt_has_no_width;
+        stream
+            .prompt_lines
+            .set_prompt_above(snapshot.prompt_rows_above);
         // The clients that are already subscribed get what the snapshot covers as output.
         stream.announce_size(&subscription.session_id, connection, ctx);
         stream.send_output(&subscription.session_id, connection);

@@ -7,7 +7,7 @@ pub mod boundary;
 pub mod connection;
 pub mod output_frame;
 pub mod output_stream;
-pub mod prompt_end;
+pub mod prompt_lines;
 pub mod protocol;
 
 pub use connection::{
