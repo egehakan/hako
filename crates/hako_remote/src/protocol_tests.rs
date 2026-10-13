@@ -107,6 +107,8 @@ fn names_every_error_code_as_the_protocol_does() {
         ErrorCode::PermissionDenied,
         ErrorCode::Conflict,
         ErrorCode::TooLarge,
+        ErrorCode::GitFailed,
+        ErrorCode::Busy,
     ];
 
     assert_eq!(
@@ -122,7 +124,9 @@ fn names_every_error_code_as_the_protocol_does() {
             "is_a_directory",
             "permission_denied",
             "conflict",
-            "too_large"
+            "too_large",
+            "git_failed",
+            "busy"
         ])
     );
 }
@@ -157,7 +161,14 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("fs.list"), Some(Method::FsList));
     assert_eq!(Method::from_name("fs.read"), Some(Method::FsRead));
     assert_eq!(Method::from_name("fs.write"), Some(Method::FsWrite));
-    assert_eq!(Method::from_name("git.status"), None);
+    assert_eq!(Method::from_name("git.repos"), Some(Method::GitRepos));
+    assert_eq!(Method::from_name("git.status"), Some(Method::GitStatus));
+    assert_eq!(Method::from_name("git.diff"), Some(Method::GitDiff));
+    assert_eq!(Method::from_name("git.commit"), Some(Method::GitCommit));
+    assert_eq!(Method::from_name("git.push"), Some(Method::GitPush));
+    assert_eq!(Method::from_name("git.pull"), Some(Method::GitPull));
+    assert_eq!(Method::from_name("git.discard"), Some(Method::GitDiscard));
+    assert_eq!(Method::from_name("git.fetch"), None);
 }
 
 #[test]
@@ -418,4 +429,98 @@ fn encodes_a_subscription_as_the_protocol_names_its_fields() {
         serde_json::to_value(result).unwrap(),
         json!({ "cols": 80, "rows": 24, "seq": 4096, "snapshot": "aGk=" })
     );
+}
+
+#[test]
+fn encodes_a_repository_and_a_file_as_the_protocol_names_their_fields() {
+    let repo = GitRepo {
+        path: "/code/site-redesign".to_owned(),
+        name: "site-redesign".to_owned(),
+        root: "/code".to_owned(),
+        is_worktree: true,
+        main_path: Some("/code/site".to_owned()),
+        branch: None,
+        head: Some("0a1b".to_owned()),
+        upstream: None,
+        ahead: 0,
+        behind: 2,
+        changed: 3,
+        operation: Some(GitOperation::CherryPick),
+    };
+    let file = GitFile {
+        path: "b.txt".to_owned(),
+        old_path: Some("a.txt".to_owned()),
+        status: GitFileStatus::Renamed,
+        additions: None,
+        deletions: None,
+        binary: true,
+    };
+
+    assert_eq!(
+        serde_json::to_value(repo).unwrap(),
+        json!({
+            "path": "/code/site-redesign",
+            "name": "site-redesign",
+            "root": "/code",
+            "is_worktree": true,
+            "main_path": "/code/site",
+            "branch": null,
+            "head": "0a1b",
+            "upstream": null,
+            "ahead": 0,
+            "behind": 2,
+            "changed": 3,
+            "operation": "cherry-pick"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(file).unwrap(),
+        json!({
+            "path": "b.txt",
+            "old_path": "a.txt",
+            "status": "renamed",
+            "additions": null,
+            "deletions": null,
+            "binary": true
+        })
+    );
+}
+
+#[test]
+fn encodes_each_kind_of_diff() {
+    let binary = GitDiff::Binary {
+        old_size: None,
+        new_size: Some(4),
+    };
+
+    assert_eq!(
+        serde_json::to_value(GitDiff::Text {
+            diff: String::new()
+        })
+        .unwrap(),
+        json!({ "kind": "text", "diff": "" })
+    );
+    assert_eq!(
+        serde_json::to_value(binary).unwrap(),
+        json!({ "kind": "binary", "old_size": null, "new_size": 4 })
+    );
+    assert_eq!(
+        serde_json::to_value(GitDiff::TooLarge { limit: 1_048_576 }).unwrap(),
+        json!({ "kind": "too_large", "limit": 1_048_576 })
+    );
+}
+
+#[test]
+fn reads_the_paths_of_a_discard_when_they_are_null_or_left_out() {
+    let params = |value| serde_json::from_value::<GitDiscardParams>(value);
+
+    let everything = params(json!({ "repo": "/r" })).unwrap();
+    let nulls = params(json!({ "repo": "/r", "path": null, "old_path": null })).unwrap();
+    let one = params(json!({ "repo": "/r", "path": "a.txt" })).unwrap();
+
+    assert_eq!(everything.path, None);
+    assert_eq!(nulls, everything);
+    assert_eq!(one.path.as_deref(), Some("a.txt"));
+    assert!(params(json!({ "path": "a.txt" })).is_err());
+    assert!(params(json!({ "repo": 1 })).is_err());
 }

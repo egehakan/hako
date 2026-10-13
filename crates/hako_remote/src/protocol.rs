@@ -21,6 +21,7 @@ pub const REPLACED_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 pub const EVENT_WORKSPACE_CHANGED: &str = "workspace.changed";
 pub const EVENT_TERM_SIZE: &str = "term.size";
 pub const EVENT_TERM_CLOSED: &str = "term.closed";
+pub const EVENT_GIT_CHANGED: &str = "git.changed";
 
 pub const NOTIFICATION_TERM_INPUT: &str = "term.input";
 
@@ -128,6 +129,8 @@ pub enum ErrorCode {
     PermissionDenied,
     Conflict,
     TooLarge,
+    GitFailed,
+    Busy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +184,13 @@ pub enum Method {
     FsList,
     FsRead,
     FsWrite,
+    GitRepos,
+    GitStatus,
+    GitDiff,
+    GitCommit,
+    GitPush,
+    GitPull,
+    GitDiscard,
 }
 
 impl Method {
@@ -201,6 +211,13 @@ impl Method {
             "fs.list" => Some(Self::FsList),
             "fs.read" => Some(Self::FsRead),
             "fs.write" => Some(Self::FsWrite),
+            "git.repos" => Some(Self::GitRepos),
+            "git.status" => Some(Self::GitStatus),
+            "git.diff" => Some(Self::GitDiff),
+            "git.commit" => Some(Self::GitCommit),
+            "git.push" => Some(Self::GitPush),
+            "git.pull" => Some(Self::GitPull),
+            "git.discard" => Some(Self::GitDiscard),
             _ => None,
         }
     }
@@ -483,6 +500,160 @@ pub struct FsWriteParams {
 pub struct FsWrite {
     pub mtime: i64,
     pub size: u64,
+}
+
+/// A working tree, as the source control methods describe it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRepo {
+    /// The root of the working tree, which is what names the repository.
+    pub path: String,
+    pub name: String,
+    /// The directory of the folder the working tree belongs to.
+    pub root: String,
+    pub is_worktree: bool,
+    /// Set for a linked worktree of a repository that has a working tree of its own.
+    pub main_path: Option<String>,
+    /// `None` while `HEAD` is detached.
+    pub branch: Option<String>,
+    /// `None` before the first commit.
+    pub head: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    /// How many files `git.status` lists, before its limit.
+    pub changed: usize,
+    pub operation: Option<GitOperation>,
+}
+
+/// What is unfinished in a working tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitOperation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+/// A file that differs from `HEAD`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFile {
+    /// Relative to the root of the working tree.
+    pub path: String,
+    /// Where a renamed file was.
+    pub old_path: Option<String>,
+    pub status: GitFileStatus,
+    /// `None` for a binary file, and for one whose lines were not counted.
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub binary: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitFileStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflicted,
+}
+
+/// Params of the methods that act on a whole repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRepoParams {
+    pub repo: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffParams {
+    pub repo: String,
+    pub path: String,
+    #[serde(default)]
+    pub old_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitParams {
+    pub repo: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiscardParams {
+    pub repo: String,
+    /// The one file to put back; `None` for every change in the repository.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub old_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRepos {
+    pub repos: Vec<GitRepo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatus {
+    pub repo: GitRepo,
+    pub files: Vec<GitFile>,
+    /// Whether more files differ than these.
+    pub truncated: bool,
+}
+
+/// The result of `git.diff`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitDiff {
+    Text {
+        diff: String,
+    },
+    Binary {
+        /// In bytes, in `HEAD`; `None` when the file is not there.
+        old_size: Option<u64>,
+        /// In bytes, in the working tree; `None` when the file is not there.
+        new_size: Option<u64>,
+    },
+    TooLarge {
+        /// The most bytes a diff may have to be sent.
+        limit: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommit {
+    /// The full id of the new commit.
+    pub commit: String,
+    pub output: String,
+    pub repo: GitRepo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPush {
+    pub output: String,
+    /// Whether the branch was given an upstream by this push.
+    pub published: bool,
+    pub repo: GitRepo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPull {
+    pub output: String,
+    pub repo: GitRepo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiscard {
+    pub repo: GitRepo,
+}
+
+/// Data of the `git.changed` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChanged {
+    /// The repository that may have changed; `None` when any of them may have.
+    pub repo: Option<String>,
 }
 
 #[cfg(test)]
