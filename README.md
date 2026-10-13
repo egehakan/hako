@@ -4,7 +4,8 @@ Hako is a personal build of [Warp](https://github.com/warpdotdev/warp), the open
 
 ## What it adds
 
-- Source control for a folder of repositories: one list of repositories and worktrees, with the diff beside it.
+- Source control for a folder of repositories: one list of repositories and worktrees, with the diff beside it, a branch menu on each repository, and a history graph of the current branch and its upstream.
+- Remote access: the app dials out to a relay so the companion phone web app can show its folders, tabs and terminals, type into them, browse and edit files, move files to and from the phone, use source control, and receive notifications when a command-line agent waits or finishes or a long command ends. It is off until turned on under Settings > Features > Remote Access, and it keeps the Mac awake while it is on.
 - A Project Explorer whose files open beside it, with preview tabs, copy, cut and paste, move to Trash, and undo.
 - In-app viewers for images, SVG, PDF, CSV and Office files.
 - Persistent tab folders that point to directories.
@@ -34,7 +35,7 @@ The licences are those of upstream and are unchanged: the `warpui_core` and `war
 
 ## Companion app
 
-A phone web app for Hako lives at [egehakan/hako-remote](https://github.com/egehakan/hako-remote).
+A phone web app for Hako lives at [egehakan/hako-remote](https://github.com/egehakan/hako-remote). It contains the relay the app connects to and the protocol both sides speak (`docs/protocol.md`). The desktop side is in `crates/hako_remote` and `app/src/hako_remote`. Remote access needs a relay address in the Remote Access settings and the relay's access key in `~/.hako/remote.key`.
 
 # Upstream README
 
