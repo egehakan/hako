@@ -87,6 +87,8 @@ use crate::server::server_api::{ServerApi, ServerApiProvider};
 use crate::server::team_scope::RequestTeamScope;
 use crate::terminal::view::ConversationRestorationInNewPaneType;
 use crate::workflows::workflow::Workflow;
+#[cfg(not(target_family = "wasm"))]
+use crate::workspaces::update_manager::TeamUpdateManager;
 use crate::workspaces::user_workspaces::HeadlessTeamScope;
 
 mod admin;
@@ -896,7 +898,7 @@ impl AgentDriverRunner {
             setup_events
                 .record_result(
                     SetupStep::TeamMetadataRefresh,
-                    Self::refresh_team_metadata(&foreground),
+                    Self::refresh_team_metadata(&foreground, args.task_id.is_some()),
                 )
                 .await?;
             let agent_driver_team_scope = if let Some(config) = execution_config {
@@ -1084,10 +1086,22 @@ impl AgentDriverRunner {
 
     async fn refresh_team_metadata(
         foreground: &ModelSpawner<Self>,
+        cloud_startup: bool,
     ) -> Result<(), AgentDriverError> {
         foreground
             .spawn(
-                |_, ctx| -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+                move |_, ctx| -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+                    #[cfg(not(target_family = "wasm"))]
+                    if cloud_startup {
+                        return Box::pin(
+                            TeamUpdateManager::handle(ctx)
+                                .update(ctx, |manager, ctx| {
+                                    manager.refresh_workspace_metadata_for_cloud_agent(ctx)
+                                }),
+                        );
+                    }
+                    #[cfg(target_family = "wasm")]
+                    let _ = cloud_startup;
                     Box::pin(common::refresh_workspace_metadata(ctx))
                 },
             )

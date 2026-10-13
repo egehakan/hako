@@ -1,5 +1,9 @@
+#[cfg(not(target_family = "wasm"))]
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::channel::oneshot::{self, Receiver};
@@ -23,6 +27,8 @@ use crate::persistence::ModelEvent;
 use crate::pricing::PricingInfoModel;
 use crate::server::cloud_objects::update_manager::UpdateManager;
 use crate::server::ids::ServerId;
+#[cfg(not(target_family = "wasm"))]
+use crate::server::retry_strategies::with_retry;
 use crate::server::retry_strategies::{
     OUT_OF_BAND_REQUEST_RETRY_STRATEGY, PERIODIC_POLL, PERIODIC_POLL_RETRY_STRATEGY,
 };
@@ -182,6 +188,49 @@ impl TeamUpdateManager {
             },
         );
         rx
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn refresh_workspace_metadata_for_cloud_agent(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> impl Future<Output = Result<()>> + Send + use<> {
+        let team_client = AuthStateProvider::as_ref(ctx)
+            .get()
+            .is_logged_in()
+            .then(|| self.team_client.clone());
+        let foreground = ctx.spawner();
+
+        async move {
+            let Some(team_client) = team_client else {
+                return Ok(());
+            };
+            let response = tokio::time::timeout(
+                Duration::from_secs(30),
+                with_retry(
+                    "Cloud agent startup metadata",
+                    || team_client.workspaces_metadata(),
+                    // The workload token may be rejected until the execution claim is committed.
+                    |_| true,
+                    tokio::time::sleep,
+                    |_| Some(duration_with_jitter(Duration::from_secs(1), 0.5)),
+                ),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timed out refreshing team metadata"))??;
+
+            foreground
+                .spawn(move |manager, ctx| {
+                    manager
+                        .handle_workspace_metadata_with_request_state(
+                            RequestState::RequestSucceeded(response),
+                            ctx,
+                        )
+                        .expect("Successful metadata refresh has a terminal result")
+                })
+                .await
+                .context("Team metadata refresh was canceled")?
+        }
     }
 
     fn abort_existing_poll(&mut self) {
