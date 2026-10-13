@@ -8,6 +8,7 @@ pub mod boundary;
 pub mod connection;
 pub mod files;
 pub mod git;
+pub mod git_graph;
 pub mod git_history;
 mod git_history_format;
 pub mod git_run;
