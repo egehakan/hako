@@ -32,12 +32,15 @@ pub const WARP_CONFIG_DIR: &str = ".warp";
 /// This is currently only used on Windows to maintain backwards compatibility.
 pub const WARP_LOGS_DIR: &str = "logs";
 
+/// The home-relative config directory name of the OSS channel, which is distributed as Hako.
+const OSS_CONFIG_DIR: &str = ".hako";
+
 fn base_warp_config_dir_name() -> String {
     match ChannelState::channel() {
         // Preview shares the same directory as Stable for backward
         // compatibility — existing users already have config in `.warp`.
         Channel::Stable | Channel::Preview => WARP_CONFIG_DIR.to_owned(),
-        Channel::Oss => format!("{WARP_CONFIG_DIR}-oss"),
+        Channel::Oss => OSS_CONFIG_DIR.to_owned(),
         Channel::Dev => format!("{WARP_CONFIG_DIR}-dev"),
         Channel::Integration => format!("{WARP_CONFIG_DIR}-integration"),
         Channel::Local => format!("{WARP_CONFIG_DIR}-local"),
@@ -101,7 +104,7 @@ fn macos_config_dir_name_for(channel: Channel, data_profile: Option<&str>) -> St
     let base_dir_name = match channel {
         Channel::Stable => WARP_CONFIG_DIR.to_owned(),
         Channel::Preview => format!("{WARP_CONFIG_DIR}-preview"),
-        Channel::Oss => format!("{WARP_CONFIG_DIR}-oss"),
+        Channel::Oss => OSS_CONFIG_DIR.to_owned(),
         Channel::Dev => format!("{WARP_CONFIG_DIR}-dev"),
         Channel::Integration => format!("{WARP_CONFIG_DIR}-integration"),
         Channel::Local => format!("{WARP_CONFIG_DIR}-local"),
@@ -212,7 +215,17 @@ pub fn gui_mcp_config_file_path() -> Option<PathBuf> {
 /// changed once established.
 #[cfg(target_os = "macos")]
 fn macos_tui_config_dir_name() -> String {
-    macos_config_dir_name().replacen(WARP_CONFIG_DIR, ".warp_cli", 1)
+    let gui_dir_name = macos_config_dir_name();
+    match ChannelState::channel() {
+        // The OSS GUI directory is not a `.warp*` name, so swapping that prefix would leave the
+        // TUI sharing the GUI's directory.
+        Channel::Oss => gui_dir_name.replacen(OSS_CONFIG_DIR, ".warp_cli-oss", 1),
+        Channel::Stable
+        | Channel::Preview
+        | Channel::Dev
+        | Channel::Integration
+        | Channel::Local => gui_dir_name.replacen(WARP_CONFIG_DIR, ".warp_cli", 1),
+    }
 }
 
 /// Returns the path to the directory where non-portable configuration files for
