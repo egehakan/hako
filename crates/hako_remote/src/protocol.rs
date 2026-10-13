@@ -200,6 +200,10 @@ pub enum Method {
     GitPush,
     GitPull,
     GitDiscard,
+    GitBranches,
+    GitSwitch,
+    GitLog,
+    GitShow,
 }
 
 impl Method {
@@ -235,6 +239,10 @@ impl Method {
             "git.push" => Some(Self::GitPush),
             "git.pull" => Some(Self::GitPull),
             "git.discard" => Some(Self::GitDiscard),
+            "git.branches" => Some(Self::GitBranches),
+            "git.switch" => Some(Self::GitSwitch),
+            "git.log" => Some(Self::GitLog),
+            "git.show" => Some(Self::GitShow),
             _ => None,
         }
     }
@@ -698,6 +706,10 @@ pub struct GitDiffParams {
     pub path: String,
     #[serde(default)]
     pub old_path: Option<String>,
+    /// The commit whose change to the file is asked for; `None` for the working tree against
+    /// `HEAD`.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -773,6 +785,156 @@ pub struct GitPull {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitDiscard {
     pub repo: GitRepo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSwitchParams {
+    pub repo: String,
+    pub branch: String,
+    pub kind: GitSwitchKind,
+}
+
+/// What `git.switch` is to do with the branch it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSwitchKind {
+    /// Check out a local branch.
+    Local,
+    /// Make a local branch that tracks the remote-tracking branch named, and check it out.
+    Remote,
+    /// Make a branch at `HEAD` and check it out.
+    New,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLogParams {
+    pub repo: String,
+    /// How many commits to answer with; `None` for the default.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// How many of the newest commits to pass over.
+    #[serde(default)]
+    pub skip: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitShowParams {
+    pub repo: String,
+    /// A full or abbreviated commit id.
+    pub commit: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranch {
+    /// Short: `main` for a local branch, `origin/main` for a remote-tracking one.
+    pub name: String,
+    pub kind: GitBranchKind,
+    /// The full id of the commit the branch points at.
+    pub tip: String,
+    /// When the tip was committed, in milliseconds since the epoch.
+    pub time: i64,
+    /// The first line of the tip's message.
+    pub subject: String,
+    /// The short name of what a local branch tracks.
+    pub upstream: Option<String>,
+    /// `None` without an upstream.
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
+    /// The other working tree that has a local branch checked out.
+    pub worktree: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitBranchKind {
+    Local,
+    Remote,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranches {
+    /// The branch that is checked out; `None` while `HEAD` is detached.
+    pub current: Option<String>,
+    pub detached: bool,
+    /// `None` before the first commit.
+    pub head: Option<String>,
+    /// Local branches before remote-tracking ones, each kind with its newest tip first.
+    pub branches: Vec<GitBranch>,
+    /// Whether the repository has more branches than these.
+    pub truncated: bool,
+}
+
+/// The result of `git.switch`: where `HEAD` is afterwards.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSwitch {
+    pub current: Option<String>,
+    pub head: Option<String>,
+}
+
+/// A commit in the history of a branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLogCommit {
+    pub id: String,
+    /// Full ids, the first parent first.
+    pub parents: Vec<String>,
+    /// The first line of the message.
+    pub subject: String,
+    /// The author's name.
+    pub author: String,
+    /// When it was written, in milliseconds since the epoch.
+    pub time: i64,
+    /// The branches and tags that point at it.
+    pub refs: Vec<GitRef>,
+    pub side: GitSide,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRef {
+    pub name: String,
+    pub kind: GitRefKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitRefKind {
+    /// The branch that is checked out, or `HEAD` itself while it is detached.
+    Head,
+    Local,
+    Remote,
+    Tag,
+}
+
+/// Which of `HEAD` and the upstream of its branch a commit can be reached from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSide {
+    Both,
+    /// Only from `HEAD`: not pushed yet.
+    Local,
+    /// Only from the upstream: not pulled yet.
+    Remote,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLog {
+    /// Newest first, and a commit always before its parents.
+    pub commits: Vec<GitLogCommit>,
+    /// Whether older commits follow these.
+    pub has_more: bool,
+    pub head: Option<String>,
+    /// The commit the upstream of the current branch is at.
+    pub upstream: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitShow {
+    pub commit: GitLogCommit,
+    /// The message after its first line.
+    pub body: String,
+    /// What the commit changed against its first parent.
+    pub files: Vec<GitFile>,
+    /// Whether it changed more files than these.
+    pub truncated: bool,
 }
 
 /// Data of the `git.changed` event.

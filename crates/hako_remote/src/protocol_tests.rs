@@ -194,6 +194,10 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("git.push"), Some(Method::GitPush));
     assert_eq!(Method::from_name("git.pull"), Some(Method::GitPull));
     assert_eq!(Method::from_name("git.discard"), Some(Method::GitDiscard));
+    assert_eq!(Method::from_name("git.branches"), Some(Method::GitBranches));
+    assert_eq!(Method::from_name("git.switch"), Some(Method::GitSwitch));
+    assert_eq!(Method::from_name("git.log"), Some(Method::GitLog));
+    assert_eq!(Method::from_name("git.show"), Some(Method::GitShow));
     assert_eq!(Method::from_name("git.fetch"), None);
 }
 
@@ -573,6 +577,88 @@ fn reads_the_paths_of_a_discard_when_they_are_null_or_left_out() {
     assert_eq!(one.path.as_deref(), Some("a.txt"));
     assert!(params(json!({ "path": "a.txt" })).is_err());
     assert!(params(json!({ "repo": 1 })).is_err());
+}
+
+#[test]
+fn encodes_a_branch_and_a_commit_as_the_protocol_names_their_fields() {
+    let branch = GitBranch {
+        name: "origin/main".to_owned(),
+        kind: GitBranchKind::Remote,
+        tip: "0a1b".to_owned(),
+        time: 1_700_000_000_000,
+        subject: "First".to_owned(),
+        upstream: None,
+        ahead: None,
+        behind: None,
+        worktree: None,
+    };
+    let commit = GitLogCommit {
+        id: "0a1b".to_owned(),
+        parents: vec!["2c3d".to_owned()],
+        subject: "First".to_owned(),
+        author: "Ada".to_owned(),
+        time: 1_700_000_000_000,
+        refs: vec![GitRef {
+            name: "main".to_owned(),
+            kind: GitRefKind::Head,
+        }],
+        side: GitSide::Local,
+    };
+
+    assert_eq!(
+        serde_json::to_value(branch).unwrap(),
+        json!({
+            "name": "origin/main",
+            "kind": "remote",
+            "tip": "0a1b",
+            "time": 1_700_000_000_000_i64,
+            "subject": "First",
+            "upstream": null,
+            "ahead": null,
+            "behind": null,
+            "worktree": null
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(commit).unwrap(),
+        json!({
+            "id": "0a1b",
+            "parents": ["2c3d"],
+            "subject": "First",
+            "author": "Ada",
+            "time": 1_700_000_000_000_i64,
+            "refs": [{ "name": "main", "kind": "head" }],
+            "side": "local"
+        })
+    );
+}
+
+#[test]
+fn reads_the_params_of_the_branch_and_history_methods() {
+    let switch: GitSwitchParams =
+        serde_json::from_value(json!({ "repo": "/r", "branch": "origin/a", "kind": "remote" }))
+            .unwrap();
+    let log: GitLogParams = serde_json::from_value(json!({ "repo": "/r" })).unwrap();
+    let paged: GitLogParams =
+        serde_json::from_value(json!({ "repo": "/r", "limit": 200, "skip": 50 })).unwrap();
+    let diff: GitDiffParams =
+        serde_json::from_value(json!({ "repo": "/r", "path": "a.txt", "commit": "0a1b" })).unwrap();
+    let working_tree: GitDiffParams =
+        serde_json::from_value(json!({ "repo": "/r", "path": "a.txt" })).unwrap();
+
+    assert_eq!(switch.kind, GitSwitchKind::Remote);
+    assert_eq!((log.limit, log.skip), (None, None));
+    assert_eq!((paged.limit, paged.skip), (Some(200), Some(50)));
+    assert_eq!(diff.commit.as_deref(), Some("0a1b"));
+    assert_eq!(working_tree.commit, None);
+    assert!(
+        serde_json::from_value::<GitSwitchParams>(
+            json!({ "repo": "/r", "branch": "a", "kind": "force" })
+        )
+        .is_err()
+    );
+    assert!(serde_json::from_value::<GitLogParams>(json!({ "repo": "/r", "limit": -1 })).is_err());
+    assert!(serde_json::from_value::<GitLogParams>(json!({ "repo": "/r", "skip": 1.5 })).is_err());
 }
 
 #[test]
