@@ -1,12 +1,13 @@
 //! Source-control overview of every repository nested under a folder that is not itself a
-//! repository: a list of repositories and their changed files, the diff of one selected file
-//! beside it, and each repository's git actions.
+//! repository: a list of repositories with their changed files and the graph of their history,
+//! the diff of one selected file beside it, and each repository's branch and git actions.
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use async_channel::Sender;
 use futures::future::BoxFuture;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
@@ -30,6 +31,7 @@ use warpui::{
     ViewHandle, WeakViewHandle, keymap,
 };
 
+use super::branch_menu::{BranchMenu, BranchMenuEvent};
 use super::code_review_view::{CONTENT_LEFT_MARGIN, CONTENT_RIGHT_MARGIN};
 use super::diff_state::{DiffStateModel, GitFileStatus};
 use super::git_actions::{self, SyncOutcome};
@@ -39,6 +41,7 @@ use super::nested_repo_actions::{
     layout_actions, operation_in_progress_message, sync_message,
 };
 use super::nested_repo_file_diff::{NestedRepoFileDiffEvent, NestedRepoFileDiffView};
+use super::nested_repo_history::RepoHistory;
 use super::nested_repos::{
     NestedRepoEntry, NestedRepoFile, NestedRepoKind, NestedRepoStatus, NestedReposEvent,
     NestedReposModel,
@@ -124,6 +127,18 @@ pub enum NestedReposViewAction {
     },
     ConfirmDiscard,
     CancelDiscard,
+    ToggleBranchMenu(PathBuf),
+    ToggleGraph(PathBuf),
+    /// Opens a commit of the graph to show its files, or closes the one that is open.
+    ToggleCommit {
+        repo_root: PathBuf,
+        commit: String,
+    },
+    SelectCommitFile {
+        repo_root: PathBuf,
+        commit: String,
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -143,19 +158,95 @@ enum OverviewRow {
         repo_index: usize,
         file_index: usize,
     },
+    /// The heading that opens and closes a repository's graph.
+    GraphHeader {
+        repo_index: usize,
+    },
+    Commit {
+        repo_index: usize,
+        commit_index: usize,
+    },
+    /// A line of text under the open commit.
+    CommitNote {
+        repo_index: usize,
+        commit_index: usize,
+        line: usize,
+    },
+    /// A file the open commit changed.
+    CommitFile {
+        repo_index: usize,
+        commit_index: usize,
+        file_index: usize,
+    },
+    /// The line after a repository's last commit.
+    GraphNote {
+        repo_index: usize,
+    },
 }
 
-/// Lays repositories out as one flat list of rows, given each repository's changed-file count and
-/// whether it is expanded.
-fn flatten_rows(repos: impl IntoIterator<Item = (usize, bool)>) -> Vec<OverviewRow> {
+/// The rows the open commit of a graph has under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OpenCommitRows {
+    /// Where the commit is in the history.
+    index: usize,
+    notes: usize,
+    files: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GraphRows {
+    commits: usize,
+    open: Option<OpenCommitRows>,
+    /// Whether a line follows the last commit.
+    has_note: bool,
+}
+
+/// What a repository contributes to the list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RepoRows {
+    files: usize,
+    is_expanded: bool,
+    /// `None` while the repository's graph is closed.
+    graph: Option<GraphRows>,
+}
+
+/// Lays repositories out as one flat list of rows: each repository's header and, while it is
+/// expanded, its changed files and then its graph.
+fn flatten_rows(repos: impl IntoIterator<Item = RepoRows>) -> Vec<OverviewRow> {
     let mut rows = Vec::new();
-    for (repo_index, (file_count, is_expanded)) in repos.into_iter().enumerate() {
+    for (repo_index, repo) in repos.into_iter().enumerate() {
         rows.push(OverviewRow::Repo { repo_index });
-        if is_expanded {
-            rows.extend((0..file_count).map(|file_index| OverviewRow::File {
+        if !repo.is_expanded {
+            continue;
+        }
+        rows.extend((0..repo.files).map(|file_index| OverviewRow::File {
+            repo_index,
+            file_index,
+        }));
+        rows.push(OverviewRow::GraphHeader { repo_index });
+        let Some(graph) = repo.graph else {
+            continue;
+        };
+        for commit_index in 0..graph.commits {
+            rows.push(OverviewRow::Commit {
                 repo_index,
-                file_index,
-            }));
+                commit_index,
+            });
+            if let Some(open) = graph.open.filter(|open| open.index == commit_index) {
+                rows.extend((0..open.notes).map(|line| OverviewRow::CommitNote {
+                    repo_index,
+                    commit_index,
+                    line,
+                }));
+                rows.extend((0..open.files).map(|file_index| OverviewRow::CommitFile {
+                    repo_index,
+                    commit_index,
+                    file_index,
+                }));
+            }
+        }
+        if graph.has_note {
+            rows.push(OverviewRow::GraphNote { repo_index });
         }
     }
     rows
@@ -204,12 +295,17 @@ fn is_main_branch(branch: &str, main_branch: &str) -> bool {
     main_branch.strip_prefix("origin/").unwrap_or(main_branch) == branch
 }
 
-/// A file whose diff is shown beside the list.
+/// A file whose diff is shown beside the list. Paths are relative to the repository root.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SelectedFile {
-    repo_root: PathBuf,
-    /// Path relative to the repository root.
-    path: String,
+enum Selection {
+    /// A changed file of the working tree, against `HEAD`.
+    WorkingTree { repo_root: PathBuf, path: String },
+    /// What one commit of the graph changed in a file.
+    Commit {
+        repo_root: PathBuf,
+        commit: String,
+        path: String,
+    },
 }
 
 /// What a repository's row reports in place of its branch.
@@ -226,8 +322,14 @@ struct RepoMouseStates {
     header: MouseStateHandle,
     actions: HashMap<RepoAction, MouseStateHandle>,
     overflow_button: MouseStateHandle,
+    branch: MouseStateHandle,
     /// One handle per changed file, in the order the files are listed.
     files: Vec<MouseStateHandle>,
+    graph_header: MouseStateHandle,
+    /// One handle per commit of the history read so far.
+    commits: Vec<MouseStateHandle>,
+    /// One handle per file of the open commit.
+    commit_files: Vec<MouseStateHandle>,
 }
 
 impl Default for RepoMouseStates {
@@ -247,7 +349,11 @@ impl Default for RepoMouseStates {
             .map(|action| (action, MouseStateHandle::default()))
             .collect(),
             overflow_button: Default::default(),
+            branch: Default::default(),
             files: Vec::new(),
+            graph_header: Default::default(),
+            commits: Vec::new(),
+            commit_files: Vec::new(),
         }
     }
 }
@@ -275,9 +381,22 @@ pub struct NestedReposView {
     list_state: UniformListState,
     scroll_state: ScrollStateHandle,
 
-    selected_file: Option<SelectedFile>,
+    selected_file: Option<Selection>,
     file_diff: ViewHandle<NestedRepoFileDiffView>,
     list_column_state: ResizableStateHandle,
+
+    /// Whether each repository's graph is open, by its root, where that has been chosen. Kept
+    /// between runs.
+    graph_expanded: HashMap<PathBuf, bool>,
+    histories: HashMap<PathBuf, RepoHistory>,
+    /// The status each repository had when its history was last read, by its root.
+    history_versions: HashMap<PathBuf, u64>,
+    /// Tells this view which rows of the list are on screen.
+    visible_rows_tx: Sender<Range<usize>>,
+    branch_menu: ViewHandle<BranchMenu>,
+    branch_menu_repo: Option<PathBuf>,
+    /// The status the repository of the branch menu had when its branches were last listed.
+    branch_menu_version: u64,
 
     activities: HashMap<PathBuf, RepoActivity>,
     next_message_id: usize,
@@ -317,6 +436,21 @@ impl NestedReposView {
             MenuEvent::ItemHovered => {}
         });
 
+        let branch_menu = ctx.add_typed_action_view(BranchMenu::new);
+        ctx.subscribe_to_view(&branch_menu, |me, _, event, ctx| match event {
+            BranchMenuEvent::Switch { branch, kind } => {
+                let repo = me.branch_menu_repo.clone();
+                me.close_branch_menu(ctx);
+                if let Some(repo) = repo {
+                    me.switch_branch(&repo, branch.clone(), *kind, ctx);
+                }
+            }
+            BranchMenuEvent::Close => me.close_branch_menu(ctx),
+        });
+
+        let (visible_rows_tx, visible_rows_rx) = async_channel::unbounded();
+        let _ = ctx.spawn_stream_local(visible_rows_rx, Self::handle_visible_rows, |_, _| {});
+
         let discard_confirm_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Discard changes", DangerPrimaryTheme).on_click(|ctx| {
                 ctx.dispatch_typed_action(NestedReposViewAction::ConfirmDiscard);
@@ -340,6 +474,13 @@ impl NestedReposView {
             selected_file: None,
             file_diff,
             list_column_state: resizable_state_handle(DEFAULT_LIST_COLUMN_WIDTH),
+            graph_expanded: graph::read_graph_sections(ctx),
+            histories: HashMap::new(),
+            history_versions: HashMap::new(),
+            visible_rows_tx,
+            branch_menu,
+            branch_menu_repo: None,
+            branch_menu_version: 0,
             activities: HashMap::new(),
             next_message_id: 0,
             overflow_menu,
@@ -369,65 +510,150 @@ impl NestedReposView {
         self.entry(repo_root, app)?.status.as_ref()
     }
 
+    /// What `entry` contributes to the list as things stand.
+    fn repo_rows(&self, entry: &NestedRepoEntry, repo_count: usize) -> RepoRows {
+        let root = &entry.repo.root;
+        let graph = self.is_graph_expanded(root, repo_count).then(|| {
+            let history = self.histories.get(root);
+            GraphRows {
+                commits: history.map_or(0, |history| history.commits().len()),
+                open: history.and_then(|history| {
+                    let open = history.open()?;
+                    Some(OpenCommitRows {
+                        index: history.open_index()?,
+                        notes: open.notes().len(),
+                        files: open.files().len(),
+                    })
+                }),
+                has_note: history.is_some_and(|history| history.note().is_some()),
+            }
+        });
+        RepoRows {
+            files: changed_file_count(entry),
+            is_expanded: self.is_expanded(root),
+            graph,
+        }
+    }
+
     fn sync_with_model(&mut self, ctx: &mut ViewContext<Self>) {
         let model = self.model.clone();
         let entries = model.as_ref(ctx).entries();
+        let repo_count = entries.len();
+        let is_listed = |root: &PathBuf| entries.iter().any(|entry| &entry.repo.root == root);
 
-        self.mouse_states
-            .retain(|root, _| entries.iter().any(|entry| &entry.repo.root == root));
+        self.mouse_states.retain(|root, _| is_listed(root));
+        self.histories.retain(|root, _| is_listed(root));
+        self.history_versions.retain(|root, _| is_listed(root));
+        let mut changed_histories = Vec::new();
         for entry in entries {
+            let root = &entry.repo.root;
             let file_count = changed_file_count(entry);
             if entry.status.is_some() {
                 self.expanded
-                    .entry(entry.repo.root.clone())
+                    .entry(root.clone())
                     .or_insert_with(|| is_expanded_by_default(file_count));
             }
-            self.mouse_states
-                .entry(entry.repo.root.clone())
-                .or_default()
-                .files
-                .resize_with(file_count, Default::default);
+            if self.is_expanded(root) && self.is_graph_expanded(root, repo_count) {
+                self.histories.entry(root.clone()).or_default();
+                // Every read of the status follows something that may have moved the history.
+                if entry.status_version > 0
+                    && self.history_versions.get(root) != Some(&entry.status_version)
+                {
+                    self.history_versions
+                        .insert(root.clone(), entry.status_version);
+                    changed_histories.push(root.clone());
+                }
+            }
+            let history = self.histories.get(root);
+            let mouse_states = self.mouse_states.entry(root.clone()).or_default();
+            mouse_states.files.resize_with(file_count, Default::default);
+            mouse_states.commits.resize_with(
+                history.map_or(0, |history| history.commits().len()),
+                Default::default,
+            );
+            mouse_states.commit_files.resize_with(
+                history
+                    .and_then(RepoHistory::open)
+                    .map_or(0, |open| open.files().len()),
+                Default::default,
+            );
         }
-        self.rows = flatten_rows(entries.iter().map(|entry| {
-            (
-                changed_file_count(entry),
-                self.is_expanded(&entry.repo.root),
-            )
-        }));
+        self.rows = flatten_rows(
+            entries
+                .iter()
+                .map(|entry| self.repo_rows(entry, repo_count)),
+        );
 
         if self
             .discard_confirmation
             .as_ref()
-            .is_some_and(|confirmation| {
-                !entries
-                    .iter()
-                    .any(|entry| entry.repo.root == confirmation.repo_root)
-            })
+            .is_some_and(|confirmation| !is_listed(&confirmation.repo_root))
         {
             self.discard_confirmation = None;
+        }
+        let branch_menu_version = self.branch_menu_repo.as_ref().map(|root| {
+            entries
+                .iter()
+                .find(|entry| &entry.repo.root == root)
+                .map(|entry| entry.status_version)
+        });
+
+        for root in changed_histories {
+            self.reload_history(&root, ctx);
+        }
+        if let (Some(version), Some(root)) = (branch_menu_version, self.branch_menu_repo.clone()) {
+            match version {
+                Some(version) if version != self.branch_menu_version => {
+                    self.branch_menu_version = version;
+                    self.list_branches(&root, ctx);
+                }
+                Some(_) => {}
+                None => self.close_branch_menu(ctx),
+            }
         }
         self.sync_file_diff(ctx);
         ctx.notify();
     }
 
-    /// Keeps the diff beside the list in step with the selected file's current status, and
-    /// closes it when the file is no longer changed.
+    /// Keeps the diff beside the list in step with the selected file: a changed file's current
+    /// status, or the open commit a file was picked from. Closes it when the file is no longer
+    /// changed, or the commit no longer open.
     fn sync_file_diff(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(selected) = self.selected_file.clone() else {
-            return;
-        };
-        let current = self.status(&selected.repo_root, ctx).and_then(|status| {
-            let file = status
-                .files
-                .iter()
-                .find(|file| file.path == selected.path)?;
-            Some((file.clone(), status.head_oid.clone()))
-        });
-        match current {
-            Some((file, head_oid)) => self.file_diff.update(ctx, |file_diff, ctx| {
-                file_diff.show(selected.repo_root, file, head_oid, ctx);
-            }),
-            None => self.close_file_diff(ctx),
+        match self.selected_file.clone() {
+            Some(Selection::WorkingTree { repo_root, path }) => {
+                let current = self.status(&repo_root, ctx).and_then(|status| {
+                    let file = status.files.iter().find(|file| file.path == path)?;
+                    Some((file.clone(), status.head_oid.clone()))
+                });
+                match current {
+                    Some((file, head_oid)) => self.file_diff.update(ctx, |file_diff, ctx| {
+                        file_diff.show(repo_root, file, head_oid, ctx);
+                    }),
+                    None => self.close_file_diff(ctx),
+                }
+            }
+            Some(Selection::Commit {
+                repo_root,
+                commit,
+                path,
+            }) => {
+                let current = self
+                    .histories
+                    .get(&repo_root)
+                    .and_then(RepoHistory::open)
+                    .filter(|open| open.id == commit)
+                    .and_then(|open| {
+                        let file = open.files().iter().find(|file| file.path == path)?;
+                        Some((file.clone(), open.parent().map(str::to_owned)))
+                    });
+                match current {
+                    Some((file, parent)) => self.file_diff.update(ctx, |file_diff, ctx| {
+                        file_diff.show_commit_file(repo_root, commit, parent, file, ctx);
+                    }),
+                    None => self.close_file_diff(ctx),
+                }
+            }
+            None => {}
         }
     }
 
@@ -438,12 +664,9 @@ impl NestedReposView {
         ctx.notify();
     }
 
-    fn select_file(&mut self, repo_root: &Path, path: &str, ctx: &mut ViewContext<Self>) {
+    fn select(&mut self, selection: Selection, ctx: &mut ViewContext<Self>) {
         let had_selection = self.selected_file.is_some();
-        self.selected_file = Some(SelectedFile {
-            repo_root: repo_root.to_path_buf(),
-            path: path.to_owned(),
-        });
+        self.selected_file = Some(selection);
         self.sync_file_diff(ctx);
         if !had_selection && self.selected_file.is_some() {
             ctx.emit(NestedReposViewEvent::FileDiffOpened);
@@ -1002,6 +1225,7 @@ impl NestedReposView {
                 rows.into_iter()
             },
         )
+        .notify_visible_items(self.visible_rows_tx.clone())
         .finish_scrollable();
 
         Container::new(
@@ -1090,6 +1314,40 @@ impl NestedReposView {
                     .get(*file_index)?;
                 Some(self.render_file_row(entry, file, mouse_state, appearance))
             }),
+            Some(OverviewRow::GraphHeader { repo_index }) => {
+                entries.get(*repo_index).and_then(|entry| {
+                    let mouse_states = self.mouse_states.get(&entry.repo.root)?;
+                    Some(self.render_graph_header(
+                        entry,
+                        self.is_graph_expanded(&entry.repo.root, entries.len()),
+                        &mouse_states.graph_header,
+                        appearance,
+                    ))
+                })
+            }
+            Some(OverviewRow::Commit {
+                repo_index,
+                commit_index,
+            }) => entries
+                .get(*repo_index)
+                .and_then(|entry| self.render_commit_row(entry, *commit_index, appearance)),
+            Some(OverviewRow::CommitNote {
+                repo_index,
+                commit_index,
+                line,
+            }) => entries.get(*repo_index).and_then(|entry| {
+                self.render_commit_note_row(entry, *commit_index, *line, appearance)
+            }),
+            Some(OverviewRow::CommitFile {
+                repo_index,
+                commit_index,
+                file_index,
+            }) => entries.get(*repo_index).and_then(|entry| {
+                self.render_commit_file_row(entry, *commit_index, *file_index, appearance)
+            }),
+            Some(OverviewRow::GraphNote { repo_index }) => entries
+                .get(*repo_index)
+                .and_then(|entry| self.render_graph_note_row(entry, appearance)),
             None => None,
         };
         ConstrainedBox::new(row.unwrap_or_else(|| Empty::new().finish()))
@@ -1196,19 +1454,28 @@ impl NestedReposView {
                 );
             }
         }
-        let (note, note_color) = match activity {
-            Some(RepoActivity::Running(label)) => (Some((*label).to_owned()), sub_text_color),
-            Some(RepoActivity::Finished { message, .. }) => (
-                Some(message.text.clone()),
+        // While a command runs in the repository, what it is doing stands where the branch is.
+        if let Some(status) = status.filter(|status| !is_busy && !status.branch.is_empty()) {
+            details.add_child(self.render_branch_control(
+                &repo_root,
+                status,
+                &mouse_states.branch,
+                appearance,
+            ));
+        }
+        let note = match activity {
+            Some(RepoActivity::Running(label)) => Some(((*label).to_owned(), sub_text_color)),
+            Some(RepoActivity::Finished { message, .. }) => Some((
+                message.text.clone(),
                 if message.is_error {
                     remove_color(appearance)
                 } else {
                     add_color(appearance)
                 },
-            ),
-            None => (status.map(|status| status.branch.clone()), sub_text_color),
+            )),
+            None => None,
         };
-        if let Some(note) = note {
+        if let Some((note, note_color)) = note {
             details.add_child(
                 Shrinkable::new(
                     1.,
@@ -1467,7 +1734,11 @@ impl NestedReposView {
             .unwrap_or_default()
             .to_owned();
         let is_selected = self.selected_file.as_ref().is_some_and(|selected| {
-            selected.repo_root == entry.repo.root && selected.path == file.path
+            *selected
+                == Selection::WorkingTree {
+                    repo_root: entry.repo.root.clone(),
+                    path: file.path.clone(),
+                }
         });
         let dispatched = NestedReposViewAction::SelectFile {
             repo_root: entry.repo.root.clone(),
@@ -1621,7 +1892,11 @@ impl TypedActionView for NestedReposView {
                 self.sync_with_model(ctx);
             }
             NestedReposViewAction::SelectFile { repo_root, path } => {
-                self.select_file(repo_root, path, ctx);
+                let selection = Selection::WorkingTree {
+                    repo_root: repo_root.clone(),
+                    path: path.clone(),
+                };
+                self.select(selection, ctx);
             }
             NestedReposViewAction::Refresh => {
                 self.model.update(ctx, |model, ctx| model.refresh(ctx));
@@ -1637,6 +1912,25 @@ impl TypedActionView for NestedReposView {
             NestedReposViewAction::CancelDiscard => {
                 self.discard_confirmation = None;
                 ctx.notify();
+            }
+            NestedReposViewAction::ToggleBranchMenu(repo_root) => {
+                self.toggle_branch_menu(repo_root, ctx);
+            }
+            NestedReposViewAction::ToggleGraph(repo_root) => self.toggle_graph(repo_root, ctx),
+            NestedReposViewAction::ToggleCommit { repo_root, commit } => {
+                self.toggle_commit(repo_root, commit, ctx);
+            }
+            NestedReposViewAction::SelectCommitFile {
+                repo_root,
+                commit,
+                path,
+            } => {
+                let selection = Selection::Commit {
+                    repo_root: repo_root.clone(),
+                    commit: commit.clone(),
+                    path: path.clone(),
+                };
+                self.select(selection, ctx);
             }
         }
     }
@@ -1703,6 +1997,9 @@ impl View for NestedReposView {
         stack.finish()
     }
 }
+
+#[path = "nested_repos_graph.rs"]
+mod graph;
 
 #[cfg(test)]
 #[path = "nested_repos_view_tests.rs"]
