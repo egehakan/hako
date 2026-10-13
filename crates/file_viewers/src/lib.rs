@@ -15,6 +15,7 @@ pub mod image;
 #[cfg(target_os = "macos")]
 mod imageio;
 pub mod kind;
+pub mod large_text;
 pub mod office;
 pub mod pdf;
 #[cfg(target_os = "macos")]

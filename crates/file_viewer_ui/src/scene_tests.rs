@@ -298,7 +298,11 @@ fn a_table_draws_its_header_and_the_rows_in_view() {
         assert!(harness.wheel(&mut app, vec2f(0., -(TABLE_ROW_HEIGHT * 3. + 2.)), false));
         let top_row = harness.read(&app, |view| match &view.body {
             Body::Table(table) => table.scroll.top_row,
-            Body::Loading(_) | Body::Message(_) | Body::Image(_) | Body::Pdf(_) => usize::MAX,
+            Body::Loading(_)
+            | Body::Message(_)
+            | Body::Peek(_)
+            | Body::Image(_)
+            | Body::Pdf(_) => usize::MAX,
         });
         assert_eq!(top_row, 3);
         assert!(harness.paint(&mut app).rects >= 2);
@@ -350,8 +354,87 @@ fn a_document_shows_its_pages_and_moves_between_them() {
         // Strips for the pages in view were asked for at the scale of the display.
         let pending = harness.read(&app, |view| match &view.body {
             Body::Pdf(pdf) => pdf.pending.len() + pdf.strips.len(),
-            Body::Loading(_) | Body::Message(_) | Body::Image(_) | Body::Table(_) => 0,
+            Body::Loading(_)
+            | Body::Message(_)
+            | Body::Peek(_)
+            | Body::Image(_)
+            | Body::Table(_) => 0,
         });
         assert!(pending > 0);
+    });
+}
+
+#[test]
+fn a_large_text_file_shows_its_start_and_offers_the_editor() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.log");
+        let lines = warp_util::large_file::AUTO_OPEN_MAX_LINES + 50;
+        let mut text = String::new();
+        for index in 0..lines {
+            text.push_str(&format!("entry {index}\n"));
+        }
+        std::fs::write(&path, &text).unwrap();
+        let harness = Harness::open(&mut app, path.clone(), ViewerKind::LargeText);
+
+        // Nothing is offered before the file has been looked at.
+        assert_eq!(harness.read(&app, |view| view.open_in_editor_label()), None);
+        let large_text = LargeText::read(&path).unwrap();
+        harness.show(&mut app, |view, ctx| view.show_peek(large_text, ctx));
+
+        assert!(harness.paint(&mut app).rects >= 1);
+        assert_eq!(
+            harness.read(&app, |view| view.info_text()),
+            format!(
+                "Large file  ·  150,050 lines  ·  {}",
+                format_bytes(text.len() as u64)
+            )
+        );
+        assert_eq!(
+            harness.read(&app, |view| view.open_in_editor_label()),
+            Some("Open in editor anyway")
+        );
+        let (rows, notice) = harness.read(&app, |view| match &view.body {
+            Body::Peek(peek) => (peek.rows.clone(), peek.notice.clone()),
+            Body::Loading(_)
+            | Body::Message(_)
+            | Body::Image(_)
+            | Body::Pdf(_)
+            | Body::Table(_) => panic!("The start of the file is not shown"),
+        });
+        assert_eq!(rows.len(), warp_util::large_file::PEEK_MAX_LINES + 1);
+        assert_eq!(rows[0], "entry 0");
+        assert!(notice.starts_with("This file has 150,050 lines"), "{notice}");
+
+        // Scrolling moves by whole lines and stops at the last one.
+        assert!(harness.wheel(&mut app, vec2f(0., -(PEEK_ROW_HEIGHT * 5. + 1.)), false));
+        let top_row = |app: &App| {
+            harness.read(app, |view| match &view.body {
+                Body::Peek(peek) => peek.scroll.top_row,
+                Body::Loading(_)
+                | Body::Message(_)
+                | Body::Image(_)
+                | Body::Pdf(_)
+                | Body::Table(_) => usize::MAX,
+            })
+        };
+        assert_eq!(top_row(&app), 5);
+        assert!(harness.wheel(&mut app, vec2f(0., -1_000_000.), false));
+        assert!(top_row(&app) < rows.len());
+        harness.paint(&mut app);
+
+        // Asking for the editor is passed on to whoever holds the tab.
+        let asked = Rc::new(RefCell::new(0));
+        let counter = asked.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&harness.view, move |_, event, _| match event {
+                FileViewerEvent::OpenInEditorRequested => *counter.borrow_mut() += 1,
+                FileViewerEvent::Focused => {}
+            });
+        });
+        harness.view.update(&mut app, |view, ctx| {
+            view.handle_action(&FileViewerAction::OpenInEditor, ctx);
+        });
+        assert_eq!(*asked.borrow(), 1);
     });
 }

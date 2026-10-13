@@ -5144,6 +5144,7 @@ dependencies = [
  "pathfinder_geometry",
  "tempfile",
  "warp_core",
+ "warp_util",
  "warpui",
 ]
 
@@ -5161,6 +5162,7 @@ dependencies = [
  "resvg",
  "tempfile",
  "thiserror 2.0.17",
+ "warp_util",
 ]
 
 [[package]]

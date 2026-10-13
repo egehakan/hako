@@ -17,6 +17,10 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
+use warp_util::file::FileLoadError;
+#[cfg(feature = "local_fs")]
+use warp_util::large_file::{OpenDecision, decision_for_size};
+use warp_util::large_file::OpenIntent;
 use warp_util::path::LineAndColumnArg;
 #[cfg(feature = "local_fs")]
 use warpui::clipboard::ClipboardContent;
@@ -309,7 +313,8 @@ enum TabContent {
         /// typed in it depends on this view.
         rendered: Option<RenderedForm>,
     },
-    /// A file with no text form: there is no buffer, and nothing to edit or save.
+    /// A file with no text form, or one kept out of an editor: there is no buffer, and nothing
+    /// to edit or save.
     Viewer(ViewHandle<FileViewerView>),
 }
 
@@ -371,6 +376,13 @@ impl TabData {
             TabContent::Viewer(_) => {}
         }
     }
+}
+
+#[cfg(all(test, feature = "local_fs"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabContentForTest {
+    Editor,
+    Viewer(ViewerKind),
 }
 
 /// What a new tab shows besides an editor.
@@ -497,10 +509,97 @@ impl CodeView {
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<FileViewerView> {
         let viewer = ctx.add_typed_action_view(|ctx| FileViewerView::new(path, kind, text, ctx));
-        ctx.subscribe_to_view(&viewer, |_, _, event, ctx| match event {
+        ctx.subscribe_to_view(&viewer, |me, viewer, event, ctx| match event {
             FileViewerEvent::Focused => ctx.emit(CodeViewEvent::Pane(PaneEvent::FocusSelf)),
+            FileViewerEvent::OpenInEditorRequested => me.open_viewed_file_in_editor(&viewer, ctx),
         });
         viewer
+    }
+
+    /// Puts the file shown by `viewer` in an editor, at the request made in the viewer.
+    #[cfg(feature = "local_fs")]
+    fn open_viewed_file_in_editor(
+        &mut self,
+        viewer: &ViewHandle<FileViewerView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(index) = self.tab_group.iter().position(|tab| match &tab.content {
+            TabContent::Viewer(tab_viewer) => tab_viewer.id() == viewer.id(),
+            TabContent::Editor { .. } => false,
+        }) else {
+            return;
+        };
+        let intent = match viewer.as_ref(ctx).kind() {
+            ViewerKind::LargeText => OpenIntent::Anyway,
+            ViewerKind::Image
+            | ViewerKind::Svg
+            | ViewerKind::Pdf
+            | ViewerKind::Table
+            | ViewerKind::Office
+            | ViewerKind::Binary => return,
+        };
+        self.rebuild_tab(index, intent, ctx);
+        if index == self.active_tab_index {
+            self.focus(ctx);
+        }
+    }
+
+    /// Builds what the tab at `index` shows again, for `intent`.
+    #[cfg(feature = "local_fs")]
+    fn rebuild_tab(&mut self, index: usize, intent: OpenIntent, ctx: &mut ViewContext<Self>) {
+        let Some(tab) = self.tab_group.get(index) else {
+            return;
+        };
+        let (location, preview) = (tab.location.clone(), tab.preview);
+        self.tab_group[index] = self.build_tab_data(location, preview, intent, ctx);
+        self.tab_content_replaced(index, ctx);
+    }
+
+    /// Shows the file of the tab `editor` belongs to as a large file, its editor having been
+    /// refused the content.
+    #[cfg(feature = "local_fs")]
+    fn show_as_large_file(
+        &mut self,
+        editor: &ViewHandle<LocalCodeEditorView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(index) = self.tab_index_of_editor(editor) else {
+            return;
+        };
+        let Some(path) = self.tab_group[index].local_path() else {
+            return;
+        };
+        let viewer = self.build_viewer(path, ViewerKind::LargeText, None, ctx);
+        self.tab_group[index].content = TabContent::Viewer(viewer);
+        self.tab_content_replaced(index, ctx);
+    }
+
+    /// Brings everything derived from a tab's content up to date after it was swapped.
+    #[cfg(feature = "local_fs")]
+    fn tab_content_replaced(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.remove_deallocated_buffers(ctx);
+        });
+        if index == self.active_tab_index {
+            self.update_markdown_mode_segmented_control(ctx);
+        }
+        self.pane_configuration.update(ctx, |pane_config, ctx| {
+            pane_config.refresh_pane_header_overflow_menu_items(ctx);
+        });
+        self.set_title_after_content_update(ctx);
+        ctx.notify();
+    }
+
+    /// Whether the file at `path` is too large to go into an editor without being asked for,
+    /// as far as its size says. Nothing of the file is read.
+    #[cfg(feature = "local_fs")]
+    fn is_too_large_by_size(path: &Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|metadata| {
+            matches!(
+                decision_for_size(metadata.len()),
+                Some(OpenDecision::LargeFile { .. })
+            )
+        })
     }
 
     /// Decides what a new tab for `location` shows besides or in place of an editor.
@@ -508,6 +607,7 @@ impl CodeView {
     fn viewer_for_new_tab(
         &mut self,
         location: Option<&LocalOrRemotePath>,
+        intent: OpenIntent,
         ctx: &mut ViewContext<Self>,
     ) -> NewTabViewer {
         // A tab opened to write a file needs its editor whatever the file holds now.
@@ -521,7 +621,16 @@ impl CodeView {
         let Some(path) = location.and_then(|location| location.to_local_path()) else {
             return NewTabViewer::None;
         };
-        let Some(kind) = viewer_kind::classify(path) else {
+        let kind = viewer_kind::classify(path);
+        // A file with a viewer of its own never reaches a text buffer, whatever its size. Any
+        // other is decided on before a byte of it is read into one.
+        let is_text = kind.is_none_or(ViewerKind::is_text_backed);
+        if is_text && intent == OpenIntent::Automatic && Self::is_too_large_by_size(path) {
+            log::info!("Showing {} as a large file", path.display());
+            let viewer = self.build_viewer(path.to_path_buf(), ViewerKind::LargeText, None, ctx);
+            return NewTabViewer::Replaces(viewer);
+        }
+        let Some(kind) = kind else {
             return NewTabViewer::None;
         };
         let too_large_for_table = kind == ViewerKind::Table
@@ -740,7 +849,7 @@ impl CodeView {
         let mut view = Self::new_internal(source, ctx);
         for tab_snapshot in tabs {
             let location = tab_snapshot.path.clone().map(LocalOrRemotePath::Local);
-            let tab_data = view.build_tab_data(location, false, ctx);
+            let tab_data = view.build_tab_data(location, false, OpenIntent::Automatic, ctx);
             view.tab_group.push(tab_data);
         }
         let clamped_index = if view.tab_group.is_empty() {
@@ -795,12 +904,16 @@ impl CodeView {
         editor: &ViewHandle<LocalCodeEditorView>,
         ctx: &mut ViewContext<Self>,
     ) {
-        if let Some(index) = self.tab_group.iter().position(|tab| {
-            tab.editor()
-                .is_some_and(|editor_view| editor_view.id() == editor.id())
-        }) {
+        if let Some(index) = self.tab_index_of_editor(editor) {
             self.keep_tab(index, ctx);
         }
+    }
+
+    fn tab_index_of_editor(&self, editor: &ViewHandle<LocalCodeEditorView>) -> Option<usize> {
+        self.tab_group.iter().position(|tab| {
+            tab.editor()
+                .is_some_and(|editor_view| editor_view.id() == editor.id())
+        })
     }
 
     /// Construct an editor backed by the global shared buffer for the given location.
@@ -811,12 +924,14 @@ impl CodeView {
     fn construct_editor_for_location(
         &mut self,
         location: LocalOrRemotePath,
+        intent: OpenIntent,
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<LocalCodeEditorView> {
         let is_local = matches!(location, LocalOrRemotePath::Local(_));
         ctx.add_typed_action_view(|ctx| {
-            let mut editor = LocalCodeEditorView::new_with_global_buffer(
+            let mut editor = LocalCodeEditorView::new_with_global_buffer_for(
                 location,
+                intent,
                 |buffer_state, ctx| {
                     ctx.add_typed_action_view(|ctx| {
                         CodeEditorView::new(
@@ -894,14 +1009,17 @@ impl CodeView {
         })
     }
 
+    /// Builds the tab for the file at `location`. `intent` says whether the file goes into an
+    /// editor even though it is large.
     fn build_tab_data(
         &mut self,
         location: Option<LocalOrRemotePath>,
         preview: bool,
+        #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] intent: OpenIntent,
         ctx: &mut ViewContext<Self>,
     ) -> TabData {
         #[cfg(feature = "local_fs")]
-        let rendered = match self.viewer_for_new_tab(location.as_ref(), ctx) {
+        let rendered = match self.viewer_for_new_tab(location.as_ref(), intent, ctx) {
             NewTabViewer::Replaces(viewer) => {
                 return TabData {
                     location,
@@ -918,7 +1036,7 @@ impl CodeView {
 
         let (code_editor, tab_location) = match location {
             Some(loc) => {
-                let editor = self.construct_editor_for_location(loc.clone(), ctx);
+                let editor = self.construct_editor_for_location(loc.clone(), intent, ctx);
                 (editor, Some(loc))
             }
             None => (self.construct_new_file_editor(ctx), None),
@@ -961,6 +1079,15 @@ impl CodeView {
                 ctx.emit(CodeViewEvent::Pane(PaneEvent::AppStateChanged));
             }
             LocalCodeEditorEvent::FailedToLoad { error: err } => {
+                match err.as_ref() {
+                    FileLoadError::TooLarge { shape, limit } => {
+                        log::info!("Not loading into an editor: {shape:?} is over {limit:?}");
+                        #[cfg(feature = "local_fs")]
+                        me.show_as_large_file(&code_editor, ctx);
+                        return;
+                    }
+                    FileLoadError::DoesNotExist | FileLoadError::IOError(_) => {}
+                }
                 // When code source is New, AIAction, or ProjectRules, it is possible that the
                 // passed in file path might not exist currently if the intention is to create a
                 // new file or if the project rules file doesn't exist yet.
@@ -1085,6 +1212,24 @@ impl CodeView {
         self.drag_position = None;
     }
 
+    /// What the tab at `index` shows.
+    #[cfg(all(test, feature = "local_fs"))]
+    pub(crate) fn tab_content_for_test(&self, index: usize, ctx: &AppContext) -> TabContentForTest {
+        match &self.tab_group[index].content {
+            TabContent::Editor { .. } => TabContentForTest::Editor,
+            TabContent::Viewer(viewer) => TabContentForTest::Viewer(viewer.as_ref(ctx).kind()),
+        }
+    }
+
+    /// Presses the button of the viewer in the tab at `index` that asks for an editor.
+    #[cfg(all(test, feature = "local_fs"))]
+    pub(crate) fn ask_for_editor_for_test(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        let TabContent::Viewer(viewer) = self.tab_group[index].content.clone() else {
+            panic!("The tab does not show a viewer");
+        };
+        self.open_viewed_file_in_editor(&viewer, ctx);
+    }
+
     pub fn tab_at(&self, index: usize) -> Option<&TabData> {
         self.tab_group.get(index)
     }
@@ -1119,6 +1264,12 @@ impl CodeView {
 
     pub fn pane_configuration(&self) -> ModelHandle<PaneConfiguration> {
         self.pane_configuration.clone()
+    }
+
+    /// The name of the file in the active tab, which is known from the moment the tab exists.
+    pub fn active_tab_name(&self, ctx: &AppContext) -> Option<String> {
+        let location = self.tab_at(self.active_tab_index)?.location.as_ref()?;
+        Some(display_name_with_host(location, ctx)).filter(|name| !name.is_empty())
     }
 
     pub fn focus(&self, ctx: &mut ViewContext<Self>) {
@@ -1204,7 +1355,8 @@ impl CodeView {
                 return;
             }
             PreviewPlacement::ReplacePreview(index) => {
-                let new_tab = self.build_tab_data(Some(location.clone()), true, ctx);
+                let new_tab =
+                    self.build_tab_data(Some(location.clone()), true, OpenIntent::Automatic, ctx);
                 self.tab_group[index] = new_tab;
                 GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
                     model.remove_deallocated_buffers(ctx);
@@ -1212,7 +1364,8 @@ impl CodeView {
                 index
             }
             PreviewPlacement::NewTab => {
-                let new_tab = self.build_tab_data(Some(location.clone()), true, ctx);
+                let new_tab =
+                    self.build_tab_data(Some(location.clone()), true, OpenIntent::Automatic, ctx);
                 self.tab_group.push(new_tab);
                 self.tab_group.len() - 1
             }
@@ -1315,7 +1468,8 @@ impl CodeView {
         ctx: &mut ViewContext<Self>,
     ) {
         #[cfg_attr(not(feature = "local_fs"), allow(unused_mut))]
-        let mut new_tab = self.build_tab_data(location.clone(), false, ctx);
+        let mut new_tab =
+            self.build_tab_data(location.clone(), false, OpenIntent::Automatic, ctx);
         // A jump to a line is a jump into the text, which a rendered form does not show.
         #[cfg(feature = "local_fs")]
         if line_col.is_some() {

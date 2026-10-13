@@ -18,6 +18,7 @@ use file_viewers::csv::{self, GridScroll, Table};
 use file_viewers::geometry::{self, Offset, Rect, Size, ViewTransform, ZoomMode};
 use file_viewers::image::{self as image_decoding, DecodeError, DecodedImage, Pyramid};
 use file_viewers::kind::ViewerKind;
+use file_viewers::large_text::{LargeText, format_count};
 use file_viewers::office::{self, ConvertError};
 use file_viewers::pdf::{OpenedPdf, PageLayout, PdfError, PdfWorker, Strip, StripKey};
 use file_viewers::scene::{self, Placement, Viewport};
@@ -74,6 +75,10 @@ const BUSY_DOTS_BELOW_CENTRE: f32 = 28.;
 const BUSY_STEP: Duration = Duration::from_millis(280);
 
 const HEADER_ROW_HEIGHT: f32 = 28.;
+const PEEK_ROW_HEIGHT: f32 = 20.;
+
+/// Said at the end of a peeked line that goes on in the file.
+const LINE_TRUNCATED_MARKER: &str = "  … line truncated";
 const TABLE_ROW_HEIGHT: f32 = 24.;
 const TABLE_CELL_PADDING: f32 = 8.;
 const TABLE_MIN_COLUMN_WIDTH: f32 = 60.;
@@ -161,6 +166,8 @@ fn bindings() -> (Vec<EditableBinding>, Vec<FixedBinding>) {
 
 #[derive(Clone, Debug)]
 pub enum FileViewerAction {
+    /// Asks for the file in an editor, whatever stood in the way of that so far.
+    OpenInEditor,
     OpenInDefaultApp,
     RevealInFileManager,
     QuickLook,
@@ -197,11 +204,14 @@ pub enum FileViewerAction {
 pub enum FileViewerEvent {
     /// The viewer was clicked and took the keyboard focus.
     Focused,
+    /// The file should be shown in an editor in place of this viewer.
+    OpenInEditorRequested,
 }
 
 /// Mouse state of the buttons in the header, kept across frames.
 #[derive(Default)]
 struct HeaderButtons {
+    open_in_editor: MouseStateHandle,
     open: MouseStateHandle,
     reveal: MouseStateHandle,
     quick_look: MouseStateHandle,
@@ -254,10 +264,20 @@ struct TableBody {
     scroll: GridScroll,
 }
 
+/// The start of a text file that is too large for an editor.
+struct PeekBody {
+    text: LargeText,
+    notice: String,
+    /// The lines as drawn, each with its marker if it goes on in the file.
+    rows: Vec<String>,
+    scroll: GridScroll,
+}
+
 enum Body {
     Loading(&'static str),
     /// Nothing to show but an explanation.
     Message(String),
+    Peek(PeekBody),
     Image(ImageBody),
     Pdf(PdfBody),
     Table(TableBody),
@@ -269,6 +289,7 @@ enum Loaded {
     Svg(Result<(Arc<str>, SvgRaster), String>),
     Table(Result<Arc<Table>, String>),
     Converted(Result<PathBuf, ConvertError>),
+    LargeText(Result<LargeText, String>),
 }
 
 pub struct FileViewerView {
@@ -388,6 +409,15 @@ impl FileViewerView {
                         .to_string(),
                 );
             }
+            ViewerKind::LargeText => {
+                self.body = Body::Loading("Reading the start of the file…");
+                self.spawn_load(generation, ctx, move || {
+                    Loaded::LargeText(LargeText::read(&path).map_err(|err| {
+                        log::warn!("Could not read the start of {}: {err}", path.display());
+                        format!("The file could not be read: {err}")
+                    }))
+                });
+            }
             ViewerKind::Image => {
                 self.body = Body::Loading("Loading…");
                 self.spawn_load(generation, ctx, move || {
@@ -463,7 +493,10 @@ impl FileViewerView {
             Loaded::Image(Ok(decoded)) => self.show_image(decoded, ctx),
             Loaded::Image(Err(err)) => self.fail(err.to_string(), ctx),
             Loaded::Svg(Ok((text, raster))) => self.show_svg(text, raster, ctx),
-            Loaded::Svg(Err(message)) | Loaded::Table(Err(message)) => self.fail(message, ctx),
+            Loaded::Svg(Err(message))
+            | Loaded::Table(Err(message))
+            | Loaded::LargeText(Err(message)) => self.fail(message, ctx),
+            Loaded::LargeText(Ok(text)) => self.show_peek(text, ctx),
             Loaded::Table(Ok(table)) => self.show_table(table, ctx),
             Loaded::Converted(Ok(pdf)) => {
                 self.notes
@@ -519,6 +552,24 @@ impl FileViewerView {
         ctx.notify();
     }
 
+    fn show_peek(&mut self, text: LargeText, ctx: &mut ViewContext<Self>) {
+        log::info!(
+            "Showing the first {} lines of {} ({} bytes) {} ms after it was opened",
+            text.peek.lines.len(),
+            self.path.display(),
+            text.bytes,
+            self.loading_since.elapsed().as_millis()
+        );
+        self.file_size = Some(text.bytes);
+        self.body = Body::Peek(PeekBody {
+            notice: text.notice(),
+            rows: peek_rows(&text),
+            text,
+            scroll: GridScroll::default(),
+        });
+        ctx.notify();
+    }
+
     fn show_table(&mut self, table: Arc<Table>, ctx: &mut ViewContext<Self>) {
         if table.row_count() > csv::MAX_TABLE_ROWS {
             self.fail(
@@ -544,9 +595,11 @@ impl FileViewerView {
         // Text edited while the table is up keeps the place it was scrolled to.
         let scroll = match &self.body {
             Body::Table(previous) => previous.scroll,
-            Body::Loading(_) | Body::Message(_) | Body::Image(_) | Body::Pdf(_) => {
-                GridScroll::default()
-            }
+            Body::Loading(_)
+            | Body::Message(_)
+            | Body::Peek(_)
+            | Body::Image(_)
+            | Body::Pdf(_) => GridScroll::default(),
         };
         self.body = Body::Table(TableBody {
             table,
@@ -593,7 +646,7 @@ impl FileViewerView {
         match &self.body {
             Body::Image(image) => Some(image.content),
             Body::Pdf(pdf) => Some(pdf.layout.content_size()),
-            Body::Loading(_) | Body::Message(_) | Body::Table(_) => None,
+            Body::Loading(_) | Body::Message(_) | Body::Peek(_) | Body::Table(_) => None,
         }
     }
 
@@ -771,6 +824,22 @@ impl FileViewerView {
                 );
                 ctx.notify();
             }
+            Body::Peek(peek) => {
+                let font_size = Appearance::as_ref(ctx).monospace_font_size();
+                let char_width = font_size * MONOSPACE_ADVANCE;
+                let number_width = row_number_width(peek.rows.len(), font_size);
+                let longest = peek.rows.iter().map(|row| row.chars().count()).max();
+                let text_width = longest.unwrap_or_default() as f32 * char_width;
+                peek.scroll.scroll_by(
+                    delta.x,
+                    delta.y,
+                    PEEK_ROW_HEIGHT,
+                    peek.rows.len(),
+                    peek_visible_rows(viewport.height),
+                    text_width - (viewport.width - number_width),
+                );
+                ctx.notify();
+            }
             Body::Image(_) | Body::Pdf(_) => {
                 let Some(content) = self.content_size() else {
                     return;
@@ -779,6 +848,26 @@ impl FileViewerView {
                 self.view_changed(false, ctx);
             }
             Body::Loading(_) | Body::Message(_) => {}
+        }
+    }
+
+    /// The label of the button that asks for the file in an editor, when that can be asked for.
+    fn open_in_editor_label(&self) -> Option<&'static str> {
+        match (&self.kind, &self.body) {
+            (ViewerKind::LargeText, Body::Peek(peek)) => peek
+                .text
+                .can_open_in_editor()
+                .then_some("Open in editor anyway"),
+            (ViewerKind::LargeText, _) => None,
+            (
+                ViewerKind::Image
+                | ViewerKind::Svg
+                | ViewerKind::Pdf
+                | ViewerKind::Table
+                | ViewerKind::Office
+                | ViewerKind::Binary,
+                _,
+            ) => None,
         }
     }
 
@@ -857,6 +946,12 @@ impl FileViewerView {
                     "{}-separated",
                     csv::delimiter_name(table.table.delimiter())
                 ));
+            }
+            Body::Peek(peek) => {
+                parts.push(self.kind.label().to_string());
+                if let Some(shape) = peek.text.shape {
+                    parts.push(format!("{} lines", format_count(shape.lines)));
+                }
             }
             Body::Loading(_) | Body::Message(_) => parts.push(self.kind.label().to_string()),
         }
@@ -964,6 +1059,13 @@ impl FileViewerView {
             ));
         }
 
+        if let Some(label) = self.open_in_editor_label() {
+            controls.add_child(button(
+                label,
+                &self.buttons.open_in_editor,
+                FileViewerAction::OpenInEditor,
+            ));
+        }
         controls.add_child(button(
             "Open in default app",
             &self.buttons.open,
@@ -1042,6 +1144,85 @@ impl FileViewerView {
                     repaint_after: Some(BUSY_STEP),
                 }
             })
+            .finish()
+    }
+
+    fn render_peek(&self, peek: &PeekBody, appearance: &Appearance) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let background = theme.background().into_solid();
+        let text_color = blended_colors::text_main(theme, theme.background());
+        let muted_color = blended_colors::text_sub(theme, theme.background());
+        let font_size = appearance.monospace_font_size();
+        let char_width = font_size * MONOSPACE_ADVANCE;
+        let viewport = self.viewport().size;
+        let number_width = row_number_width(peek.rows.len(), font_size);
+        // Only what fits is laid out, so that a row costs the same however long its line is.
+        let skipped_chars = (peek.scroll.x / char_width) as usize;
+        let shown_chars = ((viewport.width - number_width) / char_width).ceil().max(0.) as usize;
+
+        let cell = |text: String, color: ColorU| {
+            Text::new_inline(text, appearance.monospace_font_family(), font_size)
+                .with_color(color)
+                .with_clip(ClipConfig::end())
+                .finish()
+        };
+        let mut rows = Flex::column().with_main_axis_size(MainAxisSize::Min);
+        // One more than fits, so that the space under the last whole row is not left blank.
+        let shown_rows = peek_visible_rows(viewport.height) + 1;
+        let first = peek.scroll.top_row;
+        for index in first..(first + shown_rows).min(peek.rows.len()) {
+            let is_line = index < peek.text.peek.lines.len();
+            let number = if is_line {
+                (index + 1).to_string()
+            } else {
+                String::new()
+            };
+            let text = peek.rows[index]
+                .chars()
+                .skip(skipped_chars)
+                .take(shown_chars)
+                .collect();
+            let row = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    ConstrainedBox::new(
+                        Container::new(cell(number, muted_color))
+                            .with_horizontal_padding(TABLE_CELL_PADDING)
+                            .finish(),
+                    )
+                    .with_width(number_width)
+                    .finish(),
+                )
+                .with_child(cell(text, if is_line { text_color } else { muted_color }))
+                .finish();
+            rows.add_child(
+                ConstrainedBox::new(row)
+                    .with_height(PEEK_ROW_HEIGHT)
+                    .finish(),
+            );
+        }
+
+        let notice = Container::new(
+            Text::new(
+                peek.notice.clone(),
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_color(muted_color)
+            .finish(),
+        )
+        .with_horizontal_padding(12.)
+        .with_vertical_padding(8.)
+        .finish();
+        let lines = ViewerCanvas::new(self.canvas.clone(), background)
+            .with_child(Align::new(rows.finish()).top_left().finish())
+            .finish();
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(notice)
+            .with_child(Expanded::new(1., lines).finish())
             .finish()
     }
 
@@ -1213,10 +1394,48 @@ fn busy_dots(viewport: Size) -> Vec<Rect> {
 fn default_zoom_mode(kind: ViewerKind) -> ZoomMode {
     match kind {
         ViewerKind::Pdf | ViewerKind::Office => ZoomMode::FitWidth,
-        ViewerKind::Image | ViewerKind::Svg | ViewerKind::Table | ViewerKind::Binary => {
-            ZoomMode::Fit
-        }
+        ViewerKind::Image
+        | ViewerKind::Svg
+        | ViewerKind::Table
+        | ViewerKind::Binary
+        | ViewerKind::LargeText => ZoomMode::Fit,
     }
+}
+
+/// How many peeked lines are fully visible in `height` pixels.
+fn peek_visible_rows(height: f32) -> usize {
+    (height / PEEK_ROW_HEIGHT).floor().max(0.) as usize
+}
+
+/// The rows a peek is drawn as: its lines, on one line each, and a last row saying that the
+/// file goes on when it does.
+fn peek_rows(text: &LargeText) -> Vec<String> {
+    let mut rows: Vec<String> = text
+        .peek
+        .lines
+        .iter()
+        .map(|line| {
+            let mut row: String = line
+                .text
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .collect();
+            if line.truncated {
+                row.push_str(LINE_TRUNCATED_MARKER);
+            }
+            row
+        })
+        .collect();
+    if text.peek.has_more {
+        rows.push("… the rest of the file is not shown".to_string());
+    }
+    rows
 }
 
 fn reveal_label() -> &'static str {
@@ -1299,7 +1518,7 @@ impl View for FileViewerView {
             Body::Image(_) | Body::Pdf(_) => {
                 context.set.insert(ZOOMABLE_CONTEXT);
             }
-            Body::Loading(_) | Body::Message(_) | Body::Table(_) => {}
+            Body::Loading(_) | Body::Message(_) | Body::Peek(_) | Body::Table(_) => {}
         }
         context
     }
@@ -1309,6 +1528,7 @@ impl View for FileViewerView {
         let body = match &self.body {
             Body::Loading(message) => self.render_message(message, true, appearance),
             Body::Message(message) => self.render_message(message, false, appearance),
+            Body::Peek(peek) => self.render_peek(peek, appearance),
             Body::Image(image) => self.render_image(image, appearance),
             Body::Pdf(pdf) => self.render_pdf(pdf, appearance),
             Body::Table(table) => self.render_table(table, appearance),
@@ -1327,6 +1547,7 @@ impl TypedActionView for FileViewerView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
+            FileViewerAction::OpenInEditor => ctx.emit(FileViewerEvent::OpenInEditorRequested),
             FileViewerAction::OpenInDefaultApp => ctx.open_file_path(&self.path),
             FileViewerAction::RevealInFileManager => ctx.open_file_path_in_explorer(&self.path),
             FileViewerAction::QuickLook => {

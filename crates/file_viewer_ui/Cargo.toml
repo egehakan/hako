@@ -22,4 +22,5 @@ warpui.workspace = true
 futures.workspace = true
 tempfile.workspace = true
 warp_core = { workspace = true, features = ["test-util"] }
+warp_util.workspace = true
 warpui = { workspace = true, features = ["test-util"] }

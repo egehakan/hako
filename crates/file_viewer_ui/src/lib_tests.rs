@@ -54,3 +54,47 @@ fn the_busy_dots_sit_centred_under_the_message() {
     );
     assert_eq!(dots[1].x - dots[0].x, BUSY_DOT_SIZE + BUSY_DOT_GAP);
 }
+
+#[test]
+fn peeked_lines_are_drawn_on_one_row_each_and_say_when_they_go_on() {
+    use warp_util::large_file::{Peek, PeekLine};
+
+    let line = |text: &str, truncated| PeekLine {
+        text: text.to_string(),
+        truncated,
+    };
+    let text = LargeText {
+        bytes: 1_000_000_000,
+        shape: None,
+        peek: Peek {
+            lines: vec![line("a\tb", false), line("long", true), line("", false)],
+            has_more: true,
+        },
+    };
+    assert_eq!(
+        peek_rows(&text),
+        [
+            "a b",
+            "long  … line truncated",
+            "",
+            "… the rest of the file is not shown"
+        ]
+    );
+
+    let whole = LargeText {
+        peek: Peek {
+            lines: vec![line("only", false)],
+            has_more: false,
+        },
+        ..text
+    };
+    assert_eq!(peek_rows(&whole), ["only"]);
+}
+
+#[test]
+fn only_whole_peek_rows_count_as_visible() {
+    assert_eq!(peek_visible_rows(0.), 0);
+    assert_eq!(peek_visible_rows(PEEK_ROW_HEIGHT * 10.), 10);
+    assert_eq!(peek_visible_rows(PEEK_ROW_HEIGHT * 10.9), 10);
+    assert_eq!(peek_visible_rows(-5.), 0);
+}

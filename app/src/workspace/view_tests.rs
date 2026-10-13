@@ -1241,6 +1241,156 @@ fn test_open_file_with_target_event_preserves_requested_line() {
     });
 }
 
+/// Registers what a code view needs on top of [`initialize_app`].
+#[cfg(feature = "local_fs")]
+fn initialize_code_views(app: &mut App) {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    initialize_app(app);
+    app.add_singleton_model(|_| CodeManager::default());
+    app.add_singleton_model(|_| LocalShellState::NotLoaded);
+    app.add_singleton_model(GlobalBufferModel::new);
+    app.add_singleton_model(|_| crate::code::blame::BlameModel::new());
+}
+
+/// Opens a window on a code view restored from tabs for `paths`, the one at `active` in front.
+#[cfg(feature = "local_fs")]
+fn restored_code_view(
+    app: &mut App,
+    paths: &[&std::path::Path],
+    active: usize,
+) -> ViewHandle<crate::code::view::CodeView> {
+    use crate::app_state::CodePaneTabSnapshot;
+    use crate::code::view::CodeView;
+
+    let tabs = paths
+        .iter()
+        .map(|path| CodePaneTabSnapshot {
+            path: Some(path.to_path_buf()),
+        })
+        .collect_vec();
+    let source = CodeSource::Link {
+        path: paths[0].to_path_buf(),
+        range_start: None,
+        range_end: None,
+    };
+    let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        CodeView::restore(&tabs, active, source, ctx)
+    });
+    view
+}
+
+/// What each tab of `view` shows.
+#[cfg(feature = "local_fs")]
+fn code_view_tabs(
+    app: &App,
+    view: &ViewHandle<crate::code::view::CodeView>,
+) -> Vec<crate::code::view::TabContentForTest> {
+    view.read(app, |view, ctx| {
+        (0..view.tab_count())
+            .map(|index| view.tab_content_for_test(index, ctx))
+            .collect()
+    })
+}
+
+/// Text that is not a file viewer's business, padded to `bytes`.
+#[cfg(feature = "local_fs")]
+fn write_text_file(path: &std::path::Path, bytes: u64) {
+    use std::io::Write as _;
+
+    let mut file = std::fs::File::create(path).expect("failed to create file");
+    for line in 0..400 {
+        writeln!(file, "INSERT INTO balance VALUES ({line});").expect("failed to write");
+    }
+    file.set_len(bytes.max(file.metadata().expect("metadata").len()))
+        .expect("failed to size file");
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_a_file_over_the_size_limit_opens_as_a_large_file_until_asked_for() {
+    use file_viewers::kind::ViewerKind;
+    use warp_util::large_file::AUTO_OPEN_MAX_BYTES;
+
+    use crate::code::view::{CodeView, TabContentForTest};
+
+    App::test((), |mut app| async move {
+        initialize_code_views(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dump = temp_dir.path().join("dump.sql");
+        write_text_file(&dump, AUTO_OPEN_MAX_BYTES + 1);
+
+        // Opened by a click, as a preview.
+        let source = CodeSource::Link {
+            path: dump.clone(),
+            range_start: None,
+            range_end: None,
+        };
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            CodeView::new_preview(source, None, ctx)
+        });
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [TabContentForTest::Viewer(ViewerKind::LargeText)]
+        );
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.active_tab_name(ctx).as_deref(), Some("dump.sql"));
+            assert!(!view.contains_unsaved_changes(ctx));
+        });
+
+        // Restored, in front: the same decision, and at once.
+        let restored = restored_code_view(&mut app, &[&dump], 0);
+        assert_eq!(
+            code_view_tabs(&app, &restored),
+            [TabContentForTest::Viewer(ViewerKind::LargeText)]
+        );
+
+        view.update(&mut app, |view, ctx| view.ask_for_editor_for_test(0, ctx));
+        assert_eq!(code_view_tabs(&app, &view), [TabContentForTest::Editor]);
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_a_file_with_too_many_lines_ends_up_as_a_large_file() {
+    use file_viewers::kind::ViewerKind;
+    use warp_util::large_file::AUTO_OPEN_MAX_LINES;
+    use warpui::r#async::Timer;
+
+    use crate::code::view::{CodeView, TabContentForTest};
+
+    App::test((), |mut app| async move {
+        initialize_code_views(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let lines = temp_dir.path().join("lines.log");
+        std::fs::write(&lines, "x\n".repeat(AUTO_OPEN_MAX_LINES + 1)).expect("failed to write");
+
+        let source = CodeSource::Link {
+            path: lines.clone(),
+            range_start: None,
+            range_end: None,
+        };
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            CodeView::new(source, None, ctx)
+        });
+        // Its size says nothing against it, so it is its lines, counted off the UI thread, that
+        // keep it out of the editor.
+        assert_eq!(code_view_tabs(&app, &view), [TabContentForTest::Editor]);
+        for _ in 0..200 {
+            if code_view_tabs(&app, &view) != [TabContentForTest::Editor] {
+                break;
+            }
+            Timer::after(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [TabContentForTest::Viewer(ViewerKind::LargeText)]
+        );
+    });
+}
+
 /// Regression test for the raw-code toggle: the notebook-viewer target used to
 /// drop the `CodeSource` outright, so the raw view always started at line 1.
 #[cfg(feature = "local_fs")]
