@@ -1,3 +1,43 @@
+# Hako
+
+Hako is a personal build of [Warp](https://github.com/warpdotdev/warp), the open-source terminal. It tracks the upstream repository and adds a set of changes on top of it. Hako is not affiliated with or endorsed by Warp.
+
+## What it adds
+
+- Source control for a folder of repositories: one list of repositories and worktrees, with the diff beside it.
+- A Project Explorer whose files open beside it, with preview tabs, copy, cut and paste, move to Trash, and undo.
+- In-app viewers for images, SVG, PDF, CSV and Office files.
+- Persistent tab folders that point to directories.
+- Project-wide replace.
+- External formatters on save.
+- Large-file safety: a file over the size limits opens as a read-only peek instead of being loaded into an editor buffer, and whole-buffer features are turned off in large buffers.
+- Word-level diffs and inline blame.
+
+## Names
+
+The app, its bundle and its binary are named Hako (`Hako.app`, `hako`, bundle identifier `dev.hako.Hako`). Settings live in `~/.hako`, application data in `~/Library/Application Support/dev.hako.Hako`, and the log in `~/Library/Logs/hako.log`. The `warposs://` URL scheme, `TERM_PROGRAM=WarpTerminal` and the `WARP_*` environment variables are unchanged, so sign-in and tools that detect the terminal keep working. Only the macOS build is renamed; the Linux and Windows packaging files are as they are upstream.
+
+## Building on macOS
+
+Follow the setup in [Building the Repo Locally](#building-the-repo-locally) below, then run:
+
+```bash
+. "$HOME/.cargo/env"
+CARGO_BUILD_JOBS=6 WARP_SKIP_COMMON_SKILLS_INSTALL=1 ./script/run --dont-open
+```
+
+This writes the app bundle to `target/debug/bundle/osx/Hako.app`. Leave out `--dont-open` to start it once the build finishes.
+
+## Licences
+
+The licences are those of upstream and are unchanged: the `warpui_core` and `warpui` crates are under the [MIT license](LICENSE-MIT), and the rest of the code is under the [AGPL v3](LICENSE-AGPL).
+
+## Companion app
+
+A phone web app for Hako lives at [egehakan/hako-remote](https://github.com/egehakan/hako-remote).
+
+# Upstream README
+
 <a href="https://www.warp.dev">
     <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
 </a>
