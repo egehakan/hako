@@ -128,7 +128,7 @@ fn names_every_error_code_as_the_protocol_does() {
 }
 
 #[test]
-fn knows_the_workspace_and_terminal_methods_only() {
+fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("app.info"), Some(Method::AppInfo));
     assert_eq!(
         Method::from_name("workspace.list"),
@@ -153,7 +153,11 @@ fn knows_the_workspace_and_terminal_methods_only() {
     assert_eq!(Method::from_name("theme.get"), Some(Method::ThemeGet));
     // Input is a notification, which has no answer.
     assert_eq!(Method::from_name("term.input"), None);
-    assert_eq!(Method::from_name("fs.list"), None);
+    assert_eq!(Method::from_name("fs.roots"), Some(Method::FsRoots));
+    assert_eq!(Method::from_name("fs.list"), Some(Method::FsList));
+    assert_eq!(Method::from_name("fs.read"), Some(Method::FsRead));
+    assert_eq!(Method::from_name("fs.write"), Some(Method::FsWrite));
+    assert_eq!(Method::from_name("git.status"), None);
 }
 
 #[test]

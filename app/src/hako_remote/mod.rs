@@ -1,6 +1,6 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
-//! watch and use a terminal.
+//! watch and use a terminal and read and change files.
 
 mod app_info;
 mod handlers;
@@ -13,9 +13,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ::hako_remote::protocol::{
-    EVENT_WORKSPACE_CHANGED, Method, NOTIFICATION_TERM_INPUT, RpcError, Workspace,
+    EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams, Method, NOTIFICATION_TERM_INPUT,
+    RpcError, Workspace,
 };
-use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder};
+use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use settings::Setting as _;
 use warpui::r#async::Timer;
@@ -250,8 +253,55 @@ impl HakoRemote {
                     .and_then(|params| self.terminals.release_size(params, connection, ctx)),
             ),
             Method::ThemeGet => to_json(&handlers::theme(ctx)),
+            Method::FsRoots => to_json(&handlers::file_roots(ctx)),
+            Method::FsList => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsPathParams| files::list(&params.path),
+                );
+            }
+            Method::FsRead => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsPathParams| files::read(&params.path),
+                );
+            }
+            Method::FsWrite => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsWriteParams| files::write(&params),
+                );
+            }
         };
         responder.respond(outcome);
+    }
+
+    /// Answers a request with what `work` makes of its params. The work is done off the app's
+    /// main thread, which must not wait for the file system.
+    fn answer_in_background<P, R>(
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+        work: fn(P) -> Result<R, RpcError>,
+    ) where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+    {
+        ctx.spawn(
+            async move {
+                let outcome = parse(params)
+                    .and_then(work)
+                    .and_then(|result| to_json(&result));
+                responder.respond(outcome);
+            },
+            |_, (), _| {},
+        );
     }
 
     fn handle_notification(&mut self, method: &str, params: Value, ctx: &mut ModelContext<Self>) {

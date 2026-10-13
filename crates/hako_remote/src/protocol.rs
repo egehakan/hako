@@ -177,6 +177,10 @@ pub enum Method {
     TermResize,
     TermReleaseSize,
     ThemeGet,
+    FsRoots,
+    FsList,
+    FsRead,
+    FsWrite,
 }
 
 impl Method {
@@ -193,6 +197,10 @@ impl Method {
             "term.resize" => Some(Self::TermResize),
             "term.release_size" => Some(Self::TermReleaseSize),
             "theme.get" => Some(Self::ThemeGet),
+            "fs.roots" => Some(Self::FsRoots),
+            "fs.list" => Some(Self::FsList),
+            "fs.read" => Some(Self::FsRead),
+            "fs.write" => Some(Self::FsWrite),
             _ => None,
         }
     }

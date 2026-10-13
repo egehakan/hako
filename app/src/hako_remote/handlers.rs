@@ -2,8 +2,9 @@
 
 use std::path::PathBuf;
 
+use ::hako_remote::files;
 use ::hako_remote::protocol::{
-    RpcError, TabCreateParams, TabCreateResult, TabParams, TerminalColors, Theme,
+    FsRoots, RpcError, TabCreateParams, TabCreateResult, TabParams, TerminalColors, Theme,
 };
 use pathfinder_color::ColorU;
 use serde::Serialize;
@@ -197,6 +198,12 @@ fn closing_a_window_quits_the_app(ctx: &AppContext) -> bool {
     let quits_with_last_window = cfg!(any(target_os = "linux", target_os = "freebsd", windows))
         || *GeneralSettings::as_ref(ctx).quit_on_last_window_closed;
     quits_with_last_window && ctx.window_ids().count() == 1
+}
+
+/// The directories a remote client starts browsing files from.
+pub(super) fn file_roots(ctx: &AppContext) -> FsRoots {
+    let home = dirs::home_dir().unwrap_or_default();
+    files::roots(&home.to_string_lossy(), &snapshot::workspace(ctx))
 }
 
 /// The colours and the font the app draws its terminals with.
