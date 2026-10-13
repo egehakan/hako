@@ -14,6 +14,13 @@ fn counts_are_grouped_by_thousands() {
 }
 
 #[test]
+fn a_single_line_is_not_called_lines() {
+    assert_eq!(lines_text(1), "1 line");
+    assert_eq!(lines_text(0), "0 lines");
+    assert_eq!(lines_text(630_788), "630,788 lines");
+}
+
+#[test]
 fn a_file_with_too_many_lines_is_read_through_and_can_still_be_opened() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("lines.log");

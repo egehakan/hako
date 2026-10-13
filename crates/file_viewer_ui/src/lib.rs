@@ -18,7 +18,7 @@ use file_viewers::csv::{self, GridScroll, Table};
 use file_viewers::geometry::{self, Offset, Rect, Size, ViewTransform, ZoomMode};
 use file_viewers::image::{self as image_decoding, DecodeError, DecodedImage, Pyramid};
 use file_viewers::kind::ViewerKind;
-use file_viewers::large_text::{LargeText, format_count};
+use file_viewers::large_text::{LargeText, lines_text};
 use file_viewers::office::{self, ConvertError};
 use file_viewers::pdf::{OpenedPdf, PageLayout, PdfError, PdfWorker, Strip, StripKey};
 use file_viewers::scene::{self, Placement, Viewport};
@@ -956,7 +956,7 @@ impl FileViewerView {
             Body::Peek(peek) => {
                 parts.push(self.kind.label().to_string());
                 if let Some(shape) = peek.text.shape {
-                    parts.push(format!("{} lines", format_count(shape.lines)));
+                    parts.push(lines_text(shape.lines));
                 }
             }
             Body::Loading(_) | Body::Message(_) => parts.push(self.kind.label().to_string()),

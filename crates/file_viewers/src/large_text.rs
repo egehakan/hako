@@ -50,10 +50,10 @@ impl LargeText {
         let why = match self.shape.map(|shape| (shape, shape.decision())) {
             None => format!("This file is {size}, too large to open in the editor."),
             Some((shape, OpenDecision::LargeFile { limit, .. })) => {
-                let lines = format_count(shape.lines);
+                let lines = lines_text(shape.lines);
                 match limit {
-                    Limit::Bytes => format!("This file is {size} ({lines} lines)."),
-                    Limit::Lines => format!("This file has {lines} lines ({size})."),
+                    Limit::Bytes => format!("This file is {size} ({lines})."),
+                    Limit::Lines => format!("This file has {lines} ({size})."),
                     Limit::LineLength => format!(
                         "This file ({size}) has a line of {}.",
                         format_bytes(shape.longest_line_bytes as u64)
@@ -74,11 +74,22 @@ impl LargeText {
             None => String::new(),
         };
         let shown = if self.peek.has_more {
-            format!(" Its first {} lines are shown here.", self.peek.lines.len())
+            match self.peek.lines.len() {
+                1 => " The start of its first line is shown here.".to_string(),
+                count => format!(" Its first {count} lines are shown here."),
+            }
         } else {
             " It is shown here whole.".to_string()
         };
         format!("{why}{cost}{shown} Nothing here can be edited.")
+    }
+}
+
+/// A number of lines in words, e.g. `1 line` or `630,788 lines`.
+pub fn lines_text(count: usize) -> String {
+    match count {
+        1 => "1 line".to_string(),
+        count => format!("{} lines", format_count(count)),
     }
 }
 
