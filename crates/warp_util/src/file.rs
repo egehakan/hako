@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use warp_errors::{ErrorExt, register_error};
 
+use crate::large_file::{FileShape, Limit};
+
 #[derive(thiserror::Error, Debug)]
 pub enum FileSaveError {
     #[error("No file path associated with file when saving file {0:?}")]
@@ -38,6 +40,10 @@ pub enum FileLoadError {
     DoesNotExist,
     #[error("IO error when loading file.")]
     IOError(#[from] io::Error),
+    /// The file is over `limit` for an editor. `shape` is what is known of the file: only its
+    /// size when that was enough to tell.
+    #[error("File is too large to open in an editor")]
+    TooLarge { shape: FileShape, limit: Limit },
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]

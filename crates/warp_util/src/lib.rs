@@ -11,6 +11,7 @@ pub mod file_type;
 pub mod git;
 pub mod hashed;
 pub mod host_id;
+pub mod large_file;
 pub mod lazy;
 pub mod local_or_remote_path;
 pub mod on_cancel;
