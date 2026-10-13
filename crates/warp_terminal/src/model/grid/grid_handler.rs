@@ -7,6 +7,8 @@ mod ansi_handler;
 mod filtering;
 #[path = "image.rs"]
 mod image;
+#[path = "replay.rs"]
+mod replay;
 #[path = "resize.rs"]
 mod resize;
 #[path = "secrets.rs"]
@@ -23,6 +25,7 @@ use bounded_vec_deque::BoundedVecDeque;
 use filtering::FilterState;
 use itertools::Itertools;
 use lazy_static::lazy_static;
+pub use replay::Replay;
 use string_offset::ByteOffset;
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_width::UnicodeWidthChar;
