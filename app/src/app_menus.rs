@@ -210,7 +210,7 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
     menu_items.push(MenuItem::Standard(StandardAction::ShowAllApps));
     menu_items.push(MenuItem::Separator);
     menu_items.push(MenuItem::Custom(CustomMenuItem::new(
-        "Set Warp as Default Terminal",
+        "Set Hako as Default Terminal",
         move |ctx| {
             DefaultTerminal::handle(ctx).update(ctx, |default_terminal, ctx| {
                 default_terminal.make_warp_default(ctx)
@@ -301,7 +301,7 @@ fn make_new_edit_menu(ctx: &AppContext) -> Menu {
     ];
     let group_5 = vec![
         MenuItem::Custom(CustomMenuItem::new(
-            "Use Warp's Prompt",
+            "Use Hako's Prompt",
             move |ctx| ctx.dispatch_global_action("app:toggle_user_ps1", &()),
             move |_props, ctx| MenuItemPropertyChanges {
                 checked: Some(
