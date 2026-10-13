@@ -815,7 +815,8 @@ fn cloud_startup_refresh_applies_metadata_after_delayed_authorization() {
                 return Err(GraphQLError::HttpError {
                     status: StatusCode::UNAUTHORIZED,
                     body: "execution not claimed".to_string(),
-                }.into());
+                }
+                .into());
             }
             Ok(WorkspacesMetadataWithPricing {
                 metadata: WorkspacesMetadataResponse {
@@ -835,7 +836,9 @@ fn cloud_startup_refresh_applies_metadata_after_delayed_authorization() {
         let runner = app.add_singleton_model(|_| AgentDriverRunner);
         let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
 
-        AgentDriverRunner::refresh_team_metadata(&foreground, true).await.unwrap();
+        AgentDriverRunner::refresh_team_metadata(&foreground, true)
+            .await
+            .unwrap();
 
         assert!(started.elapsed() >= Duration::from_secs(12));
         assert!(started.elapsed() < Duration::from_secs(14));
@@ -852,13 +855,17 @@ fn ordinary_metadata_refresh_keeps_four_attempt_limit() {
         app.add_singleton_model(TeamTesterStatus::new);
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
         let mut team_client = MockTeamClient::new();
-        team_client.expect_workspaces_metadata().times(4)
+        team_client
+            .expect_workspaces_metadata()
+            .times(4)
             .returning(|| Err(anyhow::anyhow!("workspace metadata unavailable")));
         app.add_singleton_model(|ctx| TeamUpdateManager::new(Arc::new(team_client), None, ctx));
         let runner = app.add_singleton_model(|_| AgentDriverRunner);
         let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
 
-        let error = AgentDriverRunner::refresh_team_metadata(&foreground, false).await.unwrap_err();
+        let error = AgentDriverRunner::refresh_team_metadata(&foreground, false)
+            .await
+            .unwrap_err();
 
         let AgentDriverError::TeamMetadataRefreshFailed(source) = error else {
             panic!("unexpected refresh error: {error:#}");
@@ -881,7 +888,9 @@ fn cloud_startup_metadata_refresh_is_a_logged_out_noop() {
         let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
         let started = tokio::time::Instant::now();
 
-        AgentDriverRunner::refresh_team_metadata(&foreground, true).await.unwrap();
+        AgentDriverRunner::refresh_team_metadata(&foreground, true)
+            .await
+            .unwrap();
 
         assert_eq!(started.elapsed(), Duration::ZERO);
     });
@@ -901,7 +910,8 @@ fn dropping_cloud_startup_metadata_refresh_stops_retries() {
             observed_attempts.fetch_add(1, Ordering::Relaxed);
             Err(anyhow::anyhow!("workspace metadata unavailable"))
         });
-        let manager = app.add_singleton_model(|ctx| TeamUpdateManager::new(Arc::new(team_client), None, ctx));
+        let manager =
+            app.add_singleton_model(|ctx| TeamUpdateManager::new(Arc::new(team_client), None, ctx));
         let refresh = manager.update(&mut app, |manager, ctx| {
             manager.refresh_workspace_metadata_for_cloud_agent(ctx)
         });

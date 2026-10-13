@@ -1094,10 +1094,9 @@ impl AgentDriverRunner {
                     #[cfg(not(target_family = "wasm"))]
                     if cloud_startup {
                         return Box::pin(
-                            TeamUpdateManager::handle(ctx)
-                                .update(ctx, |manager, ctx| {
-                                    manager.refresh_workspace_metadata_for_cloud_agent(ctx)
-                                }),
+                            TeamUpdateManager::handle(ctx).update(ctx, |manager, ctx| {
+                                manager.refresh_workspace_metadata_for_cloud_agent(ctx)
+                            }),
                         );
                     }
                     #[cfg(target_family = "wasm")]
