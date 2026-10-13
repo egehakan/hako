@@ -2,7 +2,7 @@
 //! alive, reconnects when it drops, and passes frames between the socket and the app.
 
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -159,12 +159,15 @@ struct OutgoingSender {
 }
 
 impl OutgoingSender {
-    fn send(&self, message: Message) {
+    /// Returns whether the message was queued.
+    fn send(&self, message: Message) -> bool {
         // The receiver is gone only once the connection has been shut down for good.
-        let _ = self.queue.send(Outgoing {
-            epoch: self.epoch,
-            message,
-        });
+        self.queue
+            .send(Outgoing {
+                epoch: self.epoch,
+                message,
+            })
+            .is_ok()
     }
 }
 
@@ -173,6 +176,8 @@ pub struct Connection {
     queue: mpsc::UnboundedSender<Outgoing>,
     /// Counts the connections made so far; zero while there is none.
     epoch: Arc<AtomicU64>,
+    /// Bytes of terminal output queued and not yet handed to the socket.
+    output_backlog: Arc<AtomicUsize>,
     runtime: Option<Runtime>,
 }
 
@@ -191,17 +196,22 @@ impl Connection {
         let (queue, outgoing) = mpsc::unbounded_channel();
         let (incoming_sender, incoming) = async_channel::unbounded();
         let epoch = Arc::new(AtomicU64::new(0));
+        let output_backlog = Arc::new(AtomicUsize::new(0));
         runtime.spawn(run(
             config,
             epoch.clone(),
             incoming_sender,
-            outgoing,
+            Outbox {
+                queue: outgoing,
+                output_backlog: output_backlog.clone(),
+            },
             queue.clone(),
         ));
         Ok((
             Self {
                 queue,
                 epoch,
+                output_backlog,
                 runtime: Some(runtime),
             },
             incoming,
@@ -215,19 +225,31 @@ impl Connection {
 
     /// Sends terminal output to the relay. Output produced while not connected is dropped.
     pub fn send_output(&self, frame: &OutputFrame<'_>) -> Result<(), SessionIdLengthError> {
-        self.send(Message::Binary(frame.encode()?));
+        let frame = frame.encode()?;
+        let length = frame.len();
+        // Counted before it is queued, so that the count cannot be taken off first.
+        self.output_backlog.fetch_add(length, Ordering::AcqRel);
+        if !self.send(Message::Binary(frame)) {
+            self.output_backlog.fetch_sub(length, Ordering::AcqRel);
+        }
         Ok(())
     }
 
-    fn send(&self, message: Message) {
+    /// Bytes of terminal output that wait for the socket, which grows when output is produced
+    /// faster than the relay takes it.
+    pub fn output_backlog(&self) -> usize {
+        self.output_backlog.load(Ordering::Acquire)
+    }
+
+    /// Returns whether the message was queued.
+    fn send(&self, message: Message) -> bool {
         let epoch = self.epoch.load(Ordering::Acquire);
-        if epoch != 0 {
-            OutgoingSender {
+        epoch != 0
+            && OutgoingSender {
                 epoch,
                 queue: self.queue.clone(),
             }
-            .send(message);
-        }
+            .send(message)
     }
 }
 
@@ -242,6 +264,29 @@ impl Drop for Connection {
 
 type Socket = WebSocketStream<ConnectStream>;
 
+/// The receiving end of the queue of messages to send.
+struct Outbox {
+    queue: mpsc::UnboundedReceiver<Outgoing>,
+    output_backlog: Arc<AtomicUsize>,
+}
+
+impl Outbox {
+    async fn next(&mut self) -> Option<Outgoing> {
+        let outgoing = self.queue.recv().await?;
+        match &outgoing.message {
+            Message::Binary(frame) => {
+                self.output_backlog.fetch_sub(frame.len(), Ordering::AcqRel);
+            }
+            Message::Text(_)
+            | Message::Ping(_)
+            | Message::Pong(_)
+            | Message::Close(_)
+            | Message::Frame(_) => {}
+        }
+        Some(outgoing)
+    }
+}
+
 /// Why a connection ended.
 enum End {
     /// A newer connection with the same key took its place.
@@ -255,7 +300,7 @@ async fn run(
     config: ConnectionConfig,
     epoch: Arc<AtomicU64>,
     incoming: async_channel::Sender<Incoming>,
-    mut outgoing: mpsc::UnboundedReceiver<Outgoing>,
+    mut outgoing: Outbox,
     queue: mpsc::UnboundedSender<Outgoing>,
 ) {
     let mut backoff = Backoff::new();
@@ -353,7 +398,7 @@ async fn serve(
     socket: Socket,
     sender: OutgoingSender,
     incoming: &async_channel::Sender<Incoming>,
-    outgoing: &mut mpsc::UnboundedReceiver<Outgoing>,
+    outgoing: &mut Outbox,
 ) -> End {
     let (mut sink, mut stream) = socket.split();
     let mut ping = interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
@@ -378,7 +423,7 @@ async fn serve(
                 }
                 continue;
             }
-            queued = outgoing.recv() => match queued {
+            queued = outgoing.next() => match queued {
                 Some(queued) if queued.epoch == sender.epoch => queued.message,
                 Some(_) => continue,
                 None => return End::Stopped,
