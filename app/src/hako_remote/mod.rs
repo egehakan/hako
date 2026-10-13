@@ -1,8 +1,8 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
-//! watch and use a terminal, read and change files, and use source control in the repositories
-//! under the folders. It also tells the owner's devices when a terminal wants them, and keeps the
-//! computer awake while it is on.
+//! watch and use a terminal, read, change, download and upload files, and use source control in
+//! the repositories under the folders. It also tells the owner's devices when a terminal wants
+//! them, and keeps the computer awake while it is on.
 
 mod app_info;
 mod handlers;
@@ -16,15 +16,19 @@ use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_changed};
 use ::hako_remote::protocol::{
-    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams,
-    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
+    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FsDownloadParams, FsPathParams,
+    FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams, GitChanged,
+    GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
     NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
-use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files};
+use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
+use ::hako_remote::{
+    Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files, uploads_area,
+};
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -55,6 +59,10 @@ const NEW_WINDOW_TAB_CHECKS: usize = 50;
 /// How long a source control request waits to learn the `PATH` of the owner's shell before git
 /// is run with the app's own.
 const SHELL_PATH_WAIT: Duration = Duration::from_secs(10);
+
+/// How often the uploads area is cleaned while the app runs, which keeps it at least daily even
+/// when the computer's sleep holds the timer back.
+const UPLOADS_AREA_CLEAN_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteAccessStatus {
@@ -103,6 +111,7 @@ pub struct HakoRemote {
     git_changes: ChangeLimiter,
     notifications: Notifications,
     keep_awake: KeepAwake,
+    transfers: Arc<Transfers>,
 }
 
 /// What a source control request is answered with.
@@ -136,9 +145,31 @@ impl HakoRemote {
             git_changes: ChangeLimiter::default(),
             notifications: Notifications::default(),
             keep_awake: KeepAwake::default(),
+            transfers: Arc::new(Transfers::new(warp_core::paths::data_dir())),
         };
+        let transfers = me.transfers.clone();
+        ctx.spawn(
+            async move { transfers.start(SystemTime::now(), &uploads_area::today()) },
+            |me, (), ctx| me.schedule_uploads_area_clean(ctx),
+        );
         me.apply_settings(ctx);
         me
+    }
+
+    /// Removes the temporary files of the unfinished uploads, as the app quits.
+    pub fn abandon_uploads(&self) {
+        self.transfers.abandon_all();
+    }
+
+    fn schedule_uploads_area_clean(&self, ctx: &mut ModelContext<Self>) {
+        let transfers = self.transfers.clone();
+        ctx.spawn(
+            async move {
+                Timer::after(UPLOADS_AREA_CLEAN_INTERVAL).await;
+                transfers.clean_uploads_area(SystemTime::now(), &uploads_area::today());
+            },
+            |me, (), ctx| me.schedule_uploads_area_clean(ctx),
+        );
     }
 
     pub fn status(&self) -> &RemoteAccessStatus {
@@ -381,6 +412,53 @@ impl HakoRemote {
                     |params: FsWriteParams| files::write(&params),
                 );
             }
+            Method::FsTransferInfo => to_json(&transfers::info()),
+            Method::FsDownload => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsDownloadParams| transfers::download(&params),
+                );
+            }
+            Method::FsUploadBegin => {
+                return self.answer_upload(
+                    params,
+                    responder,
+                    ctx,
+                    |transfers, params: FsUploadBeginParams| {
+                        transfers.begin(params, Instant::now(), &uploads_area::today())
+                    },
+                );
+            }
+            Method::FsUploadChunk => {
+                return self.answer_upload(
+                    params,
+                    responder,
+                    ctx,
+                    |transfers, params: FsUploadChunkParams| {
+                        transfers.chunk(params, Instant::now())
+                    },
+                );
+            }
+            Method::FsUploadEnd => {
+                return self.answer_upload(
+                    params,
+                    responder,
+                    ctx,
+                    |transfers, params: FsUploadIdParams| transfers.end(params, Instant::now()),
+                );
+            }
+            Method::FsUploadCancel => {
+                return self.answer_upload(
+                    params,
+                    responder,
+                    ctx,
+                    |transfers, params: FsUploadIdParams| {
+                        transfers.cancel(params, Instant::now()).map(|()| json!({}))
+                    },
+                );
+            }
             Method::GitRepos => {
                 return self.answer_source_control(
                     params,
@@ -469,14 +547,15 @@ impl HakoRemote {
 
     /// Answers a request with what `work` makes of its params. The work is done off the app's
     /// main thread, which must not wait for the file system.
-    fn answer_in_background<P, R>(
+    fn answer_in_background<P, R, W>(
         params: Value,
         responder: Responder,
         ctx: &mut ModelContext<Self>,
-        work: fn(P) -> Result<R, RpcError>,
+        work: W,
     ) where
         P: DeserializeOwned + 'static,
         R: Serialize + 'static,
+        W: FnOnce(P) -> Result<R, RpcError> + Send + 'static,
     {
         ctx.spawn(
             async move {
@@ -484,6 +563,32 @@ impl HakoRemote {
                     .and_then(work)
                     .and_then(|result| to_json(&result));
                 responder.respond(outcome);
+            },
+            |_, (), _| {},
+        );
+    }
+
+    /// Answers a request about an upload off the app's main thread, and gives up on uploads that
+    /// have been left unfinished for long once that is due.
+    fn answer_upload<P, R>(
+        &self,
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+        work: fn(&Transfers, P) -> Result<R, RpcError>,
+    ) where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+    {
+        let transfers = self.transfers.clone();
+        Self::answer_in_background(params, responder, ctx, move |params| {
+            work(&transfers, params)
+        });
+        let transfers = self.transfers.clone();
+        ctx.spawn(
+            async move {
+                Timer::after(UNFINISHED_KEPT_FOR + Duration::from_secs(1)).await;
+                transfers.expire(Instant::now());
             },
             |_, (), _| {},
         );
