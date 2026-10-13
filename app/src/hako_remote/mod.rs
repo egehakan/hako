@@ -22,8 +22,8 @@ use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_change
 use ::hako_remote::protocol::{
     EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FolderCreateParams, FsDownloadParams,
     FsPathParams, FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams,
-    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
-    NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
+    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitRepoParams,
+    GitShowParams, GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
 use ::hako_remote::{
@@ -549,6 +549,54 @@ impl HakoRemote {
                     |git, params: GitDiscardParams| async move {
                         git.source_control
                             .discard(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitBranches => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitRepoParams| async move {
+                        git.source_control
+                            .branches(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitSwitch => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitSwitchParams| async move {
+                        git.source_control
+                            .switch(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitLog => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitLogParams| async move {
+                        git.source_control
+                            .log(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitShow => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitShowParams| async move {
+                        git.source_control
+                            .show(&git.folders, &params, git.path_env)
                             .await
                     },
                 );
