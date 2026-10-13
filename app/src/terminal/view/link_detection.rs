@@ -796,6 +796,96 @@ impl super::TerminalView {
     }
 }
 
+/// The file on this machine that the `file` URI of a hyperlink names, with the line and column
+/// it points at. `None` for any other scheme and for a file on another host, which `hostname`,
+/// the name of this machine, tells apart. Whether the file exists is not looked at.
+#[cfg(feature = "local_fs")]
+pub(super) fn local_file_of_hyperlink(
+    uri: &str,
+    hostname: Option<&str>,
+) -> Option<(PathBuf, Option<LineAndColumnArg>)> {
+    let url = url::Url::parse(uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let is_local = match url.host_str() {
+        None | Some("") => true,
+        Some(host) => {
+            host.eq_ignore_ascii_case("localhost")
+                || hostname.is_some_and(|hostname| is_same_host(host, hostname))
+        }
+    };
+    if !is_local {
+        return None;
+    }
+    let line_and_column = line_and_column_of_hyperlink(&url);
+    // A path is only made of a URL without a host, so the path goes into one of its own.
+    let path = url::Url::parse(&format!("file://{}", url.path()))
+        .ok()?
+        .to_file_path()
+        .ok()?;
+    Some((path, line_and_column))
+}
+
+/// [`local_file_of_hyperlink`] for a URI that names a regular file that exists.
+#[cfg(feature = "local_fs")]
+pub(super) fn existing_file_of_hyperlink(
+    uri: &str,
+    hostname: Option<&str>,
+) -> Option<(PathBuf, Option<LineAndColumnArg>)> {
+    local_file_of_hyperlink(uri, hostname).filter(|(path, _)| path.is_file())
+}
+
+/// The name of this machine, as programs put it in the `file` URIs they print.
+#[cfg(feature = "local_fs")]
+pub(super) fn local_hostname() -> Option<String> {
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            nix::unistd::gethostname().ok()?.into_string().ok()
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether two host names are the same machine's, with or without the `.local` of Bonjour.
+#[cfg(feature = "local_fs")]
+fn is_same_host(host: &str, other: &str) -> bool {
+    let bare = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.strip_suffix(".local").map(str::to_string).unwrap_or(name)
+    };
+    bare(host) == bare(other)
+}
+
+/// The line and column a `file` URL points at: `#L10`, `#L10C3` or `#10` in its fragment, or
+/// `line` and `column` in its query.
+#[cfg(feature = "local_fs")]
+fn line_and_column_of_hyperlink(url: &url::Url) -> Option<LineAndColumnArg> {
+    let from_fragment = url.fragment().and_then(|fragment| {
+        let fragment = fragment.trim_start_matches(['L', 'l']);
+        let digits = |text: &str| text.chars().take_while(char::is_ascii_digit).count();
+        let line_len = digits(fragment);
+        let line_num = fragment[..line_len].parse().ok()?;
+        let column = fragment[line_len..]
+            .strip_prefix(['C', 'c'])
+            .and_then(|column| column[..digits(column)].parse().ok());
+        Some((line_num, column))
+    });
+    let (line_num, column_num) = from_fragment.or_else(|| {
+        let number = |key: &str| {
+            url.query_pairs()
+                .find(|(name, _)| name == key)
+                .and_then(|(_, value)| value.parse().ok())
+        };
+        Some((number("line")?, number("column")))
+    })?;
+    (line_num > 0).then_some(LineAndColumnArg {
+        line_num,
+        column_num,
+    })
+}
+
 #[cfg(all(test, feature = "local_fs"))]
 #[path = "link_detection_tests.rs"]
 mod tests;

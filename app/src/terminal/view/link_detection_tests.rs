@@ -1,9 +1,12 @@
 use std::iter;
 
-use warp_util::path::CleanPathResult;
+use warp_util::path::{CleanPathResult, LineAndColumnArg};
 
 use super::super::TerminalView;
-use super::{GridHighlightedLink, path_without_trailing_sentence_punctuation};
+use super::{
+    GridHighlightedLink, existing_file_of_hyperlink, local_file_of_hyperlink,
+    path_without_trailing_sentence_punctuation,
+};
 use crate::terminal::model::grid::grid_handler::PossiblePath;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinModel;
@@ -207,5 +210,91 @@ fn compute_valid_paths_keeps_trailing_fullwidth_punctuation_when_it_is_the_filen
             row: 0,
             col: end_col,
         }
+    );
+}
+
+fn line_and_column(line_num: usize, column_num: Option<usize>) -> Option<LineAndColumnArg> {
+    Some(LineAndColumnArg {
+        line_num,
+        column_num,
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_hyperlink_names_a_local_path() {
+    use std::path::PathBuf;
+
+    let path = |uri| local_file_of_hyperlink(uri, Some("studio")).map(|(path, _)| path);
+    assert_eq!(
+        path("file:///Users/ada/notes/NOW.md"),
+        Some(PathBuf::from("/Users/ada/notes/NOW.md"))
+    );
+    assert_eq!(
+        path("file:///Users/ada/some%20file%20%C5%9F.md"),
+        Some(PathBuf::from("/Users/ada/some file ş.md"))
+    );
+    assert_eq!(
+        path("file://localhost/etc/hosts"),
+        Some(PathBuf::from("/etc/hosts"))
+    );
+    // This machine, as it names itself and as Bonjour names it.
+    assert_eq!(path("file://studio/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
+    assert_eq!(
+        path("file://Studio.local/etc/hosts"),
+        Some(PathBuf::from("/etc/hosts"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hyperlink_to_another_host_or_scheme_is_not_a_local_file() {
+    assert_eq!(local_file_of_hyperlink("file://build-server/etc/hosts", Some("studio")), None);
+    assert_eq!(local_file_of_hyperlink("file://studio/etc/hosts", None), None);
+    assert_eq!(local_file_of_hyperlink("https://example.com/etc/hosts", Some("studio")), None);
+    assert_eq!(local_file_of_hyperlink("vscode://file/etc/hosts", Some("studio")), None);
+    assert_eq!(local_file_of_hyperlink("/etc/hosts", Some("studio")), None);
+    assert_eq!(local_file_of_hyperlink("not a url", Some("studio")), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_hyperlink_can_point_at_a_line_and_column() {
+    let position = |uri| local_file_of_hyperlink(uri, None).and_then(|(_, position)| position);
+    assert_eq!(position("file:///src/main.rs"), None);
+    assert_eq!(position("file:///src/main.rs#L10"), line_and_column(10, None));
+    assert_eq!(position("file:///src/main.rs#L10C3"), line_and_column(10, Some(3)));
+    assert_eq!(position("file:///src/main.rs#10"), line_and_column(10, None));
+    assert_eq!(position("file:///src/main.rs#L10-L20"), line_and_column(10, None));
+    assert_eq!(
+        position("file:///src/main.rs?line=7&column=2"),
+        line_and_column(7, Some(2))
+    );
+    assert_eq!(position("file:///src/main.rs#heading"), None);
+    assert_eq!(position("file:///src/main.rs#L0"), None);
+    // The fragment is not part of the path.
+    assert_eq!(
+        local_file_of_hyperlink("file:///src/main.rs#L10", None).map(|(path, _)| path),
+        Some(std::path::PathBuf::from("/src/main.rs"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn only_an_existing_regular_file_is_opened_as_one() {
+    let directory = tempfile::tempdir().expect("failed to create temp dir");
+    let file = directory.path().join("some file.md");
+    std::fs::write(&file, "# Notes\n").expect("failed to write file");
+    let uri = |path: &std::path::Path| url::Url::from_file_path(path).expect("absolute").to_string();
+
+    assert_eq!(
+        existing_file_of_hyperlink(&format!("{}#L5", uri(&file)), None),
+        Some((file.clone(), line_and_column(5, None)))
+    );
+    assert!(uri(&file).contains("some%20file.md"));
+    assert_eq!(existing_file_of_hyperlink(&uri(directory.path()), None), None);
+    assert_eq!(
+        existing_file_of_hyperlink(&uri(&directory.path().join("gone.md")), None),
+        None
     );
 }

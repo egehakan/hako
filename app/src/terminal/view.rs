@@ -19330,7 +19330,7 @@ impl TerminalView {
 
     #[cfg(feature = "local_fs")]
     fn open_file_path(
-        &mut self,
+        &self,
         path: PathBuf,
         line_and_column_num: Option<LineAndColumnArg>,
         ctx: &mut ViewContext<Self>,
@@ -19407,9 +19407,23 @@ impl TerminalView {
 
     /// Open an OSC 8 hyperlink URI. The URI comes from untrusted terminal
     /// output, so it is only opened if it parses as a URL.
+    ///
+    /// A `file` URI of a file on this machine is opened the way the same path printed as plain
+    /// text is, rather than handed to the system, which would pick whatever app the file type
+    /// belongs to.
     fn open_hyperlink_uri(&self, uri: &str, ctx: &mut ViewContext<Self>) {
         if url::Url::parse(uri).is_err() {
             return;
+        }
+        #[cfg(feature = "local_fs")]
+        {
+            let hostname = link_detection::local_hostname();
+            if let Some((path, line_and_column)) =
+                link_detection::existing_file_of_hyperlink(uri, hostname.as_deref())
+            {
+                self.open_file_path(path, line_and_column, ctx);
+                return;
+            }
         }
         ctx.notify();
         ctx.open_url(uri);
