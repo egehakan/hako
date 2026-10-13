@@ -185,6 +185,12 @@ pub enum Method {
     FsList,
     FsRead,
     FsWrite,
+    FsTransferInfo,
+    FsDownload,
+    FsUploadBegin,
+    FsUploadChunk,
+    FsUploadEnd,
+    FsUploadCancel,
     GitRepos,
     GitStatus,
     GitDiff,
@@ -212,6 +218,12 @@ impl Method {
             "fs.list" => Some(Self::FsList),
             "fs.read" => Some(Self::FsRead),
             "fs.write" => Some(Self::FsWrite),
+            "fs.transfer_info" => Some(Self::FsTransferInfo),
+            "fs.download" => Some(Self::FsDownload),
+            "fs.upload_begin" => Some(Self::FsUploadBegin),
+            "fs.upload_chunk" => Some(Self::FsUploadChunk),
+            "fs.upload_end" => Some(Self::FsUploadEnd),
+            "fs.upload_cancel" => Some(Self::FsUploadCancel),
             "git.repos" => Some(Self::GitRepos),
             "git.status" => Some(Self::GitStatus),
             "git.diff" => Some(Self::GitDiff),
@@ -501,6 +513,103 @@ pub struct FsWriteParams {
 pub struct FsWrite {
     pub mtime: i64,
     pub size: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsTransferInfo {
+    /// The longest file that is sent in either direction.
+    pub max_bytes: u64,
+    /// The most bytes in one piece, before base64.
+    pub chunk_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsDownloadParams {
+    pub path: String,
+    pub offset: u64,
+    pub length: u64,
+    /// The size the file had at the first piece, or `None` for the first piece. It has to be
+    /// given either way, and is `None` exactly when `expected_mtime` is.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub expected_size: Option<u64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub expected_mtime: Option<i64>,
+}
+
+/// One piece of a file, and what the file was like when it was read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsDownload {
+    /// The piece's bytes in base64.
+    pub data: String,
+    pub size: u64,
+    pub mtime: i64,
+}
+
+/// Where an uploaded file goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FsUploadDestination {
+    Dir {
+        path: String,
+    },
+    /// The app's own area for files that are handed to a program by their path.
+    Uploads,
+}
+
+/// What happens when a directory already holds something of the uploaded file's name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsOnConflict {
+    #[default]
+    Fail,
+    Replace,
+    /// Keep both, giving the new file the first free numbered name.
+    Rename,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadBeginParams {
+    pub destination: FsUploadDestination,
+    pub name: String,
+    pub size: u64,
+    /// `None` means [`FsOnConflict::Fail`].
+    #[serde(default)]
+    pub on_conflict: Option<FsOnConflict>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadBegin {
+    pub upload_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadChunkParams {
+    pub upload_id: String,
+    pub offset: u64,
+    /// The piece's bytes in base64.
+    pub data: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadChunk {
+    /// How many bytes of the file have arrived.
+    pub received: u64,
+}
+
+/// Params of the upload methods that name only the upload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadIdParams {
+    pub upload_id: String,
+}
+
+/// The result of `fs.upload_end`: the file as it now is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsUploadEnd {
+    /// Absolute, and for a directory the destination's path joined with `name`.
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub mtime: i64,
 }
 
 /// A working tree, as the source control methods describe it.

@@ -161,6 +161,27 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("fs.list"), Some(Method::FsList));
     assert_eq!(Method::from_name("fs.read"), Some(Method::FsRead));
     assert_eq!(Method::from_name("fs.write"), Some(Method::FsWrite));
+    assert_eq!(
+        Method::from_name("fs.transfer_info"),
+        Some(Method::FsTransferInfo)
+    );
+    assert_eq!(Method::from_name("fs.download"), Some(Method::FsDownload));
+    assert_eq!(
+        Method::from_name("fs.upload_begin"),
+        Some(Method::FsUploadBegin)
+    );
+    assert_eq!(
+        Method::from_name("fs.upload_chunk"),
+        Some(Method::FsUploadChunk)
+    );
+    assert_eq!(
+        Method::from_name("fs.upload_end"),
+        Some(Method::FsUploadEnd)
+    );
+    assert_eq!(
+        Method::from_name("fs.upload_cancel"),
+        Some(Method::FsUploadCancel)
+    );
     assert_eq!(Method::from_name("git.repos"), Some(Method::GitRepos));
     assert_eq!(Method::from_name("git.status"), Some(Method::GitStatus));
     assert_eq!(Method::from_name("git.diff"), Some(Method::GitDiff));
@@ -523,4 +544,52 @@ fn reads_the_paths_of_a_discard_when_they_are_null_or_left_out() {
     assert_eq!(one.path.as_deref(), Some("a.txt"));
     assert!(params(json!({ "path": "a.txt" })).is_err());
     assert!(params(json!({ "repo": 1 })).is_err());
+}
+
+#[test]
+fn a_download_needs_both_expectations_present() {
+    let first: FsDownloadParams = serde_json::from_value(json!({
+        "path": "/a", "offset": 0, "length": 1, "expected_size": null, "expected_mtime": null
+    }))
+    .unwrap();
+    assert_eq!(first.expected_size, None);
+
+    let missing = serde_json::from_value::<FsDownloadParams>(json!({
+        "path": "/a", "offset": 0, "length": 1, "expected_size": null
+    }));
+    assert!(missing.is_err());
+    let fraction = serde_json::from_value::<FsDownloadParams>(json!({
+        "path": "/a", "offset": 0.5, "length": 1, "expected_size": null, "expected_mtime": null
+    }));
+    assert!(fraction.is_err());
+}
+
+#[test]
+fn reads_an_upload_destination_and_what_to_do_about_a_taken_name() {
+    let into_directory: FsUploadBeginParams = serde_json::from_value(json!({
+        "destination": { "kind": "dir", "path": "/a" },
+        "name": "b.txt",
+        "size": 3,
+        "on_conflict": "rename"
+    }))
+    .unwrap();
+    assert_eq!(
+        into_directory.destination,
+        FsUploadDestination::Dir {
+            path: "/a".to_owned()
+        }
+    );
+    assert_eq!(into_directory.on_conflict, Some(FsOnConflict::Rename));
+
+    let into_uploads: FsUploadBeginParams = serde_json::from_value(json!({
+        "destination": { "kind": "uploads" }, "name": "b.png", "size": 3
+    }))
+    .unwrap();
+    assert_eq!(into_uploads.destination, FsUploadDestination::Uploads);
+    assert_eq!(into_uploads.on_conflict, None);
+
+    let unknown = serde_json::from_value::<FsUploadBeginParams>(json!({
+        "destination": { "kind": "desktop" }, "name": "b.png", "size": 3
+    }));
+    assert!(unknown.is_err());
 }
