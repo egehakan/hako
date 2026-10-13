@@ -264,6 +264,9 @@ pub struct NestedRepoEntry {
     pub display_name: String,
     /// `None` until the first load finishes, and again if the latest load failed.
     pub status: Option<NestedRepoStatus>,
+    /// Counts the times the status was read, each of which follows something that may have
+    /// changed the repository.
+    pub status_version: u64,
     load_state: StatusLoadState,
 }
 
@@ -383,6 +386,7 @@ impl NestedReposModel {
                     display_name: display_name(&self.scan_root, &repo.root),
                     repo,
                     status: None,
+                    status_version: 0,
                     load_state: StatusLoadState::Idle,
                 }
             });
@@ -466,6 +470,7 @@ impl NestedReposModel {
                 }
             );
             entry.load_state = StatusLoadState::Idle;
+            entry.status_version += 1;
             match result {
                 Ok(status) => entry.status = Some(status),
                 Err(err) => {
