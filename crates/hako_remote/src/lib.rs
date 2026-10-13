@@ -8,7 +8,9 @@ pub mod boundary;
 pub mod connection;
 pub mod files;
 pub mod git;
-mod git_run;
+pub mod git_history;
+mod git_history_format;
+pub mod git_run;
 mod git_status;
 #[cfg(test)]
 mod git_test_support;

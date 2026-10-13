@@ -4,6 +4,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::git_test_support::{commit_all, environment, git, identify, repository, write};
+use crate::protocol::GitSwitchKind;
 
 /// Finds working trees the plain way: every directory that holds a `.git` entry.
 fn search(directory: &Path) -> Vec<PathBuf> {
@@ -111,6 +112,7 @@ impl Fixture {
             repo: repo.to_owned(),
             path: path.to_owned(),
             old_path: old_path.map(str::to_owned),
+            commit: None,
         };
         self.source_control
             .diff(&self.folders(), &params, None)
@@ -588,6 +590,130 @@ async fn serves_only_the_repositories_it_lists_and_one_change_at_a_time() {
 }
 
 #[tokio::test]
+async fn answers_for_branches_and_history_only_in_the_repositories_it_lists() {
+    let fixture = Fixture::new();
+    fixture.repository_with_remote("listed");
+    // The folder is reached through a link, so git names the working tree otherwise than the
+    // folder does.
+    let link = format!("{}/link", fixture.outside);
+    std::os::unix::fs::symlink(&fixture.folder, &link).unwrap();
+    let folders = vec![link.clone()];
+    let repo = format!("{link}/listed");
+    git(&repo, &["branch", "feature"]);
+    let linked = format!("{}/linked", fixture.outside);
+    git(&repo, &["worktree", "add", "-q", &linked, "feature"]);
+    let unlisted = format!("{}/unlisted", fixture.outside);
+    repository(&unlisted);
+    let source_control = &fixture.source_control;
+    let switch = |repo: &str, branch: &str| GitSwitchParams {
+        repo: repo.to_owned(),
+        branch: branch.to_owned(),
+        kind: GitSwitchKind::New,
+    };
+    let log = |repo: &str, limit| GitLogParams {
+        repo: repo.to_owned(),
+        limit,
+        skip: None,
+    };
+    let show = |repo: &str| GitShowParams {
+        repo: repo.to_owned(),
+        commit: git(repo, &["rev-parse", "HEAD"]),
+    };
+    let checked_out_in = |branches: GitBranches, name: &str| {
+        let branch = branches
+            .branches
+            .into_iter()
+            .find(|branch| branch.name == name);
+        branch.unwrap().worktree
+    };
+
+    let branches = source_control
+        .branches(&folders, &named_repo(&repo), None)
+        .await
+        .unwrap();
+    let from_linked = source_control
+        .branches(&folders, &named_repo(&linked), None)
+        .await
+        .unwrap();
+    assert_eq!(checked_out_in(branches, "feature"), Some(linked.clone()));
+    assert_eq!(checked_out_in(from_linked, "main"), Some(repo.clone()));
+    let history = source_control
+        .log(&folders, &log(&repo, None), None)
+        .await
+        .unwrap();
+    assert_eq!(history.commits.len(), 1);
+    let shown = source_control.show(&folders, &show(&repo), None).await;
+    assert_eq!(shown.unwrap().commit, history.commits[0]);
+    let diff = GitDiffParams {
+        repo: repo.clone(),
+        path: "README.md".to_owned(),
+        old_path: None,
+        commit: Some(history.commits[0].id.clone()),
+    };
+    assert!(
+        text(source_control.diff(&folders, &diff, None).await)
+            .ends_with("+++ b/README.md\n@@ -0,0 +1 @@\n+first\n")
+    );
+
+    for limit in [0, LOG_LIMIT as u64 + 1] {
+        assert_eq!(
+            code(
+                source_control
+                    .log(&folders, &log(&repo, Some(limit)), None)
+                    .await
+            ),
+            ErrorCode::BadRequest
+        );
+    }
+    assert_eq!(
+        code(
+            source_control
+                .branches(&folders, &named_repo(&unlisted), None)
+                .await
+        ),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        code(
+            source_control
+                .log(&folders, &log(&unlisted, None), None)
+                .await
+        ),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        code(source_control.show(&folders, &show(&unlisted), None).await),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        code(
+            source_control
+                .switch(&folders, &switch(&unlisted, "topic"), None)
+                .await
+        ),
+        ErrorCode::NotFound
+    );
+    assert_eq!(git(&unlisted, &["branch", "--list", "topic"]), "");
+
+    let running = source_control.begin(&repo).unwrap();
+    assert_eq!(
+        code(
+            source_control
+                .switch(&folders, &switch(&repo, "topic"), None)
+                .await
+        ),
+        ErrorCode::Busy
+    );
+    drop(running);
+    let switched = source_control
+        .switch(&folders, &switch(&repo, "topic"), None)
+        .await
+        .unwrap();
+    assert_eq!(switched.current.as_deref(), Some("topic"));
+    assert!(source_control.begin(&repo).is_ok());
+}
+
+#[tokio::test]
 async fn stops_a_command_that_runs_for_too_long() {
     let fixture = Fixture {
         source_control: source_control(Duration::from_secs(3)),
@@ -615,6 +741,11 @@ fn answers_with_futures_that_can_move_between_threads() {
 
     sendable(fixture.source_control.repos(&folders, None));
     sendable(fixture.discard("/", None, None));
+    sendable(
+        fixture
+            .source_control
+            .branches(&folders, &named_repo("/"), None),
+    );
 }
 
 #[test]

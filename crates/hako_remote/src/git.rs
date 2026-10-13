@@ -1,7 +1,7 @@
 //! The source control methods of the remote protocol: the working trees under the owner's
-//! folders, what differs from `HEAD` in each, the diff of one file, and commit, push, pull and
-//! discard. All of it is done by the `git` command line, in the working trees listed here and
-//! nowhere else.
+//! folders, what differs from `HEAD` in each, the diff of one file, commit, push, pull and
+//! discard, and the branches and the history of each. All of it is done by the `git` command
+//! line, in the working trees listed here and nowhere else.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -16,12 +16,14 @@ use futures::stream::{self, StreamExt as _};
 use tokio::time::Instant;
 
 use crate::files::is_normal;
+use crate::git_history::{self, LOG_DEFAULT, LOG_LIMIT};
 use crate::git_run::{self, COMMAND_LIMIT, Exit, Git, failure};
 use crate::git_status::{LineCounts, Status, parse_numstat, parse_status};
 use crate::protocol::{
-    ErrorCode, GitCommit, GitCommitParams, GitDiff, GitDiffParams, GitDiscard, GitDiscardParams,
-    GitFile, GitFileStatus, GitOperation, GitPull, GitPush, GitRepo, GitRepoParams, GitRepos,
-    GitStatus, RpcError,
+    ErrorCode, GitBranches, GitCommit, GitCommitParams, GitDiff, GitDiffParams, GitDiscard,
+    GitDiscardParams, GitFile, GitFileStatus, GitLog, GitLogParams, GitOperation, GitPull, GitPush,
+    GitRepo, GitRepoParams, GitRepos, GitShow, GitShowParams, GitStatus, GitSwitch,
+    GitSwitchParams, RpcError,
 };
 
 /// The most files `git.status` lists.
@@ -39,7 +41,7 @@ const BINARY_CHECK_BYTES: u64 = 8_000;
 const LINE_COUNT_BUDGET: u64 = 64 * 1024 * 1024;
 /// What everything is compared with in a repository that has no commit yet. This is the id of
 /// the empty tree where objects are named by SHA-1.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+pub(crate) const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const CONCURRENT_DESCRIPTIONS: usize = 6;
 const GIT_ENTRY: &str = ".git";
 
@@ -59,7 +61,7 @@ const BRANCH_STATUS: [&str; 5] = [
     "--untracked-files=no",
 ];
 /// What makes a diff the same whatever the owner's configuration says.
-const DIFF: [&str; 9] = [
+pub(crate) const DIFF: [&str; 9] = [
     "-c",
     "core.quotePath=false",
     "diff",
@@ -199,6 +201,9 @@ impl SourceControl {
         let git = self.git(path_env);
         let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
         let directory = Path::new(&tree.path);
+        if let Some(commit) = &params.commit {
+            return git_history::commit_diff(directory, commit, path, old_path, &git).await;
+        }
         let status = status_of(directory, &STATUS, &named(path, old_path), &git).await?;
         let entry = status.files.iter().find(|entry| entry.path == path);
         let file = directory.join(path);
@@ -444,6 +449,72 @@ impl SourceControl {
         Ok(GitDiscard {
             repo: describe(&tree, None, &listing.trees, &git).await?,
         })
+    }
+
+    pub async fn branches(
+        &self,
+        folders: &[String],
+        params: &GitRepoParams,
+        path_env: Option<String>,
+    ) -> Result<GitBranches, RpcError> {
+        let git = self.git(path_env);
+        let (tree, listing) = self.resolve(folders, &params.repo, &git).await?;
+        let mut answer = git_history::branches(Path::new(&tree.path), &git).await?;
+        // A working tree goes by the path it is listed under, which is the one a client knows.
+        for branch in &mut answer.branches {
+            let listed = branch.worktree.as_deref().and_then(|worktree| {
+                let real = fs::canonicalize(worktree).ok()?;
+                listing.trees.iter().find(|tree| tree.real == real)
+            });
+            if let Some(listed) = listed {
+                branch.worktree = Some(listed.path.clone());
+            }
+        }
+        Ok(answer)
+    }
+
+    pub async fn switch(
+        &self,
+        folders: &[String],
+        params: &GitSwitchParams,
+        path_env: Option<String>,
+    ) -> Result<GitSwitch, RpcError> {
+        let git = self.git(path_env);
+        let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
+        let _busy = self.begin(&tree.path)?;
+        git_history::switch(Path::new(&tree.path), &params.branch, params.kind, &git).await
+    }
+
+    pub async fn log(
+        &self,
+        folders: &[String],
+        params: &GitLogParams,
+        path_env: Option<String>,
+    ) -> Result<GitLog, RpcError> {
+        let limit = match params.limit {
+            None => LOG_DEFAULT,
+            Some(limit) => usize::try_from(limit)
+                .ok()
+                .filter(|limit| (1..=LOG_LIMIT).contains(limit))
+                .ok_or_else(|| {
+                    RpcError::bad_request(format!("limit must be between 1 and {LOG_LIMIT}"))
+                })?,
+        };
+        let git = self.git(path_env);
+        let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
+        let skip = params.skip.unwrap_or(0);
+        git_history::log(Path::new(&tree.path), limit, skip, &git).await
+    }
+
+    pub async fn show(
+        &self,
+        folders: &[String],
+        params: &GitShowParams,
+        path_env: Option<String>,
+    ) -> Result<GitShow, RpcError> {
+        let git = self.git(path_env);
+        let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
+        git_history::show(Path::new(&tree.path), &params.commit, &git).await
     }
 
     /// Finds the working trees again and describes each. One that git cannot read is left out,
@@ -809,7 +880,7 @@ fn count_lines(file: &Path, budget: &mut u64) -> LineCounts {
 }
 
 /// Whether git printed that two binary files differ where the hunks of a diff would be.
-fn is_binary_diff(diff: &[u8]) -> bool {
+pub(crate) fn is_binary_diff(diff: &[u8]) -> bool {
     diff.split(|byte| *byte == b'\n')
         .take_while(|line| !line.starts_with(b"@@ "))
         .any(|line| line.starts_with(b"Binary files ") && line.ends_with(b" differ"))
@@ -817,7 +888,7 @@ fn is_binary_diff(diff: &[u8]) -> bool {
 
 /// A path inside a repository, if it has the one form the protocol accepts: relative, with
 /// single slashes, and without `.`, `..` or a slash at either end.
-fn file_path<'a>(path: &'a str, name: &str) -> Result<&'a str, RpcError> {
+pub(crate) fn file_path<'a>(path: &'a str, name: &str) -> Result<&'a str, RpcError> {
     let is_relative = path
         .split('/')
         .all(|segment| !matches!(segment, "" | "." | ".."));
