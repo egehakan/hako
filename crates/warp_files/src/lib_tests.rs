@@ -28,6 +28,7 @@ impl From<&FileModelEvent> for TestFileModelEvent {
                 id,
                 content,
                 version,
+                shape: _,
             } => TestFileModelEvent::FileLoaded {
                 id: *id,
                 content: content.clone(),
@@ -354,6 +355,63 @@ fn test_a_failed_open_registers_no_watcher() {
         files.update(app, |model, ctx| model.unsubscribe(file_id, ctx));
         assert_eq!(files.read(app, |model, _| model.file_path(file_id)), None);
     });
+}
+
+/// Opens `path` for `intent` and returns the first event that follows.
+async fn first_event_of_open(path: PathBuf, intent: OpenIntent) -> TestFileModelEvent {
+    let (sender, receiver) = unbounded();
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let events = setup_event_channel(app, &files);
+        files.update(app, |model, ctx| {
+            model.open_for(&path, false, intent, ctx);
+        });
+        let event = events.recv().await.expect("Could not receive the result");
+        sender.send(event).await.expect("Could not send the result");
+    });
+    receiver.recv().await.expect("No event was sent")
+}
+
+#[test]
+fn test_a_file_over_the_size_limit_fails_to_load_without_being_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("dump.sql");
+    // Sparse and full of NULs: reading it as text would fail differently.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(warp_util::large_file::AUTO_OPEN_MAX_BYTES + 1)
+        .unwrap();
+
+    match block_on(first_event_of_open(path, OpenIntent::Automatic)) {
+        TestFileModelEvent::FailedToLoad(error) => {
+            assert!(error.contains("TooLarge"), "{error}");
+            assert!(error.contains("limit: Bytes"), "{error}");
+            assert!(error.contains("lines: 0"), "{error}");
+        }
+        event => panic!("Expected the load to be refused, got {event:?}"),
+    }
+}
+
+#[test]
+fn test_a_file_with_too_many_lines_loads_only_when_asked_for() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lines.log");
+    let lines = warp_util::large_file::AUTO_OPEN_MAX_LINES + 1;
+    std::fs::write(&path, "x\n".repeat(lines)).unwrap();
+
+    match block_on(first_event_of_open(path.clone(), OpenIntent::Automatic)) {
+        TestFileModelEvent::FailedToLoad(error) => {
+            assert!(error.contains("limit: Lines"), "{error}");
+            assert!(error.contains(&format!("lines: {lines}")), "{error}");
+        }
+        event => panic!("Expected the load to be refused, got {event:?}"),
+    }
+
+    match block_on(first_event_of_open(path, OpenIntent::Anyway)) {
+        TestFileModelEvent::FileLoaded { content, .. } => assert_eq!(content.len(), lines * 2),
+        event => panic!("Expected the file to load, got {event:?}"),
+    }
 }
 
 static TEST_FILE_CONTENT: &[u8] = include_bytes!("../test_data/test_file.rs");

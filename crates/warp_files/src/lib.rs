@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use async_channel::Sender;
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
-use futures::io::{AsyncBufReadExt, BufReader};
+use futures::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures::{FutureExt, StreamExt};
 use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
 use remote_server::manager::RemoteServerManager;
@@ -25,6 +25,7 @@ use repo_metadata::{CanonicalizedPath, Repository, RepositoryUpdate, RepositoryW
 use warp_core::HostId;
 use warp_util::content_version::ContentVersion;
 use warp_util::file::{FileId, FileLoadError, FileSaveError};
+use warp_util::large_file::{FileShape, OpenIntent};
 use warp_util::standardized_path::StandardizedPath;
 use warpui_core::r#async::SpawnedFutureHandle;
 use warpui_core::{Entity, ModelContext, ModelHandle, SingletonEntity};
@@ -37,6 +38,7 @@ pub use text_file_reader::{TextFileReadResult, TextFileSegment};
 pub enum FileModelEvent {
     FileLoaded {
         content: String,
+        shape: FileShape,
         id: FileId,
         version: ContentVersion,
     },
@@ -73,6 +75,39 @@ impl FileModelEvent {
             Self::FailedToSave { id, .. } => *id,
             Self::FileUpdated { id, .. } => *id,
         }
+    }
+}
+
+/// Reads the text of the file at `path` for an editor, unless it is over the limits of `intent`.
+/// No more than the size limit is ever read, whatever the file turns out to be.
+async fn read_within_limits(
+    path: &Path,
+    intent: OpenIntent,
+) -> Result<(String, FileShape), FileLoadError> {
+    let size = async_fs::metadata(path).await?.len();
+    let known_by_size = FileShape {
+        bytes: size,
+        ..Default::default()
+    };
+    if let Some(limit) = known_by_size.exceeded_limit(intent) {
+        return Err(FileLoadError::TooLarge {
+            shape: known_by_size,
+            limit,
+        });
+    }
+
+    // The file can grow after its size was read, and a device or pipe has no size at all.
+    let max_bytes = intent.max_bytes();
+    let mut content = String::new();
+    async_fs::File::open(path)
+        .await?
+        .take(max_bytes + 1)
+        .read_to_string(&mut content)
+        .await?;
+    let shape = FileShape::of_bytes(content.as_bytes());
+    match shape.exceeded_limit(intent) {
+        Some(limit) => Err(FileLoadError::TooLarge { shape, limit }),
+        None => Ok((content, shape)),
     }
 }
 
@@ -146,6 +181,8 @@ struct LocalFile {
     version: Option<ContentVersion>,
     /// How this file is being watched for changes.
     watcher_type: WatcherType,
+    /// Decides how large the file may be for its content to be read.
+    open_intent: OpenIntent,
 }
 
 impl LocalFile {
@@ -172,6 +209,7 @@ impl LocalFile {
             path: Some(canonicalized_path),
             version: None,
             watcher_type: WatcherType::None,
+            open_intent: OpenIntent::default(),
         }
     }
 
@@ -422,14 +460,35 @@ impl FileModel {
     }
 
     /// Open a file to get its content asynchronously. This also opts in to receiving file watcher updates.
+    ///
+    /// A file over the limits for opening without being asked fails to load with
+    /// [`FileLoadError::TooLarge`]; see [`Self::open_for`].
     pub fn open(
         &mut self,
         file_path: &Path,
         subscribe_to_updates: bool,
         ctx: &mut ModelContext<Self>,
     ) -> FileId {
+        self.open_for(
+            file_path,
+            subscribe_to_updates,
+            OpenIntent::Automatic,
+            ctx,
+        )
+    }
+
+    /// [`Self::open`] with the limits of `intent`, which also apply when the file is read again
+    /// after it changed on disk.
+    pub fn open_for(
+        &mut self,
+        file_path: &Path,
+        subscribe_to_updates: bool,
+        intent: OpenIntent,
+        ctx: &mut ModelContext<Self>,
+    ) -> FileId {
         let file_id = FileId::new();
         let mut local_file = LocalFile::new(file_path.to_owned());
+        local_file.open_intent = intent;
 
         // Repository watching is set up before the read; an individual watcher can only be
         // registered once the file is known to exist, so it waits for the read to succeed.
@@ -447,9 +506,7 @@ impl FileModel {
         let file_path_buf = file_path.to_owned();
         let future = ctx.spawn(
             async move {
-                let contents = async_fs::read_to_string(&file_path_buf)
-                    .await
-                    .map_err(FileLoadError::from);
+                let contents = read_within_limits(&file_path_buf, intent).await;
                 (file_id, contents)
             },
             move |me, (file_id, load_result), ctx| {
@@ -461,7 +518,7 @@ impl FileModel {
                     return;
                 }
                 match load_result {
-                    Ok(content) => {
+                    Ok((content, shape)) => {
                         let version = ContentVersion::new();
                         me.set_version(file_id, version);
 
@@ -476,6 +533,7 @@ impl FileModel {
 
                         ctx.emit(FileModelEvent::FileLoaded {
                             content,
+                            shape,
                             id: file_id,
                             version,
                         });
@@ -1125,14 +1183,17 @@ impl FileModel {
 
     /// Reloads file content if the given path matches any tracked file.
     fn reload_file_paths(&mut self, file_paths: HashSet<PathBuf>, ctx: &mut ModelContext<Self>) {
-        // First filter to keep only the paths that are tracked.
-        let matching_files: Vec<PathBuf> = file_paths
+        // First filter to keep only the paths that are tracked, each with the most permissive
+        // intent it was opened for.
+        let matching_files: Vec<(PathBuf, OpenIntent)> = file_paths
             .into_iter()
             .filter_map(|path| {
                 self.file_state
                     .local_values()
-                    .any(|file| file.should_receive_update_for_path(&path))
-                    .then_some(path)
+                    .filter(|file| file.should_receive_update_for_path(&path))
+                    .map(|file| file.open_intent)
+                    .max_by_key(|intent| intent.max_bytes())
+                    .map(|intent| (path, intent))
             })
             .collect();
 
@@ -1144,9 +1205,15 @@ impl FileModel {
         ctx.spawn(
             async move {
                 let mut res = Vec::new();
-                for file_path in matching_files {
-                    if let Ok(content) = async_fs::read_to_string(&file_path).await {
-                        res.push((file_path, content));
+                for (file_path, intent) in matching_files {
+                    match read_within_limits(&file_path, intent).await {
+                        Ok((content, _)) => res.push((file_path, content)),
+                        Err(FileLoadError::TooLarge { shape, .. }) => log::warn!(
+                            "Not reloading {}: it grew to {} bytes, too large for its editor",
+                            file_path.display(),
+                            shape.bytes
+                        ),
+                        Err(FileLoadError::DoesNotExist | FileLoadError::IOError(_)) => {}
                     }
                 }
                 res

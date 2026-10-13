@@ -21,6 +21,7 @@ use warp_editor::content::edit::PreciseDelta;
 use warp_editor::content::version::BufferVersion;
 use warp_util::content_version::ContentVersion;
 use warp_util::file::{FileId, FileLoadError, FileSaveError};
+use warp_util::large_file::OpenIntent;
 use warp_util::host_id::HostId;
 use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
@@ -705,9 +706,15 @@ impl GlobalBufferModel {
         match event {
             FileModelEvent::FileLoaded {
                 content,
+                shape,
                 id,
                 version,
             } => {
+                log::info!(
+                    "Loading {} bytes in {} lines into an editor buffer",
+                    shape.bytes,
+                    shape.lines
+                );
                 // Only set the initial_content_version on first file load.
                 if let Some(state) = self.buffers.get_mut(id) {
                     state.set_initial_content_version(*version);
@@ -1232,14 +1239,27 @@ impl GlobalBufferModel {
     /// Dispatches to the appropriate private opener based on the location variant.
     /// If a buffer already exists for this location and is loaded, returns the
     /// existing `BufferState`.
+    ///
+    /// A local file over the limits for opening without being asked fails to load with
+    /// [`FileLoadError::TooLarge`]; see [`Self::open_for`].
     pub fn open(
         &mut self,
         location: LocalOrRemotePath,
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
+        self.open_for(location, OpenIntent::Automatic, ctx)
+    }
+
+    /// [`Self::open`] with the size limits of `intent` for a local file.
+    pub fn open_for(
+        &mut self,
+        location: LocalOrRemotePath,
+        #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] intent: OpenIntent,
+        ctx: &mut ModelContext<Self>,
+    ) -> BufferState {
         match location {
             #[cfg(feature = "local_fs")]
-            LocalOrRemotePath::Local(path) => self.open_local(path, false, ctx),
+            LocalOrRemotePath::Local(path) => self.open_local(path, false, intent, ctx),
             #[cfg(not(feature = "local_fs"))]
             LocalOrRemotePath::Local(_) => {
                 unimplemented!("Local buffers require the local_fs feature")
@@ -1261,6 +1281,7 @@ impl GlobalBufferModel {
         &mut self,
         path: PathBuf,
         is_server_local: bool,
+        intent: OpenIntent,
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
         if let Some(id) = self
@@ -1272,18 +1293,24 @@ impl GlobalBufferModel {
             if let Some(state) = self.buffers.get(&id)
                 && let Some(handle) = state.buffer.upgrade(ctx)
             {
+                let is_loaded = state.is_loaded();
                 // Only emit buffer loaded if the base content version is set.
-                if state.is_loaded() {
+                if is_loaded {
                     ctx.emit(GlobalBufferModelEvent::BufferLoaded {
                         file_id: id,
                         content_version: handle.as_ref(ctx).version(),
                     });
                 }
-                return BufferState::new(id, handle.clone());
+                // A load that is under way or was refused had the limits of whoever started it,
+                // which an explicit request is not held to.
+                if is_loaded || intent == OpenIntent::Automatic {
+                    return BufferState::new(id, handle.clone());
+                }
+                self.cleanup_file_id(id, ctx);
             }
         }
 
-        self.create_new_buffer(&path, is_server_local, ctx)
+        self.create_new_buffer(&path, is_server_local, intent, ctx)
     }
 
     #[cfg(feature = "local_fs")]
@@ -1291,12 +1318,14 @@ impl GlobalBufferModel {
         &mut self,
         path: &Path,
         is_server_local: bool,
+        intent: OpenIntent,
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
         // Open file through FileModel to get FileId
         // Always subscribe to updates for GlobalBufferModel created buffers
-        let file_id =
-            FileModel::handle(ctx).update(ctx, |file_model, ctx| file_model.open(path, true, ctx));
+        let file_id = FileModel::handle(ctx).update(ctx, |file_model, ctx| {
+            file_model.open_for(path, true, intent, ctx)
+        });
 
         // Create new buffer
         let buffer = ctx.add_model(|_| {
@@ -1986,7 +2015,7 @@ impl GlobalBufferModel {
         path: PathBuf,
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
-        self.open_local(path, true, ctx)
+        self.open_local(path, true, OpenIntent::Automatic, ctx)
     }
 
     /// Apply a client edit to a server-local buffer.

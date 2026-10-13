@@ -38,6 +38,7 @@ use warp_editor::content::text::IndentUnit;
 use warp_editor::render::model::{Decoration, LineCount};
 use warp_util::content_version::ContentVersion;
 use warp_util::file::{FileId, FileLoadError, FileSaveError};
+use warp_util::large_file::OpenIntent;
 #[cfg(feature = "local_fs")]
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::path::to_relative_path;
@@ -73,6 +74,7 @@ use crate::code::footer::{CodeFooterView, CodeFooterViewEvent};
 use crate::code::global_buffer_model::{BufferState, GlobalBufferModel, GlobalBufferModelEvent};
 use crate::code::{SaveOutcome, ShowFindReferencesCardProvider};
 use crate::code_review::comments::CommentId;
+use crate::editor::InteractionState;
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_repo_model::{GitRepoModels, GitRepoStatusEvent, GitRepoStatusModel};
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
@@ -1810,8 +1812,30 @@ impl LocalCodeEditorView {
     where
         T: FnOnce(BufferState, &mut ViewContext<Self>) -> ViewHandle<CodeEditorView>,
     {
+        Self::new_with_global_buffer_for(
+            location,
+            OpenIntent::Automatic,
+            editor_constructor,
+            enable_diff_nav_by_default,
+            display_mode,
+            ctx,
+        )
+    }
+
+    /// [`Self::new_with_global_buffer`] with the size limits of `intent` for the file.
+    pub fn new_with_global_buffer_for<T>(
+        location: BufferFileLocation,
+        intent: OpenIntent,
+        editor_constructor: T,
+        enable_diff_nav_by_default: bool,
+        display_mode: Option<DisplayMode>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self
+    where
+        T: FnOnce(BufferState, &mut ViewContext<Self>) -> ViewHandle<CodeEditorView>,
+    {
         let buffer_state = GlobalBufferModel::handle(ctx)
-            .update(ctx, |model, ctx| model.open(location.clone(), ctx));
+            .update(ctx, |model, ctx| model.open_for(location.clone(), intent, ctx));
         let file_id = buffer_state.file_id;
         let editor = editor_constructor(buffer_state, ctx);
 
@@ -2165,8 +2189,19 @@ impl LocalCodeEditorView {
                     }
                 }
                 GlobalBufferModelEvent::FailedToLoad { error, .. } => {
-                    me.is_new_file = true;
-                    me.on_file_loaded(ctx);
+                    match error.as_ref() {
+                        // The file is there with its content. An editor left empty for it must
+                        // not be typed in and saved over it.
+                        FileLoadError::TooLarge { .. } => {
+                            me.editor.update(ctx, |editor, ctx| {
+                                editor.set_interaction_state(InteractionState::Selectable, ctx);
+                            });
+                        }
+                        FileLoadError::DoesNotExist | FileLoadError::IOError(_) => {
+                            me.is_new_file = true;
+                            me.on_file_loaded(ctx);
+                        }
+                    }
                     ctx.emit(LocalCodeEditorEvent::FailedToLoad {
                         error: error.clone(),
                     });
