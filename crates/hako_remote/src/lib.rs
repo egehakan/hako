@@ -6,6 +6,7 @@ pub mod backoff;
 pub mod boundary;
 pub mod connection;
 pub mod files;
+mod git_status;
 pub mod output_frame;
 pub mod output_stream;
 pub mod prompt_lines;
