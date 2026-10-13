@@ -11,6 +11,8 @@ pub(crate) mod git_dialog;
 pub mod git_repo_model;
 mod git_repo_models;
 pub mod github_repo_model;
+#[cfg(feature = "local_fs")]
+mod graph_lanes;
 mod hidden_lines;
 #[cfg(feature = "local_fs")]
 mod nested_repo_actions;
