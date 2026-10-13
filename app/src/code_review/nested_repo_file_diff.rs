@@ -1,17 +1,22 @@
-//! Diff of one changed file against `HEAD`, shown beside the source control overview's list.
+//! Diff of one file, shown beside the source control overview's list: a changed file against
+//! `HEAD`, or what one commit of the history changed in a file.
 //!
-//! The file is shown through the shared buffer of its working copy, with the committed version
-//! as the diff base. Nothing here registers, watches or indexes the repository the file is in.
+//! A changed file is shown through the shared buffer of its working copy, with the committed
+//! version as the diff base. A commit's file is shown as the commit left it, read from git, with
+//! the version in the commit's first parent as the diff base. Nothing here registers, watches or
+//! indexes the repository the file is in.
 
 use std::path::{Path, PathBuf};
 
+use ::hako_remote::protocol::{GitFile, GitFileStatus as CommitFileStatus};
+use warp_core::ui::theme::color::internal_colors;
 use warp_editor::content::buffer::InitialBufferState;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warp_util::file::FileId;
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::elements::{
-    ChildView, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex,
-    MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Shrinkable, Text,
+    ChildView, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element, Flex,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
 };
 use warpui::fonts::{Properties, Weight};
 use warpui::platform::Cursor;
@@ -20,9 +25,11 @@ use warpui::ui_components::components::UiComponent;
 use warpui::{AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle};
 
 use super::diff_state::GitFileStatus;
+use super::nested_repo_history::{CommitFileVersions, FileVersion, load_commit_file};
 use super::nested_repos::NestedRepoFile;
 use super::nested_repos_view::{status_color, status_letter};
 use crate::appearance::Appearance;
+use crate::code::blame::short_sha;
 use crate::code::buffer_location::LocalOrRemotePath;
 use crate::code::editor::view::{CodeEditorRenderOptions, CodeEditorView};
 use crate::code::global_buffer_model::{GlobalBufferModel, GlobalBufferModelEvent};
@@ -44,6 +51,9 @@ const BINARY_FILE_MESSAGE: &str = "Binary file. Its changes cannot be shown as t
 const UNTRACKED_FOLDER_MESSAGE: &str =
     "Untracked folder. Its files are listed one by one once the folder is added to git.";
 const DELETED_FILE_NOTE: &str = "Deleted. Showing the version at HEAD.";
+const DELETED_IN_COMMIT_NOTE: &str = "Deleted by this commit. Showing the version before it.";
+const LARGE_FILE_MESSAGE: &str = "This file is too large to show here.";
+const NO_TEXT_MESSAGE: &str = "This change has no text to show.";
 
 /// Path, relative to the repository root, of the committed file that `file` is compared with.
 /// `None` when the file has no committed counterpart.
@@ -83,6 +93,35 @@ async fn load_base(repo_root: PathBuf, file: NestedRepoFile) -> LoadedBase {
     LoadedBase { content, is_binary }
 }
 
+/// A file of a commit as the list of changed files describes one.
+fn commit_file(file: &GitFile) -> NestedRepoFile {
+    let status = match file.status {
+        CommitFileStatus::Modified => GitFileStatus::Modified,
+        CommitFileStatus::Added => GitFileStatus::New,
+        CommitFileStatus::Deleted => GitFileStatus::Deleted,
+        CommitFileStatus::Renamed => GitFileStatus::Renamed {
+            old_path: file.old_path.clone().unwrap_or_default(),
+        },
+        CommitFileStatus::Untracked => GitFileStatus::Untracked,
+        CommitFileStatus::Conflicted => GitFileStatus::Conflicted,
+    };
+    NestedRepoFile {
+        path: file.path.clone(),
+        status,
+    }
+}
+
+/// The text of one side of a commit's change, `None` where the file is not there, or why the
+/// change cannot be shown as text.
+fn version_text(version: FileVersion) -> Result<Option<String>, &'static str> {
+    match version {
+        FileVersion::Absent => Ok(None),
+        FileVersion::Text(text) => Ok(Some(text)),
+        FileVersion::Binary => Err(BINARY_FILE_MESSAGE),
+        FileVersion::TooLarge => Err(LARGE_FILE_MESSAGE),
+    }
+}
+
 enum DiffContent {
     Loading,
     /// The working copy, with the committed version as the diff base.
@@ -91,9 +130,14 @@ enum DiffContent {
         file_id: FileId,
         base: String,
     },
-    /// The committed version of a file that is gone from the working tree.
+    /// The file as a commit left it, with the version before the commit as the diff base.
+    CommitDiff {
+        editor: ViewHandle<CodeEditorView>,
+    },
+    /// The last version of a file that is gone, with a note of where that version is from.
     Deleted {
         editor: ViewHandle<CodeEditorView>,
+        note: &'static str,
     },
     Message(&'static str),
 }
@@ -103,6 +147,8 @@ struct ShownFile {
     file: NestedRepoFile,
     /// Commit the diff base was read from.
     head_oid: Option<String>,
+    /// The commit whose change to the file is shown; `None` for the working tree's.
+    commit: Option<String>,
     content: DiffContent,
 }
 
@@ -148,7 +194,10 @@ impl NestedRepoFileDiffView {
         ctx: &mut ViewContext<Self>,
     ) {
         if self.shown.as_ref().is_some_and(|shown| {
-            shown.repo_root == repo_root && shown.file == file && shown.head_oid == head_oid
+            shown.repo_root == repo_root
+                && shown.file == file
+                && shown.head_oid == head_oid
+                && shown.commit.is_none()
         }) {
             return;
         }
@@ -167,7 +216,46 @@ impl NestedRepoFileDiffView {
             repo_root,
             file,
             head_oid,
+            commit: None,
             content,
+        });
+        ctx.notify();
+    }
+
+    /// Shows what the commit `commit` changed in `file`, unless exactly that is already shown.
+    /// `parent` is the commit's first parent, which the change is measured against.
+    pub fn show_commit_file(
+        &mut self,
+        repo_root: PathBuf,
+        commit: String,
+        parent: Option<String>,
+        file: GitFile,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let shown_file = commit_file(&file);
+        if self.shown.as_ref().is_some_and(|shown| {
+            shown.repo_root == repo_root
+                && shown.file == shown_file
+                && shown.commit.as_deref() == Some(&commit)
+        }) {
+            return;
+        }
+        self.clear(ctx);
+
+        let (load_root, load_commit) = (repo_root.clone(), commit.clone());
+        self.load =
+            Some(ctx.spawn(
+                async move {
+                    load_commit_file(&load_root, &load_commit, parent.as_deref(), &file).await
+                },
+                Self::handle_commit_file_loaded,
+            ));
+        self.shown = Some(ShownFile {
+            repo_root,
+            file: shown_file,
+            head_oid: None,
+            commit: Some(commit),
+            content: DiffContent::Loading,
         });
         ctx.notify();
     }
@@ -198,7 +286,10 @@ impl NestedRepoFileDiffView {
                 base.content.as_deref().unwrap_or_default(),
                 ctx,
             );
-            DiffContent::Deleted { editor }
+            DiffContent::Deleted {
+                editor,
+                note: DELETED_FILE_NOTE,
+            }
         } else {
             let path = shown.repo_root.join(&shown.file.path);
             let base = base.content.unwrap_or_default();
@@ -213,6 +304,72 @@ impl NestedRepoFileDiffView {
             shown.content = content;
         }
         ctx.notify();
+    }
+
+    fn handle_commit_file_loaded(
+        &mut self,
+        versions: CommitFileVersions,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.load = None;
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let path = shown.repo_root.join(&shown.file.path);
+        let sides = version_text(versions.before)
+            .and_then(|before| Ok((before, version_text(versions.after)?)));
+        let content = match sides {
+            Err(message) => DiffContent::Message(message),
+            Ok((None, None)) => DiffContent::Message(NO_TEXT_MESSAGE),
+            Ok((Some(before), None)) => DiffContent::Deleted {
+                editor: Self::build_deleted_file_editor(&path, &before, ctx),
+                note: DELETED_IN_COMMIT_NOTE,
+            },
+            Ok((before, Some(after))) => DiffContent::CommitDiff {
+                editor: Self::build_commit_diff_editor(
+                    &path,
+                    before.as_deref().unwrap_or_default(),
+                    &after,
+                    ctx,
+                ),
+            },
+        };
+        if let Some(shown) = &mut self.shown {
+            shown.content = content;
+        }
+        ctx.notify();
+    }
+
+    /// An editor that holds `after` and marks how it differs from `before`. It is backed by no
+    /// file, so nothing typed or saved elsewhere reaches it.
+    fn build_commit_diff_editor(
+        path: &Path,
+        before: &str,
+        after: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<CodeEditorView> {
+        let editor = ctx.add_typed_action_view(|ctx| {
+            let mut editor = CodeEditorView::new(
+                None,
+                None,
+                CodeEditorRenderOptions::new(VerticalExpansionBehavior::FillMaxHeight),
+                ctx,
+            )
+            .with_collapsible_diffs(false)
+            .disable_diff_indicator_expansion_on_hover()
+            .disable_find_and_replace();
+            editor.set_show_nav_bar(false);
+            editor.set_language_with_local_path(path, ctx);
+            editor
+        });
+        editor.update(ctx, |editor, ctx| {
+            editor.reset(InitialBufferState::plain_text(after), ctx);
+            editor.hide_lines_outside_of_active_diff(DIFF_CONTEXT_LINES, ctx);
+            editor.set_base(before, true, ctx);
+            editor.expand_diffs(ctx);
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+        editor
     }
 
     fn build_diff_editor(
@@ -354,6 +511,25 @@ impl NestedRepoFileDiffView {
                 .with_max_width(FILE_NAME_MAX_WIDTH)
                 .finish(),
             );
+        if let Some(commit) = &shown.commit {
+            title.add_child(
+                Container::new(
+                    Text::new_inline(
+                        format!("commit {}", short_sha(commit)),
+                        font_family,
+                        font_size * SECONDARY_FONT_SIZE_RATIO,
+                    )
+                    .with_color(blended_colors::text_main(theme, theme.background()))
+                    .finish(),
+                )
+                .with_horizontal_padding(6.)
+                .with_vertical_padding(1.)
+                .with_margin_left(8.)
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                .with_background(internal_colors::fg_overlay_3(theme))
+                .finish(),
+            );
+        }
         let detail = match &shown.file.status {
             GitFileStatus::Renamed { old_path } => format!("renamed from {old_path}"),
             GitFileStatus::Copied { old_path } => format!("copied from {old_path}"),
@@ -396,7 +572,8 @@ impl NestedRepoFileDiffView {
             | GitFileStatus::Untracked
             | GitFileStatus::Conflicted => !is_untracked_folder(&shown.file),
         };
-        if can_open {
+        // What a commit changed is not what the file holds now.
+        if can_open && shown.commit.is_none() {
             buttons.add_child(Self::render_header_button(
                 Icon::LinkExternal,
                 "Open file",
@@ -508,9 +685,11 @@ impl View for NestedRepoFileDiffView {
         };
         let body = match &shown.content {
             DiffContent::Loading => Self::render_message("Loading diff…", appearance),
-            DiffContent::Diff { editor, .. } => ChildView::new(editor).finish(),
-            DiffContent::Deleted { editor } => Flex::column()
-                .with_child(Self::render_message(DELETED_FILE_NOTE, appearance))
+            DiffContent::Diff { editor, .. } | DiffContent::CommitDiff { editor } => {
+                ChildView::new(editor).finish()
+            }
+            DiffContent::Deleted { editor, note } => Flex::column()
+                .with_child(Self::render_message(*note, appearance))
                 .with_child(Shrinkable::new(1., ChildView::new(editor).finish()).finish())
                 .finish(),
             DiffContent::Message(message) => Self::render_message(message, appearance),
