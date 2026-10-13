@@ -6308,6 +6308,7 @@ dependencies = [
  "async-process",
  "async-tungstenite",
  "base64 0.22.1",
+ "chrono",
  "command",
  "futures",
  "libc",

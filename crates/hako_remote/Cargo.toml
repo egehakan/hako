@@ -11,6 +11,7 @@ async-channel.workspace = true
 async-process.workspace = true
 async-tungstenite = { version = "0.28.2", features = ["tokio-rustls-manual-roots"] }
 base64.workspace = true
+chrono.workspace = true
 command.workspace = true
 futures.workspace = true
 libc.workspace = true
