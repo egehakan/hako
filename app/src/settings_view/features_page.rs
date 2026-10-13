@@ -73,11 +73,11 @@ use crate::settings::{
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier,
     NativeShellCompletionsEnabled, OutlineCodebaseSymbolsForAtContextMenu, PreferLowPowerGPU,
     PreferredGraphicsBackend, QUAKE_WINDOW_AUTOHIDE_SUPPORTED, QuakeModeSettings,
-    RightClickBehavior, RightClickBehaviorSetting, ScrollSettings, ScrollSettingsChangedEvent,
-    SelectionSettings, SelectionSettingsChangedEvent, ShowAutosuggestionIgnoreButton,
-    ShowChangelogAfterUpdate, ShowTerminalInputMessageBar, SshSettings, SyntaxHighlighting,
-    TabBehavior, UserNativeRedirectPreference, VimModeEnabled, VimStatusBar,
-    VimUnnamedSystemClipboard, WarpCompletionsEnabled,
+    RemoteAccessSettings, RightClickBehavior, RightClickBehaviorSetting, ScrollSettings,
+    ScrollSettingsChangedEvent, SelectionSettings, SelectionSettingsChangedEvent,
+    ShowAutosuggestionIgnoreButton, ShowChangelogAfterUpdate, ShowTerminalInputMessageBar,
+    SshSettings, SyntaxHighlighting, TabBehavior, UserNativeRedirectPreference, VimModeEnabled,
+    VimStatusBar, VimUnnamedSystemClipboard, WarpCompletionsEnabled,
 };
 use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
@@ -413,6 +413,21 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         .with_enabled(|| FeatureFlag::HOANotifications.is_enabled()),
     );
 
+    toggle_binding_pairs.push(
+        ToggleSettingActionPair::new(
+            "remote access",
+            builder(SettingsAction::FeaturesPageToggle(
+                FeaturesPageAction::ToggleRemoteAccess,
+            )),
+            context,
+            flags::REMOTE_ACCESS,
+        )
+        .is_supported_on_current_platform(
+            RemoteAccessSettings::as_ref(app)
+                .enabled
+                .is_supported_on_current_platform(),
+        ),
+    );
     toggle_binding_pairs.push(
         ToggleSettingActionPair::new(
             "always confirm before closing",
@@ -819,6 +834,7 @@ pub enum FeaturesPageAction {
     SetNotificationToastDuration,
     ToggleShowWarningBeforeQuitting,
     ToggleConfirmBeforeClosing,
+    ToggleRemoteAccess,
     ToggleLoginItem,
     ToggleQuitOnLastWindowClosed,
     ToggleSmartSelection,
@@ -1185,6 +1201,10 @@ impl FeaturesPageAction {
                 action: "ToggleConfirmBeforeClosing".to_string(),
                 value: to_string(*GeneralSettings::as_ref(ctx).confirm_before_closing.value()),
             },
+            Self::ToggleRemoteAccess => TelemetryEvent::FeaturesPageAction {
+                action: "ToggleRemoteAccess".to_string(),
+                value: to_string(*RemoteAccessSettings::as_ref(ctx).enabled.value()),
+            },
             Self::ToggleShowWarningBeforeQuitting => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleShowWarningBeforeQuitting".to_string(),
                 value: to_string(
@@ -1455,6 +1475,8 @@ pub struct FeaturesPageView {
     #[cfg(feature = "local_tty")]
     startup_shell_view: ViewHandle<features::StartupShellView>,
     undo_close_view: ViewHandle<features::UndoCloseView>,
+    #[cfg(not(target_family = "wasm"))]
+    remote_access_view: ViewHandle<features::RemoteAccessView>,
 
     max_block_size_input_editor: ViewHandle<EditorView>,
     valid_max_block_size: bool,
@@ -1971,6 +1993,9 @@ impl TypedActionView for FeaturesPageView {
                     report_if_error!(settings.confirm_before_closing.toggle_and_save_value(ctx));
                 })
             }
+            ToggleRemoteAccess => RemoteAccessSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.enabled.toggle_and_save_value(ctx));
+            }),
             ToggleShowWarningBeforeQuitting => {
                 GeneralSettings::handle(ctx).update(ctx, |warning_settings, ctx| {
                     report_if_error!(
@@ -2561,6 +2586,9 @@ impl FeaturesPageView {
 
         let undo_close_view = ctx.add_typed_action_view(features::UndoCloseView::new);
 
+        #[cfg(not(target_family = "wasm"))]
+        let remote_access_view = ctx.add_typed_action_view(features::RemoteAccessView::new);
+
         let appearance_handle = Appearance::handle(ctx);
 
         let width_and_height_editor_options = SingleLineEditorOptions {
@@ -2765,6 +2793,8 @@ impl FeaturesPageView {
             #[cfg(feature = "local_tty")]
             startup_shell_view,
             undo_close_view,
+            #[cfg(not(target_family = "wasm"))]
+            remote_access_view,
 
             max_block_size_input_editor: block_size_editor,
             valid_max_block_size: true,
@@ -3120,7 +3150,8 @@ impl FeaturesPageView {
             }
         }
 
-        let categories = vec![
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+        let mut categories = vec![
             Category::new("General", general_widgets),
             Category::new("Session", session_widgets),
             Category::new("Keys", keys_widgets),
@@ -3134,6 +3165,16 @@ impl FeaturesPageView {
             ),
             Category::new("System", system_widgets),
         ];
+        #[cfg(not(target_family = "wasm"))]
+        if RemoteAccessSettings::as_ref(ctx)
+            .enabled
+            .is_supported_on_current_platform()
+        {
+            categories.push(Category::new(
+                "Remote Access",
+                vec![Box::new(RemoteAccessWidget)],
+            ));
+        }
 
         PageType::new_categorized(categories, None)
     }
@@ -5575,6 +5616,27 @@ impl SettingsWidget for UndoCloseWidget {
         _app: &AppContext,
     ) -> Box<dyn Element> {
         ChildView::new(&view.undo_close_view).finish()
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct RemoteAccessWidget;
+
+#[cfg(not(target_family = "wasm"))]
+impl SettingsWidget for RemoteAccessWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "remote access phone browser web relay server address access key connect"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        _appearance: &Appearance,
+        _app: &AppContext,
+    ) -> Box<dyn Element> {
+        ChildView::new(&view.remote_access_view).finish()
     }
 }
 

@@ -8,6 +8,13 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
+    if #[cfg(not(target_family = "wasm"))] {
+        pub mod remote_access;
+        pub use remote_access::RemoteAccessView;
+    }
+}
+
+cfg_if::cfg_if! {
     if #[cfg(feature = "local_tty")] {
         pub mod startup_shell;
         pub use startup_shell::StartupShellView;

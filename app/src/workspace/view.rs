@@ -368,8 +368,8 @@ use crate::settings::{
     AppEditorSettings, BlockVisibilitySettings, ChangelogSettings, CodeSettings,
     CodeSettingsChangedEvent, CtrlTabBehavior, CursorBlink, DebugSettings, DefaultSessionMode,
     FontSettings, GPUSettings, InputModeSettings, InputSettings, MonospaceFontSize, PaneSettings,
-    PrivacySettings, SelectionSettings, Settings, SshSettings, ThemeSettings, active_theme_kind,
-    respect_system_theme,
+    PrivacySettings, RemoteAccessSettings, SelectionSettings, Settings, SshSettings, ThemeSettings,
+    active_theme_kind, respect_system_theme,
 };
 use crate::settings_view::environments_page::EnvironmentsPage;
 use crate::settings_view::handoff_environment_creation_modal::{
@@ -24025,6 +24025,10 @@ impl Workspace {
 
         if *general_settings.confirm_before_closing.value() {
             context.set.insert(flags::CONFIRM_BEFORE_CLOSING);
+        }
+
+        if *RemoteAccessSettings::as_ref(app).enabled.value() {
+            context.set.insert(flags::REMOTE_ACCESS);
         }
 
         if semantic_selection_settings.smart_select_enabled() {
