@@ -272,7 +272,10 @@ fn a_terminal_pane_is_named_after_its_title_and_then_its_directory() {
     let terminal = |directory: Option<&str>| PaneLabel::Terminal {
         directory: directory.map(str::to_string),
     };
-    assert_eq!(pane_label("vim notes.txt", terminal(Some("~/project"))), "vim notes.txt");
+    assert_eq!(
+        pane_label("vim notes.txt", terminal(Some("~/project"))),
+        "vim notes.txt"
+    );
     // A terminal whose shell has not started yet has no title.
     assert_eq!(pane_label("", terminal(Some("~/project"))), "~/project");
     assert_eq!(pane_label("  ", terminal(Some("~/project"))), "~/project");

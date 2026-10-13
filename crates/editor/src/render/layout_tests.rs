@@ -121,10 +121,8 @@ fn test_mark_truncated_line_ends_in_the_marker_and_stays_at_the_cap() {
     let style = test_style();
     let over_cap = "é".repeat(MAX_LAYOUT_LINE_CHARS + 500);
     let truncated = truncate_text_for_layout(&over_cap);
-    let runs = clamp_style_runs_for_layout(&[
-        (0..40, style),
-        (40..MAX_LAYOUT_LINE_CHARS + 500, style),
-    ]);
+    let runs =
+        clamp_style_runs_for_layout(&[(0..40, style), (40..MAX_LAYOUT_LINE_CHARS + 500, style)]);
 
     let (text, runs) = mark_truncated_line(truncated, &runs);
 

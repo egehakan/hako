@@ -602,11 +602,9 @@ impl FileViewerView {
         // Text edited while the table is up keeps the place it was scrolled to.
         let scroll = match &self.body {
             Body::Table(previous) => previous.scroll,
-            Body::Loading(_)
-            | Body::Message(_)
-            | Body::Peek(_)
-            | Body::Image(_)
-            | Body::Pdf(_) => GridScroll::default(),
+            Body::Loading(_) | Body::Message(_) | Body::Peek(_) | Body::Image(_) | Body::Pdf(_) => {
+                GridScroll::default()
+            }
         };
         self.body = Body::Table(TableBody {
             table,
@@ -1166,7 +1164,9 @@ impl FileViewerView {
         let number_width = row_number_width(peek.rows.len(), font_size);
         // Only what fits is laid out, so that a row costs the same however long its line is.
         let skipped_chars = (peek.scroll.x / char_width) as usize;
-        let shown_chars = ((viewport.width - number_width) / char_width).ceil().max(0.) as usize;
+        let shown_chars = ((viewport.width - number_width) / char_width)
+            .ceil()
+            .max(0.) as usize;
 
         let cell = |text: String, color: ColorU| {
             Text::new_inline(text, appearance.monospace_font_family(), font_size)

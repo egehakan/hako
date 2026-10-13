@@ -27,9 +27,9 @@ pub mod editor;
 pub mod editor_management;
 pub mod global_buffer_model;
 pub mod inline_diff;
-pub(crate) mod load_journal;
 #[cfg(feature = "local_fs")]
 pub mod language_server_shutdown_manager;
+pub(crate) mod load_journal;
 #[cfg(not(target_family = "wasm"))]
 pub mod lsp_logs;
 pub mod lsp_telemetry;

@@ -21,9 +21,9 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warp_util::file::FileLoadError;
+use warp_util::large_file::OpenIntent;
 #[cfg(feature = "local_fs")]
 use warp_util::large_file::{OpenDecision, decision_for_size};
-use warp_util::large_file::OpenIntent;
 use warp_util::path::LineAndColumnArg;
 #[cfg(feature = "local_fs")]
 use warpui::r#async::Timer;
@@ -1722,8 +1722,7 @@ impl CodeView {
         ctx: &mut ViewContext<Self>,
     ) {
         #[cfg_attr(not(feature = "local_fs"), allow(unused_mut))]
-        let mut new_tab =
-            self.build_tab_data(location.clone(), false, OpenIntent::Automatic, ctx);
+        let mut new_tab = self.build_tab_data(location.clone(), false, OpenIntent::Automatic, ctx);
         // A jump to a line is a jump into the text, which a rendered form does not show.
         #[cfg(feature = "local_fs")]
         if line_col.is_some() {

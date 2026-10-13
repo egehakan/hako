@@ -91,7 +91,9 @@ pub enum CloseSubject {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneLabel {
     /// An editor or file viewer, with the name of the file in its active tab.
-    File { file_name: Option<String> },
+    File {
+        file_name: Option<String>,
+    },
     Terminal {
         /// Where the session is, for a terminal that has no title yet.
         directory: Option<String>,

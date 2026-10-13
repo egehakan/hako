@@ -118,8 +118,7 @@ impl LoadJournal {
 /// The journal of this process. Tests get one that is not kept on disk.
 static JOURNAL: LazyLock<Mutex<LoadJournal>> = LazyLock::new(|| {
     let directory = warp_core::paths::state_dir();
-    let on_disk =
-        !cfg!(test) && !cfg!(target_family = "wasm") && !directory.as_os_str().is_empty();
+    let on_disk = !cfg!(test) && !cfg!(target_family = "wasm") && !directory.as_os_str().is_empty();
     let file = on_disk.then(|| directory.join(JOURNAL_FILE_NAME));
     Mutex::new(LoadJournal::open(file))
 });
@@ -147,7 +146,11 @@ pub fn forget_interruption(path: &Path) {
 /// Makes `path` a file whose load the run before did not survive.
 #[cfg(test)]
 pub fn interrupt_for_test(path: &Path) {
-    JOURNAL.lock().entries.interrupted.insert(path.to_path_buf());
+    JOURNAL
+        .lock()
+        .entries
+        .interrupted
+        .insert(path.to_path_buf());
 }
 
 #[cfg(test)]

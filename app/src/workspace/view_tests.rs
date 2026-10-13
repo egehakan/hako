@@ -1336,7 +1336,10 @@ fn test_restored_tabs_load_only_when_they_are_shown() {
         view.read(&app, |view, ctx| {
             assert_eq!(view.active_tab_index(), 1);
             for (index, path) in paths.iter().enumerate() {
-                assert_eq!(view.tab_at(index).and_then(|tab| tab.local_path()), Some(path.clone()));
+                assert_eq!(
+                    view.tab_at(index).and_then(|tab| tab.local_path()),
+                    Some(path.clone())
+                );
             }
             assert_eq!(view.active_tab_name(ctx).as_deref(), Some("b.rs"));
         });

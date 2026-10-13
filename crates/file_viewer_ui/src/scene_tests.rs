@@ -298,11 +298,9 @@ fn a_table_draws_its_header_and_the_rows_in_view() {
         assert!(harness.wheel(&mut app, vec2f(0., -(TABLE_ROW_HEIGHT * 3. + 2.)), false));
         let top_row = harness.read(&app, |view| match &view.body {
             Body::Table(table) => table.scroll.top_row,
-            Body::Loading(_)
-            | Body::Message(_)
-            | Body::Peek(_)
-            | Body::Image(_)
-            | Body::Pdf(_) => usize::MAX,
+            Body::Loading(_) | Body::Message(_) | Body::Peek(_) | Body::Image(_) | Body::Pdf(_) => {
+                usize::MAX
+            }
         });
         assert_eq!(top_row, 3);
         assert!(harness.paint(&mut app).rects >= 2);
@@ -404,7 +402,10 @@ fn a_large_text_file_shows_its_start_and_offers_the_editor() {
         });
         assert_eq!(rows.len(), warp_util::large_file::PEEK_MAX_LINES + 1);
         assert_eq!(rows[0], "entry 0");
-        assert!(notice.starts_with("This file has 150,050 lines"), "{notice}");
+        assert!(
+            notice.starts_with("This file has 150,050 lines"),
+            "{notice}"
+        );
 
         // Scrolling moves by whole lines and stops at the last one.
         assert!(harness.wheel(&mut app, vec2f(0., -(PEEK_ROW_HEIGHT * 5. + 1.)), false));
@@ -449,11 +450,9 @@ fn a_file_that_was_not_reopened_is_not_read_and_offers_to_open() {
 
         let message = harness.read(&app, |view| match &view.body {
             Body::Message(message) => message.clone(),
-            Body::Loading(_)
-            | Body::Peek(_)
-            | Body::Image(_)
-            | Body::Pdf(_)
-            | Body::Table(_) => String::new(),
+            Body::Loading(_) | Body::Peek(_) | Body::Image(_) | Body::Pdf(_) | Body::Table(_) => {
+                String::new()
+            }
         });
         assert!(
             message.contains("closed unexpectedly while loading it"),

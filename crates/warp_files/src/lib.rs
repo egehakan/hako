@@ -469,12 +469,7 @@ impl FileModel {
         subscribe_to_updates: bool,
         ctx: &mut ModelContext<Self>,
     ) -> FileId {
-        self.open_for(
-            file_path,
-            subscribe_to_updates,
-            OpenIntent::Automatic,
-            ctx,
-        )
+        self.open_for(file_path, subscribe_to_updates, OpenIntent::Automatic, ctx)
     }
 
     /// [`Self::open`] with the limits of `intent`, which also apply when the file is read again

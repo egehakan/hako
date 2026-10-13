@@ -44,7 +44,11 @@ fn a_file_over_the_ceiling_is_not_read_through_or_offered_to_the_editor() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("dump.sql");
     let file = fs::File::create(&path).unwrap();
-    fs::write(&path, "CREATE TABLE t (id INT);\nINSERT INTO t VALUES (1);\n").unwrap();
+    fs::write(
+        &path,
+        "CREATE TABLE t (id INT);\nINSERT INTO t VALUES (1);\n",
+    )
+    .unwrap();
     file.set_len(OPEN_ANYWAY_MAX_BYTES + 1).unwrap();
 
     let text = LargeText::read(&path).unwrap();

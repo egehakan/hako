@@ -534,7 +534,8 @@ fn test_search_stops_at_the_match_limit() {
         );
 
         buffer.read(&app, |buffer, _| {
-            let mut engine = Engine::new(&SearchConfig::new("a")).expect("Could not compile search");
+            let mut engine =
+                Engine::new(&SearchConfig::new("a")).expect("Could not compile search");
             let matches = engine
                 .find_blocking(&buffer.content, CharOffset::zero())
                 .expect("Could not run search");

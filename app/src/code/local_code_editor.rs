@@ -74,9 +74,9 @@ use crate::code::footer::{CodeFooterView, CodeFooterViewEvent};
 use crate::code::global_buffer_model::{BufferState, GlobalBufferModel, GlobalBufferModelEvent};
 use crate::code::{SaveOutcome, ShowFindReferencesCardProvider};
 use crate::code_review::comments::CommentId;
-use crate::editor::InteractionState;
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_repo_model::{GitRepoModels, GitRepoStatusEvent, GitRepoStatusModel};
+use crate::editor::InteractionState;
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
 use crate::settings::{AISettings, CodeSettings};
 use crate::terminal::TerminalView;
@@ -1668,7 +1668,13 @@ impl LocalCodeEditorView {
         let editor = self.editor.clone();
 
         let size = {
-            let buffer = self.editor.as_ref(ctx).model.as_ref(ctx).buffer().as_ref(ctx);
+            let buffer = self
+                .editor
+                .as_ref(ctx)
+                .model
+                .as_ref(ctx)
+                .buffer()
+                .as_ref(ctx);
             BufferSize {
                 bytes: buffer.max_byte_offset().as_usize(),
                 lines: buffer.max_point().row as usize,
@@ -1861,8 +1867,9 @@ impl LocalCodeEditorView {
     where
         T: FnOnce(BufferState, &mut ViewContext<Self>) -> ViewHandle<CodeEditorView>,
     {
-        let buffer_state = GlobalBufferModel::handle(ctx)
-            .update(ctx, |model, ctx| model.open_for(location.clone(), intent, ctx));
+        let buffer_state = GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.open_for(location.clone(), intent, ctx)
+        });
         let file_id = buffer_state.file_id;
         let editor = editor_constructor(buffer_state, ctx);
 
