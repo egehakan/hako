@@ -15508,6 +15508,7 @@ dependencies = [
  "getset",
  "git2",
  "gloo",
+ "hako_remote",
  "handlebars",
  "hashbrown 0.17.1",
  "hex",

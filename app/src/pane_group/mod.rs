@@ -7139,6 +7139,12 @@ impl PaneGroup {
             .and_then(|contents| contents.as_any().downcast_ref::<TerminalPane>())
     }
 
+    /// The UUID that identifies the terminal session of a pane across app restarts, if the pane
+    /// is a terminal pane.
+    pub(crate) fn terminal_session_uuid(&self, pane_id: impl Into<PaneId>) -> Option<Uuid> {
+        Uuid::from_slice(&self.terminal_session_by_id(pane_id)?.session_uuid()).ok()
+    }
+
     /// Given a pane ID, retrieve its backing terminal view, if the pane is a terminal pane.
     pub fn terminal_view_from_pane_id(
         &self,

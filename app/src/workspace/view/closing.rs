@@ -46,7 +46,11 @@ pub enum WindowCloseConfirmation {
 }
 
 /// The name the pane `pane_id` of `pane_group` goes by in the confirmation.
-fn pane_close_label(pane_group: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> String {
+pub(crate) fn pane_close_label(
+    pane_group: &PaneGroup,
+    pane_id: PaneId,
+    ctx: &AppContext,
+) -> String {
     let title = pane_group
         .pane_by_id(pane_id)
         .map(|pane| pane.pane_configuration().as_ref(ctx).title().to_string())
@@ -68,7 +72,7 @@ fn pane_close_label(pane_group: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -
 impl Workspace {
     /// The name the tab at `tab_index` goes by in the confirmation: the title it shows, or the
     /// name of its focused pane while that pane has not set a title.
-    fn tab_title(&self, tab_index: usize, ctx: &ViewContext<Self>) -> String {
+    pub(crate) fn tab_title(&self, tab_index: usize, ctx: &AppContext) -> String {
         let Some(tab) = self.tabs.get(tab_index) else {
             return String::new();
         };
@@ -82,7 +86,7 @@ impl Workspace {
     }
 
     /// What closing the tabs at `tab_indices` would lose. Saves what auto-save can first.
-    fn close_stakes_for_tabs(
+    pub(super) fn close_stakes_for_tabs(
         &self,
         tab_indices: &[usize],
         ctx: &mut ViewContext<Self>,

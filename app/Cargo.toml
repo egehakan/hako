@@ -318,6 +318,7 @@ diesel = { workspace = true, features = ["sqlite", "chrono"] }
 diesel_migrations = { version = "2.2.0", features = ["sqlite"] }
 file_viewer_ui.workspace = true
 file_viewers.workspace = true
+hako_remote.workspace = true
 env_logger.workspace = true
 git2 = { version = "0.20.4", default-features = false, features = [
     "vendored-libgit2",

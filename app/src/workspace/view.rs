@@ -16,6 +16,7 @@ pub(crate) mod left_panel;
 pub(crate) mod onboarding;
 pub(crate) mod openwarp_launch_modal;
 pub(crate) mod orchestration_launch_modal;
+mod remote_access;
 pub(crate) mod right_panel;
 mod startup_directory;
 mod tab_folder_groups;
@@ -125,7 +126,9 @@ use warpui::{
 };
 
 pub use self::closing::WindowCloseConfirmation;
+pub(crate) use self::closing::pane_close_label;
 use self::closing::{PendingClose, PendingGroupClose};
+pub(crate) use self::remote_access::{RemoteCloseRefusal, RemoteTabPlace};
 use self::vertical_tabs::telemetry::{VerticalTabsDisplayOption, VerticalTabsTelemetryEvent};
 use self::vertical_tabs::{
     SummaryPaneKind, SummaryPaneKindIcons, VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID,

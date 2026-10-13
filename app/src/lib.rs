@@ -39,6 +39,8 @@ mod external_secrets;
 mod font_fallback;
 mod global_resource_handles;
 mod gpu_state;
+#[cfg(not(target_family = "wasm"))]
+mod hako_remote;
 mod input_classifier;
 mod interval_timer;
 mod linear;
@@ -2677,6 +2679,10 @@ pub(crate) fn initialize_app(
     {
         ctx.add_singleton_model(local_control::LocalControlBridge::new);
         ctx.add_singleton_model(local_control::LocalControlServer::new);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if matches!(launch_mode, LaunchMode::App { .. }) {
+        ctx.add_singleton_model(hako_remote::HakoRemote::new);
     }
 
     app_state

@@ -1,0 +1,279 @@
+//! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
+//! a remote client asks about its windows and tabs, and says when they change.
+
+mod app_info;
+mod handlers;
+mod snapshot;
+
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use ::hako_remote::protocol::{EVENT_WORKSPACE_CHANGED, Workspace};
+use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming};
+use serde_json::json;
+use settings::Setting as _;
+use warpui::r#async::Timer;
+use warpui::{Entity, ModelContext, SingletonEntity};
+
+use crate::settings::RemoteAccessSettings;
+
+const KEY_FILE_NAME: &str = "remote.key";
+
+/// How often the workspace is compared with what clients were last told, which also caps how
+/// often they are told that it changed.
+const WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+const KEY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteAccessStatus {
+    Off,
+    /// On, but there is no access key to connect with.
+    MissingKey,
+    /// On, but the server address or the key cannot be used.
+    Misconfigured {
+        error: String,
+    },
+    Connecting {
+        /// Why the last attempt, or the last connection, ended.
+        last_error: Option<String>,
+    },
+    Connected,
+}
+
+pub enum HakoRemoteEvent {
+    StatusChanged,
+}
+
+/// What the connection is made from: the settings and the key on disk.
+#[derive(PartialEq, Eq)]
+struct Target {
+    server_address: String,
+    key: Option<String>,
+}
+
+pub struct HakoRemote {
+    connection: Option<Connection>,
+    /// What the current state was set up for; `None` while remote access is off.
+    target: Option<Target>,
+    /// Bumped whenever the connection is replaced, so that what an earlier one still delivers
+    /// is ignored.
+    generation: u64,
+    /// Bumped whenever the periodic check is restarted or stopped, so that only one runs.
+    check: u64,
+    status: RemoteAccessStatus,
+    /// The workspace as clients were last told about.
+    announced: Option<Workspace>,
+}
+
+impl HakoRemote {
+    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        ctx.subscribe_to_model(&RemoteAccessSettings::handle(ctx), |me, _, _, ctx| {
+            me.apply_settings(ctx);
+        });
+        let mut me = Self {
+            connection: None,
+            target: None,
+            generation: 0,
+            check: 0,
+            status: RemoteAccessStatus::Off,
+            announced: None,
+        };
+        me.apply_settings(ctx);
+        me
+    }
+
+    pub fn status(&self) -> &RemoteAccessStatus {
+        &self.status
+    }
+
+    /// The file the access key is read from.
+    pub fn key_path() -> PathBuf {
+        warp_core::paths::data_dir().join(KEY_FILE_NAME)
+    }
+
+    fn read_key() -> Option<String> {
+        let key = fs::read_to_string(Self::key_path()).ok()?;
+        let key = key.trim();
+        (!key.is_empty()).then(|| key.to_owned())
+    }
+
+    /// Brings the connection in line with the settings and the key file.
+    fn apply_settings(&mut self, ctx: &mut ModelContext<Self>) {
+        let settings = RemoteAccessSettings::as_ref(ctx);
+        let target = (*settings.enabled).then(|| Target {
+            server_address: settings.server_address.value().clone(),
+            key: Self::read_key(),
+        });
+        if target == self.target {
+            return;
+        }
+
+        self.connection = None;
+        self.generation += 1;
+        self.check += 1;
+        self.announced = None;
+        self.target = target;
+        let status = match &self.target {
+            None => RemoteAccessStatus::Off,
+            Some(Target { key: None, .. }) => RemoteAccessStatus::MissingKey,
+            Some(Target {
+                server_address,
+                key: Some(key),
+            }) => {
+                let (server_address, key) = (server_address.clone(), key.clone());
+                match self.connect(&server_address, &key, ctx) {
+                    Ok(()) => RemoteAccessStatus::Connecting { last_error: None },
+                    Err(error) => RemoteAccessStatus::Misconfigured { error },
+                }
+            }
+        };
+        self.set_status(status, ctx);
+        if self.status == RemoteAccessStatus::MissingKey {
+            self.schedule_check(ctx);
+        }
+    }
+
+    fn connect(
+        &mut self,
+        server_address: &str,
+        key: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), String> {
+        let config =
+            ConnectionConfig::new(server_address, key).map_err(|error| error.to_string())?;
+        let (connection, incoming) = Connection::start(config).map_err(|error| {
+            log::error!("[Remote access] could not start the connection thread: {error}");
+            "The connection could not be started".to_owned()
+        })?;
+        self.connection = Some(connection);
+        let generation = self.generation;
+        ctx.spawn_stream_local(
+            incoming,
+            move |me, incoming, ctx| {
+                if me.generation == generation {
+                    me.handle_incoming(incoming, ctx);
+                }
+            },
+            |_, _| {},
+        );
+        Ok(())
+    }
+
+    fn handle_incoming(&mut self, incoming: Incoming, ctx: &mut ModelContext<Self>) {
+        match incoming {
+            Incoming::State(state) => self.connection_state_changed(state, ctx),
+            Incoming::Request {
+                method,
+                params,
+                responder,
+            } => responder.respond(handlers::handle_request(&method, params, ctx)),
+            Incoming::Notification { method, .. } => {
+                log::debug!("[Remote access] ignoring the notification {method}");
+            }
+        }
+    }
+
+    fn connection_state_changed(&mut self, state: ConnectionState, ctx: &mut ModelContext<Self>) {
+        let status = match state {
+            ConnectionState::Connecting => match &self.status {
+                RemoteAccessStatus::Connecting { .. } => return,
+                RemoteAccessStatus::Off
+                | RemoteAccessStatus::MissingKey
+                | RemoteAccessStatus::Misconfigured { .. }
+                | RemoteAccessStatus::Connected => {
+                    RemoteAccessStatus::Connecting { last_error: None }
+                }
+            },
+            ConnectionState::Connected => {
+                // Clients ask for the workspace when they see the app come online, so only what
+                // changes from here on is news to them.
+                self.announced = Some(snapshot::workspace(ctx));
+                RemoteAccessStatus::Connected
+            }
+            ConnectionState::Waiting { error, retry_in: _ } => {
+                // The key may be what was wrong, so a key file that has changed since is put to
+                // use right away.
+                let generation = self.generation;
+                self.apply_settings(ctx);
+                if self.generation != generation {
+                    return;
+                }
+                RemoteAccessStatus::Connecting {
+                    last_error: Some(error),
+                }
+            }
+        };
+        self.set_status(status, ctx);
+        self.check += 1;
+        if self.status == RemoteAccessStatus::Connected {
+            self.schedule_check(ctx);
+        }
+    }
+
+    fn set_status(&mut self, status: RemoteAccessStatus, ctx: &mut ModelContext<Self>) {
+        if self.status != status {
+            self.status = status;
+            ctx.emit(HakoRemoteEvent::StatusChanged);
+        }
+    }
+
+    /// Runs [`Self::periodic_check`] after the interval that suits the current state.
+    fn schedule_check(&mut self, ctx: &mut ModelContext<Self>) {
+        let check = self.check;
+        let interval = match &self.status {
+            RemoteAccessStatus::MissingKey => KEY_CHECK_INTERVAL,
+            RemoteAccessStatus::Off
+            | RemoteAccessStatus::Misconfigured { .. }
+            | RemoteAccessStatus::Connecting { .. }
+            | RemoteAccessStatus::Connected => WORKSPACE_CHECK_INTERVAL,
+        };
+        ctx.spawn(
+            async move {
+                Timer::after(interval).await;
+            },
+            move |me, _, ctx| {
+                if me.check == check {
+                    me.periodic_check(ctx);
+                }
+            },
+        );
+    }
+
+    fn periodic_check(&mut self, ctx: &mut ModelContext<Self>) {
+        match &self.status {
+            RemoteAccessStatus::MissingKey => {
+                // Picks up a key file added after remote access was turned on.
+                self.apply_settings(ctx);
+                if self.status == RemoteAccessStatus::MissingKey {
+                    self.schedule_check(ctx);
+                }
+            }
+            RemoteAccessStatus::Connected => {
+                self.announce_workspace_change(ctx);
+                self.schedule_check(ctx);
+            }
+            RemoteAccessStatus::Off
+            | RemoteAccessStatus::Misconfigured { .. }
+            | RemoteAccessStatus::Connecting { .. } => {}
+        }
+    }
+
+    /// Tells clients to fetch the workspace again when it is no longer what they were last told.
+    fn announce_workspace_change(&mut self, ctx: &mut ModelContext<Self>) {
+        let workspace = snapshot::workspace(ctx);
+        if self.announced.as_ref() == Some(&workspace) {
+            return;
+        }
+        self.announced = Some(workspace);
+        if let Some(connection) = &self.connection {
+            connection.send_event(EVENT_WORKSPACE_CHANGED, json!({}));
+        }
+    }
+}
+
+impl Entity for HakoRemote {
+    type Event = HakoRemoteEvent;
+}
+
+impl SingletonEntity for HakoRemote {}
