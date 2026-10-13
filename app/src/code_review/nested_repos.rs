@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use dunce::canonicalize;
 use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
 use warp_util::git::run_git_command;
 use warpui::{Entity, ModelContext, ModelHandle};
@@ -86,6 +87,16 @@ pub(crate) fn find_nested_repos(scan_root: &Path) -> Vec<NestedRepo> {
     }
     repos.sort_by(|a, b| a.root.cmp(&b.root));
     repos
+}
+
+/// Whether scanning `folder` would walk the user's entire home directory.
+pub(crate) fn contains_home_directory(folder: &Path) -> bool {
+    dirs::home_dir().is_some_and(|home| {
+        canonicalize(&home)
+            .as_deref()
+            .unwrap_or(&home)
+            .starts_with(folder)
+    })
 }
 
 fn nested_repo_at(

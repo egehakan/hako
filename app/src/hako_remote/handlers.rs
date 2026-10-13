@@ -1,6 +1,6 @@
 //! Answers to what a remote client asks.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ::hako_remote::files;
 use ::hako_remote::protocol::{
@@ -15,6 +15,8 @@ use warpui::{AppContext, EntityId, SingletonEntity, ViewHandle, WindowId};
 
 use super::snapshot;
 use crate::appearance::Appearance;
+#[cfg(feature = "local_fs")]
+use crate::code_review::nested_repos::{contains_home_directory, find_nested_repos};
 use crate::pane_group::PaneGroup;
 use crate::root_view::{OpenPath, open_new_from_path, open_new_window_get_handles};
 use crate::terminal::general_settings::GeneralSettings;
@@ -204,6 +206,41 @@ fn closing_a_window_quits_the_app(ctx: &AppContext) -> bool {
 pub(super) fn file_roots(ctx: &AppContext) -> FsRoots {
     let home = dirs::home_dir().unwrap_or_default();
     files::roots(&home.to_string_lossy(), &snapshot::workspace(ctx))
+}
+
+/// The directories of the folders, in the order of the workspace and each once.
+pub(super) fn folder_directories(ctx: &AppContext) -> Vec<String> {
+    let mut directories = Vec::new();
+    let folders = snapshot::workspace(ctx)
+        .windows
+        .into_iter()
+        .flat_map(|window| window.folders);
+    for folder in folders {
+        if !directories.contains(&folder.directory) {
+            directories.push(folder.directory);
+        }
+    }
+    directories
+}
+
+/// The working trees under a folder, found the way the source control panel finds them, which
+/// does not look through a folder that holds the whole home directory.
+pub(super) fn working_trees(folder: &Path) -> Vec<PathBuf> {
+    #[cfg(feature = "local_fs")]
+    {
+        if contains_home_directory(folder) {
+            return Vec::new();
+        }
+        find_nested_repos(folder)
+            .into_iter()
+            .map(|repo| repo.root)
+            .collect()
+    }
+    #[cfg(not(feature = "local_fs"))]
+    {
+        let _ = folder;
+        Vec::new()
+    }
 }
 
 /// The colours and the font the app draws its terminals with.

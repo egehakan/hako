@@ -37,7 +37,9 @@ use crate::code_review::code_review_view::{
 };
 use crate::code_review::diff_state::DiffStateModel;
 #[cfg(feature = "local_fs")]
-use crate::code_review::nested_repos::{NestedReposEvent, NestedReposModel};
+use crate::code_review::nested_repos::{
+    NestedReposEvent, NestedReposModel, contains_home_directory,
+};
 #[cfg(feature = "local_fs")]
 use crate::code_review::nested_repos_view::{
     COMFORTABLE_TWO_COLUMN_WIDTH, NestedReposView, NestedReposViewEvent,
@@ -209,17 +211,6 @@ struct CodeReviewSessionEnv {
 struct NestedReposOverview {
     model: ModelHandle<NestedReposModel>,
     view: ViewHandle<NestedReposView>,
-}
-
-/// Whether scanning `folder` would walk the user's entire home directory.
-#[cfg(feature = "local_fs")]
-fn contains_home_directory(folder: &Path) -> bool {
-    dirs::home_dir().is_some_and(|home| {
-        canonicalize(&home)
-            .as_deref()
-            .unwrap_or(&home)
-            .starts_with(folder)
-    })
 }
 
 /// Whether `folder` is, or is inside, a git working tree. Repository detection is asynchronous,

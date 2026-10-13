@@ -1,6 +1,7 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
-//! watch and use a terminal and read and change files.
+//! watch and use a terminal, read and change files, and use source control in the repositories
+//! under the folders.
 
 mod app_info;
 mod handlers;
@@ -9,19 +10,24 @@ mod terminal;
 mod terminal_snapshot;
 
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_changed};
 use ::hako_remote::protocol::{
-    EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams, Method, NOTIFICATION_TERM_INPUT,
-    RpcError, Workspace,
+    EVENT_GIT_CHANGED, EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams, GitChanged,
+    GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
+    NOTIFICATION_TERM_INPUT, RpcError, Workspace,
 };
 use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files};
+use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use settings::Setting as _;
-use warpui::r#async::Timer;
+use warpui::r#async::{FutureExt as _, Timer};
 use warpui::{Entity, ModelContext, SingletonEntity, WindowId};
 
 use self::handlers::{NewTab, parse, to_json};
@@ -38,6 +44,10 @@ const KEY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// How often, and how many times, a window opened for a new tab is looked at for that tab.
 const NEW_WINDOW_TAB_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const NEW_WINDOW_TAB_CHECKS: usize = 50;
+
+/// How long a source control request waits to learn the `PATH` of the owner's shell before git
+/// is run with the app's own.
+const SHELL_PATH_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteAccessStatus {
@@ -82,6 +92,17 @@ pub struct HakoRemote {
     /// Bumped whenever the next collection of terminal output is scheduled, so that only the
     /// latest one runs.
     pump: u64,
+    source_control: Arc<SourceControl>,
+    git_changes: ChangeLimiter,
+}
+
+/// What a source control request is answered with.
+struct GitRequest {
+    source_control: Arc<SourceControl>,
+    /// The directories of the folders the repositories are looked for in.
+    folders: Vec<String>,
+    /// The `PATH` of the owner's shell, when it could be learned.
+    path_env: Option<String>,
 }
 
 impl HakoRemote {
@@ -98,6 +119,8 @@ impl HakoRemote {
             announced: None,
             terminals: Terminals::default(),
             pump: 0,
+            source_control: Arc::new(SourceControl::new(handlers::working_trees)),
+            git_changes: ChangeLimiter::default(),
         };
         me.apply_settings(ctx);
         me
@@ -278,6 +301,88 @@ impl HakoRemote {
                     |params: FsWriteParams| files::write(&params),
                 );
             }
+            Method::GitRepos => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, _: Value| async move {
+                        Ok(git.source_control.repos(&git.folders, git.path_env).await)
+                    },
+                );
+            }
+            Method::GitStatus => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitRepoParams| async move {
+                        git.source_control
+                            .status(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitDiff => {
+                return self.answer_source_control(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitDiffParams| async move {
+                        git.source_control
+                            .diff(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitCommit => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitCommitParams| async move {
+                        git.source_control
+                            .commit(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitPush => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitRepoParams| async move {
+                        git.source_control
+                            .push(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitPull => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitRepoParams| async move {
+                        git.source_control
+                            .pull(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitDiscard => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitDiscardParams| async move {
+                        git.source_control
+                            .discard(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
         };
         responder.respond(outcome);
     }
@@ -302,6 +407,135 @@ impl HakoRemote {
             },
             |_, (), _| {},
         );
+    }
+
+    /// Answers a request with what `work` learns from git, which it waits for off the app's
+    /// main thread.
+    fn answer_source_control<P, R, W, F>(
+        &self,
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+        work: W,
+    ) where
+        P: DeserializeOwned + Send + 'static,
+        R: Serialize + 'static,
+        W: FnOnce(GitRequest, P) -> F + Send + 'static,
+        F: Future<Output = Result<R, RpcError>> + Send,
+    {
+        let request = self.git_request(ctx);
+        ctx.spawn(
+            async move {
+                let outcome = match parse(params) {
+                    Ok(params) => work(request.await, params).await,
+                    Err(error) => Err(error),
+                };
+                responder.respond(outcome.and_then(|result| to_json(&result)));
+            },
+            |_, (), _| {},
+        );
+    }
+
+    /// Answers a request that changes the repository its params name, and tells clients
+    /// afterwards that the repository may have changed.
+    fn change_repository<P, R, W, F>(
+        &self,
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+        work: W,
+    ) where
+        P: DeserializeOwned + Send + 'static,
+        R: Serialize + 'static,
+        W: FnOnce(GitRequest, P) -> F + Send + 'static,
+        F: Future<Output = Result<R, RpcError>> + Send,
+    {
+        let repo = params
+            .get("repo")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let request = self.git_request(ctx);
+        ctx.spawn(
+            async move {
+                let outcome = match parse(params) {
+                    Ok(params) => work(request.await, params).await,
+                    Err(error) => Err(error),
+                };
+                let may_have_changed = may_have_changed(&outcome);
+                responder.respond(outcome.and_then(|result| to_json(&result)));
+                may_have_changed
+            },
+            |me, may_have_changed, ctx| {
+                if let Some(repo) = repo.filter(|_| may_have_changed) {
+                    me.announce_git_change(repo, ctx);
+                }
+            },
+        );
+    }
+
+    /// Gathers what a source control request is answered with. Only the folders need the
+    /// app's main thread.
+    fn git_request(
+        &self,
+        ctx: &mut ModelContext<Self>,
+    ) -> impl Future<Output = GitRequest> + use<> {
+        let source_control = self.source_control.clone();
+        let folders = handlers::folder_directories(ctx);
+        let shell_path = Self::shell_path(ctx);
+        async move {
+            GitRequest {
+                source_control,
+                folders,
+                path_env: shell_path
+                    .with_timeout(SHELL_PATH_WAIT)
+                    .await
+                    .ok()
+                    .flatten(),
+            }
+        }
+    }
+
+    /// The `PATH` of the owner's login shell, once it is known.
+    fn shell_path(ctx: &mut ModelContext<Self>) -> BoxFuture<'static, Option<String>> {
+        #[cfg(feature = "local_tty")]
+        {
+            use crate::terminal::local_shell::LocalShellState;
+            LocalShellState::handle(ctx).update(ctx, |shell_state, ctx| {
+                shell_state.get_interactive_path_env_var(ctx)
+            })
+        }
+        #[cfg(not(feature = "local_tty"))]
+        {
+            let _ = ctx;
+            Box::pin(futures::future::ready(None))
+        }
+    }
+
+    /// Tells clients that a repository may have changed, now or, when they were told so a
+    /// moment ago, as soon as they may be told again.
+    fn announce_git_change(&mut self, repo: String, ctx: &mut ModelContext<Self>) {
+        match self.git_changes.changed(&repo) {
+            Announce::Now => self.send_git_changed(repo),
+            Announce::After(delay) => {
+                ctx.spawn(
+                    async move {
+                        Timer::after(delay).await;
+                    },
+                    move |me, _, _| {
+                        me.git_changes.announced_late(&repo);
+                        me.send_git_changed(repo);
+                    },
+                );
+            }
+            Announce::Covered => {}
+        }
+    }
+
+    fn send_git_changed(&self, repo: String) {
+        if let Some(connection) = &self.connection {
+            let changed = GitChanged { repo: Some(repo) };
+            connection.send_event(EVENT_GIT_CHANGED, json!(changed));
+        }
     }
 
     fn handle_notification(&mut self, method: &str, params: Value, ctx: &mut ModelContext<Self>) {
