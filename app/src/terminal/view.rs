@@ -12738,6 +12738,13 @@ impl TerminalView {
                     return;
                 }
                 self.did_notify_long_running = false;
+                #[cfg(not(target_family = "wasm"))]
+                if ctx.has_singleton_model::<crate::hako_remote::HakoRemote>() {
+                    let terminal_view_id = self.view_id;
+                    crate::hako_remote::HakoRemote::handle(ctx).update(ctx, |remote, _| {
+                        remote.command_started(terminal_view_id);
+                    });
+                }
 
                 // Snapshot the prompt state as of when the command began executing.
                 // Commands may themselves affect the prompt (if running `git checkout`), for
@@ -13184,6 +13191,12 @@ impl TerminalView {
                         let model = self.model.lock();
                         compute(model.block_list())
                     });
+                    #[cfg(not(target_family = "wasm"))]
+                    self.report_long_command_to_remote_access(
+                        block_completed,
+                        serialized_block,
+                        ctx,
+                    );
                     if let Some(block_duration) = self.block_duration(serialized_block) {
                         self.maybe_send_block_completed_notification(
                             block_completed,
@@ -16639,6 +16652,50 @@ impl TerminalView {
                 .write_value(ALIAS_EXPANSION_BANNER_SEEN_KEY, "true".to_owned());
             self.insert_alias_expansion_banner(aliased_command, ctx);
         }
+    }
+
+    /// Remote access tells the owner's devices about a long command whether or not the window is
+    /// in front and whatever the desktop notification settings are.
+    #[cfg(not(target_family = "wasm"))]
+    fn report_long_command_to_remote_access(
+        &self,
+        block: &UserBlockCompleted,
+        serialized_block: &SerializedBlock,
+        ctx: &mut ViewContext<TerminalView>,
+    ) {
+        use crate::hako_remote::{FinishedCommand, HakoRemote};
+
+        if block.was_part_of_agent_interaction || !ctx.has_singleton_model::<HakoRemote>() {
+            return;
+        }
+        let finished_at = Instant::now();
+        let Some(block_duration) = HakoRemote::as_ref(ctx).command_duration(
+            self.view_id,
+            self.block_duration(serialized_block),
+            finished_at,
+        ) else {
+            return;
+        };
+        if block_duration < ::hako_remote::notify::COMMAND_MIN_DURATION {
+            return;
+        }
+        let command = FinishedCommand {
+            command: block
+                .command
+                .get_with(|compute| {
+                    let model = self.model.lock();
+                    compute(model.block_list())
+                })
+                .to_owned(),
+            exit_status: serialized_block.exit_code.value(),
+            failed: serialized_block.has_failed(),
+            duration: block_duration,
+            finished_at,
+        };
+        let terminal_view_id = self.view_id;
+        HakoRemote::handle(ctx).update(ctx, |remote, ctx| {
+            remote.command_finished(terminal_view_id, command, ctx);
+        });
     }
 
     fn maybe_send_block_completed_notification(

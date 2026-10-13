@@ -1,11 +1,13 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
 //! watch and use a terminal, read and change files, and use source control in the repositories
-//! under the folders. It also keeps the computer awake while it is on.
+//! under the folders. It also tells the owner's devices when a terminal wants them, and keeps the
+//! computer awake while it is on.
 
 mod app_info;
 mod handlers;
 mod keep_awake;
+mod notifications;
 mod snapshot;
 mod terminal;
 mod terminal_snapshot;
@@ -14,13 +16,13 @@ use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_changed};
 use ::hako_remote::protocol::{
-    EVENT_GIT_CHANGED, EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams, GitChanged,
-    GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
-    NOTIFICATION_TERM_INPUT, RpcError, Workspace,
+    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FsPathParams, FsWriteParams,
+    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitRepoParams, Method,
+    NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::{Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files};
 use futures::future::BoxFuture;
@@ -29,12 +31,15 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use settings::Setting as _;
 use warpui::r#async::{FutureExt as _, Timer};
-use warpui::{Entity, ModelContext, SingletonEntity, WindowId};
+use warpui::{Entity, EntityId, ModelContext, SingletonEntity, WindowId};
 
 use self::handlers::{NewTab, parse, to_json};
 use self::keep_awake::KeepAwake;
+pub(crate) use self::notifications::FinishedCommand;
+use self::notifications::Notifications;
 use self::terminal::{ECHO_DELAY, PUMP_INTERVAL, Terminals};
 use crate::settings::RemoteAccessSettings;
+use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 
 const KEY_FILE_NAME: &str = "remote.key";
 
@@ -96,6 +101,7 @@ pub struct HakoRemote {
     pump: u64,
     source_control: Arc<SourceControl>,
     git_changes: ChangeLimiter,
+    notifications: Notifications,
     keep_awake: KeepAwake,
 }
 
@@ -113,6 +119,10 @@ impl HakoRemote {
         ctx.subscribe_to_model(&RemoteAccessSettings::handle(ctx), |me, _, _, ctx| {
             me.apply_settings(ctx);
         });
+        ctx.subscribe_to_model(&CLIAgentSessionsModel::handle(ctx), |me, _, event, ctx| {
+            let notify = me.notifications.agent_event(event, ctx);
+            me.deliver(notify);
+        });
         let mut me = Self {
             connection: None,
             target: None,
@@ -124,6 +134,7 @@ impl HakoRemote {
             pump: 0,
             source_control: Arc::new(SourceControl::new(handlers::working_trees)),
             git_changes: ChangeLimiter::default(),
+            notifications: Notifications::default(),
             keep_awake: KeepAwake::default(),
         };
         me.apply_settings(ctx);
@@ -160,6 +171,7 @@ impl HakoRemote {
         self.generation += 1;
         self.check += 1;
         self.announced = None;
+        self.notifications.pending.clear();
         self.stop_terminals(ctx);
         self.target = target;
         let status = match &self.target {
@@ -206,6 +218,70 @@ impl HakoRemote {
             |_, _| {},
         );
         Ok(())
+    }
+
+    /// Notes that a command has started in the terminal of `terminal_view_id`.
+    pub(crate) fn command_started(&mut self, terminal_view_id: EntityId) {
+        self.notifications
+            .command_started(terminal_view_id, Instant::now());
+    }
+
+    /// How long the command that has just ended in the terminal of `terminal_view_id` ran: the
+    /// duration its block measured, or else the time since it started.
+    pub(crate) fn command_duration(
+        &self,
+        terminal_view_id: EntityId,
+        block_duration: Option<Duration>,
+        finished_at: Instant,
+    ) -> Option<Duration> {
+        block_duration.or_else(|| {
+            self.notifications
+                .command_started_at(terminal_view_id)
+                .map(|started_at| finished_at.saturating_duration_since(started_at))
+        })
+    }
+
+    /// Tells the owner's devices that a command that ran for long in the terminal of
+    /// `terminal_view_id` has ended.
+    pub(crate) fn command_finished(
+        &mut self,
+        terminal_view_id: EntityId,
+        command: FinishedCommand,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // The terminal reports this in the middle of its own update, when its tab's title cannot
+        // be read yet.
+        ctx.spawn(futures::future::ready(()), move |me, (), ctx| {
+            let notify = me
+                .notifications
+                .command_finished(terminal_view_id, command, ctx);
+            me.deliver(notify);
+        });
+    }
+
+    /// Sends a notification now, or keeps it for a while when the relay is out of reach.
+    fn deliver(&mut self, notify: Option<Notify>) {
+        let Some(notify) = notify else {
+            return;
+        };
+        match &self.status {
+            RemoteAccessStatus::Connected => {
+                let sent = self
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.send_event(EVENT_NOTIFY, json!(notify)));
+                if !sent {
+                    // The connection has dropped and the app has not heard yet.
+                    self.notifications.pending.keep(notify, Instant::now());
+                }
+            }
+            RemoteAccessStatus::Connecting { .. } => {
+                self.notifications.pending.keep(notify, Instant::now());
+            }
+            RemoteAccessStatus::Off
+            | RemoteAccessStatus::MissingKey
+            | RemoteAccessStatus::Misconfigured { .. } => {}
+        }
     }
 
     fn handle_incoming(&mut self, incoming: Incoming, ctx: &mut ModelContext<Self>) {
@@ -633,6 +709,11 @@ impl HakoRemote {
                 // Clients ask for the workspace when they see the app come online, so only what
                 // changes from here on is news to them.
                 self.announced = Some(snapshot::workspace(ctx));
+                if let Some(connection) = &self.connection {
+                    for notify in self.notifications.pending.take(Instant::now()) {
+                        connection.send_event(EVENT_NOTIFY, json!(notify));
+                    }
+                }
                 RemoteAccessStatus::Connected
             }
             ConnectionState::Waiting { error, retry_in: _ } => {
