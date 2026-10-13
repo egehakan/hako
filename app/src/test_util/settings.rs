@@ -36,7 +36,7 @@ pub fn initialize_settings_for_tests_with_mode(
         BlockVisibilitySettings, ChangelogSettings, CloudPreferencesSettings, CodeSettings,
         DebugSettings, EmacsBindingsSettings, FontSettings, GPUSettings, InputModeSettings,
         InputSettings, LocalControlSettings, NativePreferenceSettings, PaneSettings,
-        SameLinePromptBlockSettings, ScrollSettings, SelectionSettings,
+        RemoteAccessSettings, SameLinePromptBlockSettings, ScrollSettings, SelectionSettings,
         SharedObjectLimitBannerSettings, SshSettings, ThemeSettings, TuiVoiceSettings,
         VimBannerSettings, init_and_register_user_preferences,
     };
@@ -108,6 +108,7 @@ pub fn initialize_settings_for_tests_with_mode(
     }
 
     NativePreferenceSettings::register(app);
+    RemoteAccessSettings::register(app);
     SafeModeSettings::register(app);
     SameLinePromptBlockSettings::register(app);
     ScrollSettings::register(app);
