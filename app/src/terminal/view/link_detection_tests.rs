@@ -239,7 +239,10 @@ fn a_file_hyperlink_names_a_local_path() {
         Some(PathBuf::from("/etc/hosts"))
     );
     // This machine, as it names itself and as Bonjour names it.
-    assert_eq!(path("file://studio/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
+    assert_eq!(
+        path("file://studio/etc/hosts"),
+        Some(PathBuf::from("/etc/hosts"))
+    );
     assert_eq!(
         path("file://Studio.local/etc/hosts"),
         Some(PathBuf::from("/etc/hosts"))
@@ -249,10 +252,22 @@ fn a_file_hyperlink_names_a_local_path() {
 #[cfg(unix)]
 #[test]
 fn a_hyperlink_to_another_host_or_scheme_is_not_a_local_file() {
-    assert_eq!(local_file_of_hyperlink("file://build-server/etc/hosts", Some("studio")), None);
-    assert_eq!(local_file_of_hyperlink("file://studio/etc/hosts", None), None);
-    assert_eq!(local_file_of_hyperlink("https://example.com/etc/hosts", Some("studio")), None);
-    assert_eq!(local_file_of_hyperlink("vscode://file/etc/hosts", Some("studio")), None);
+    assert_eq!(
+        local_file_of_hyperlink("file://build-server/etc/hosts", Some("studio")),
+        None
+    );
+    assert_eq!(
+        local_file_of_hyperlink("file://studio/etc/hosts", None),
+        None
+    );
+    assert_eq!(
+        local_file_of_hyperlink("https://example.com/etc/hosts", Some("studio")),
+        None
+    );
+    assert_eq!(
+        local_file_of_hyperlink("vscode://file/etc/hosts", Some("studio")),
+        None
+    );
     assert_eq!(local_file_of_hyperlink("/etc/hosts", Some("studio")), None);
     assert_eq!(local_file_of_hyperlink("not a url", Some("studio")), None);
 }
@@ -262,10 +277,22 @@ fn a_hyperlink_to_another_host_or_scheme_is_not_a_local_file() {
 fn a_file_hyperlink_can_point_at_a_line_and_column() {
     let position = |uri| local_file_of_hyperlink(uri, None).and_then(|(_, position)| position);
     assert_eq!(position("file:///src/main.rs"), None);
-    assert_eq!(position("file:///src/main.rs#L10"), line_and_column(10, None));
-    assert_eq!(position("file:///src/main.rs#L10C3"), line_and_column(10, Some(3)));
-    assert_eq!(position("file:///src/main.rs#10"), line_and_column(10, None));
-    assert_eq!(position("file:///src/main.rs#L10-L20"), line_and_column(10, None));
+    assert_eq!(
+        position("file:///src/main.rs#L10"),
+        line_and_column(10, None)
+    );
+    assert_eq!(
+        position("file:///src/main.rs#L10C3"),
+        line_and_column(10, Some(3))
+    );
+    assert_eq!(
+        position("file:///src/main.rs#10"),
+        line_and_column(10, None)
+    );
+    assert_eq!(
+        position("file:///src/main.rs#L10-L20"),
+        line_and_column(10, None)
+    );
     assert_eq!(
         position("file:///src/main.rs?line=7&column=2"),
         line_and_column(7, Some(2))
@@ -285,14 +312,21 @@ fn only_an_existing_regular_file_is_opened_as_one() {
     let directory = tempfile::tempdir().expect("failed to create temp dir");
     let file = directory.path().join("some file.md");
     std::fs::write(&file, "# Notes\n").expect("failed to write file");
-    let uri = |path: &std::path::Path| url::Url::from_file_path(path).expect("absolute").to_string();
+    let uri = |path: &std::path::Path| {
+        url::Url::from_file_path(path)
+            .expect("absolute")
+            .to_string()
+    };
 
     assert_eq!(
         existing_file_of_hyperlink(&format!("{}#L5", uri(&file)), None),
         Some((file.clone(), line_and_column(5, None)))
     );
     assert!(uri(&file).contains("some%20file.md"));
-    assert_eq!(existing_file_of_hyperlink(&uri(directory.path()), None), None);
+    assert_eq!(
+        existing_file_of_hyperlink(&uri(directory.path()), None),
+        None
+    );
     assert_eq!(
         existing_file_of_hyperlink(&uri(&directory.path().join("gone.md")), None),
         None

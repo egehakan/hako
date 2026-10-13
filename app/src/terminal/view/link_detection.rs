@@ -853,7 +853,9 @@ pub(super) fn local_hostname() -> Option<String> {
 fn is_same_host(host: &str, other: &str) -> bool {
     let bare = |name: &str| {
         let name = name.to_ascii_lowercase();
-        name.strip_suffix(".local").map(str::to_string).unwrap_or(name)
+        name.strip_suffix(".local")
+            .map(str::to_string)
+            .unwrap_or(name)
     };
     bare(host) == bare(other)
 }
