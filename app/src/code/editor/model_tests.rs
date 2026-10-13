@@ -1346,3 +1346,33 @@ fn test_line_at_vertical_offset_returns_none_for_invalid() {
         );
     })
 }
+
+#[test]
+fn test_a_buffer_in_reduced_mode_is_not_compared_with_its_base() {
+    use warp_util::large_file::FULL_EDITOR_MAX_LINES;
+
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let small = mock_model_with_diff(&mut app, "one\n", "one\ntwo\n", ContentVersion::new());
+        let many_lines = "x\n".repeat(FULL_EDITOR_MAX_LINES + 10);
+        let large = mock_model_with_diff(&mut app, "one\n", &many_lines, ContentVersion::new());
+
+        small.read(&app, |model, ctx| assert!(model.diffs_content(ctx)));
+        large.read(&app, |model, ctx| {
+            assert!(model.buffer().as_ref(ctx).is_reduced());
+            assert!(!model.diffs_content(ctx));
+        });
+
+        // An edit to it asks for no diff, and what was known of one is dropped.
+        large.update(&mut app, |model, ctx| model.append_at_end("y", ctx));
+        large.read(&app, |model, ctx| {
+            assert_eq!(model.diff().as_ref(ctx).diff_hunk_count(), 0);
+        });
+
+        // Where the comparison decides which lines are shown at all, it is still made.
+        large.update(&mut app, |model, ctx| {
+            model.hide_lines_outside_of_active_diff(3, ctx);
+        });
+        large.read(&app, |model, ctx| assert!(model.diffs_content(ctx)));
+    });
+}

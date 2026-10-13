@@ -1529,6 +1529,11 @@ impl GlobalBufferModel {
         let path_buf = path.to_path_buf();
         let current_version = buffer_version.as_usize();
 
+        // Opening a document sends all of its text, and the server then analyses all of it.
+        if buffer.as_ref(ctx).is_reduced() {
+            return;
+        }
+
         let Some(lsp_server) = &self.lsp_server_for_path(path, ctx) else {
             return;
         };
@@ -1677,6 +1682,12 @@ impl GlobalBufferModel {
     ) {
         let path_buf = path.to_path_buf();
         let current_version = buffer_version.as_usize();
+
+        // A buffer that grew into reduced mode stops being synced: a later full sync would send
+        // all of its text. Its document is closed with the buffer.
+        if buffer.as_ref(ctx).is_reduced() {
+            return;
+        }
 
         let Some(lsp_server) = &self.lsp_server_for_path(path, ctx) else {
             return;

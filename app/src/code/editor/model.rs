@@ -638,7 +638,11 @@ impl CodeEditorModel {
         self.diff
             .update(ctx, |diff, _ctx| diff.set_base(normalized_text));
 
-        if recompute_diff {
+        if recompute_diff && !self.diffs_content(ctx) {
+            let buffer_version = self.buffer_version(ctx);
+            self.diff
+                .update(ctx, |diff, ctx| diff.skip_diff(buffer_version, ctx));
+        } else if recompute_diff {
             let buffer_version = self.buffer_version(ctx);
             if self.hide_lines_outside_of_active_diff.is_some() {
                 self.request_hidden_lines_recalculation_after_diff(buffer_version);
@@ -648,6 +652,12 @@ impl CodeEditorModel {
                 diff.compute_diff(content, buffer_version, ctx)
             });
         }
+    }
+
+    /// Whether the content is compared with the base as it changes. A buffer in reduced mode is
+    /// not, except where the comparison decides which lines are shown at all.
+    fn diffs_content(&self, ctx: &AppContext) -> bool {
+        self.hide_lines_outside_of_active_diff.is_some() || !self.content.as_ref(ctx).is_reduced()
     }
 
     pub fn positioning(&self, ctx: &AppContext) -> OffsetPositioning {
@@ -1598,9 +1608,10 @@ impl CodeEditorModel {
                 selection_model_id,
             } => {
                 let buffer = self.content().as_ref(ctx);
+                let has_base = self.diff.as_ref(ctx).has_base();
                 // Copying out the whole text on every keystroke is only worth it when there is
-                // something to compare it with.
-                let content = self.diff.as_ref(ctx).has_base().then(|| buffer.text());
+                // something to compare it with, and not at all for a buffer in reduced mode.
+                let content = (has_base && self.diffs_content(ctx)).then(|| buffer.text());
                 if self.should_defer_syntax_tree_parsing() {
                     self.pending_syntax_tree_bootstrap = true;
                 } else {
@@ -1651,6 +1662,7 @@ impl CodeEditorModel {
 
                 self.diff.update(ctx, move |diff, ctx| match content {
                     Some(content) => diff.compute_diff(content, *buffer_version, ctx),
+                    None if has_base => diff.skip_diff(*buffer_version, ctx),
                     None => diff.content_changed_without_base(*buffer_version),
                 });
 

@@ -33,6 +33,13 @@ pub struct BlameFile {
     pub relative_path: String,
 }
 
+/// How large a buffer is, which is known without copying its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferSize {
+    pub bytes: usize,
+    pub lines: usize,
+}
+
 /// Everything the blame of a file depends on.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BlameKey {
@@ -213,6 +220,9 @@ pub struct BlameModel {
     repos: HashMap<PathBuf, RepoState>,
     /// Full commit messages by repository and commit; `None` when git could not print one.
     messages: HashMap<(PathBuf, String), Resolution<Option<Arc<str>>>>,
+    /// Whether each file exists in the commit it would be blamed against. One that does not has
+    /// no history, which is found out once here rather than by blaming every version of it.
+    in_head: HashMap<(BlameFile, String), Resolution<bool>>,
 }
 
 impl Entity for BlameModel {
@@ -235,16 +245,19 @@ impl BlameModel {
             files: HashMap::new(),
             repos: HashMap::new(),
             messages: HashMap::new(),
+            in_head: HashMap::new(),
         }
     }
 
-    /// The blame of the file at `path` whose buffer is at `version`. `contents` is only called
-    /// when the text has to be handed to git. A lookup for an answer that is already known does
-    /// no work, which is what makes asking on every cursor movement free.
+    /// The blame of the file at `path` whose buffer is at `version` and of `size`. `contents` is
+    /// only called when the text has to be handed to git, which it never is for a buffer over
+    /// the limits or a file git has no history for. A lookup for an answer that is already
+    /// known does no work, which is what makes asking on every cursor movement free.
     pub fn lookup(
         &mut self,
         path: &Path,
         version: ContentVersion,
+        size: BufferSize,
         contents: impl FnOnce(&AppContext) -> String,
         ctx: &mut ModelContext<Self>,
     ) -> BlameLookup {
@@ -281,12 +294,26 @@ impl BlameModel {
             return BlameLookup::Pending;
         }
 
-        let contents = contents(ctx);
-        if exceeds_blame_limits(&contents) {
+        if exceeds_blame_limits(size) {
             let result = Arc::new(BlameResult::TooLarge);
             self.cache.insert(key, result.clone());
             return BlameLookup::Ready(result);
         }
+        match self.in_head.get(&(key.file.clone(), key.head.clone())) {
+            Some(Resolution::Known(true)) => {}
+            Some(Resolution::Known(false)) => {
+                let result = Arc::new(BlameResult::NotTracked);
+                self.cache.insert(key, result.clone());
+                return BlameLookup::Ready(result);
+            }
+            Some(Resolution::Pending) => return BlameLookup::Pending,
+            None => {
+                self.resolve_in_head(key.file, key.head, ctx);
+                return BlameLookup::Pending;
+            }
+        }
+
+        let contents = contents(ctx);
 
         let job_key = key.clone();
         let handle = ctx.spawn(
@@ -396,6 +423,18 @@ impl BlameModel {
         None
     }
 
+    fn resolve_in_head(&mut self, file: BlameFile, head: String, ctx: &mut ModelContext<Self>) {
+        if self.in_head.len() >= MAX_REMEMBERED_PATHS {
+            self.in_head.clear();
+        }
+        let key = (file.clone(), head.clone());
+        self.in_head.insert(key.clone(), Resolution::Pending);
+        ctx.spawn(is_in_commit(file, head), move |me, in_head, ctx| {
+            me.in_head.insert(key, Resolution::Known(in_head));
+            ctx.emit(BlameEvent::Updated);
+        });
+    }
+
     fn resolve_file(&mut self, path: PathBuf, ctx: &mut ModelContext<Self>) {
         if self.files.len() >= MAX_REMEMBERED_PATHS {
             self.files.clear();
@@ -408,9 +447,17 @@ impl BlameModel {
     }
 }
 
-fn exceeds_blame_limits(contents: &str) -> bool {
-    contents.len() > MAX_BLAME_BYTES
-        || contents.bytes().filter(|byte| *byte == b'\n').count() > MAX_BLAME_LINES
+fn exceeds_blame_limits(size: BufferSize) -> bool {
+    size.bytes > MAX_BLAME_BYTES || size.lines > MAX_BLAME_LINES
+}
+
+/// Whether `file` exists in `commit`. Asking git costs a few milliseconds and nothing of the
+/// file's content, unlike a blame, which is handed all of it.
+pub(super) async fn is_in_commit(file: BlameFile, commit: String) -> bool {
+    let object = format!("{commit}:{}", file.relative_path);
+    run_git_command(&file.repo_root, &["cat-file", "-e", object.as_str()])
+        .await
+        .is_ok()
 }
 
 /// Finds the work tree `path` is in by asking git from the file's directory, which also covers

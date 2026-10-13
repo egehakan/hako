@@ -29,7 +29,14 @@ const HYPERLINK_UNDERLINE_COLOR: u32 = 0x7aa6daff;
 /// content length rather than from the shaped frame, and consumers that map an offset or coordinate
 /// into a frame already clamp to its end. The cap sits far past what can be read on screen, so a
 /// cursor pinning at the truncation point is only reachable in lines nobody edits visually.
-const MAX_LAYOUT_LINE_CHARS: usize = 2 * 1024 * 1024;
+///
+/// Shaping costs about 56 bytes and a microsecond of UI thread per `char`, which at this cap is
+/// 11 MB and a fraction of a second for each such line.
+const MAX_LAYOUT_LINE_CHARS: usize = 200_000;
+
+/// Drawn in place of the last characters of a line cut at [`MAX_LAYOUT_LINE_CHARS`], so that the
+/// line does not look as if it ended there.
+const LINE_TRUNCATED_MARKER: &str = "  … line truncated";
 
 /// Shortens `text` to at most [`MAX_LAYOUT_LINE_CHARS`], returning it unchanged when it already
 /// fits.
@@ -58,6 +65,34 @@ fn clamp_style_runs_for_layout(
         .filter(|(range, _)| range.start < MAX_LAYOUT_LINE_CHARS)
         .map(|(range, style)| (range.start..range.end.min(MAX_LAYOUT_LINE_CHARS), *style))
         .collect()
+}
+
+/// Ends a line shortened by [`truncate_text_for_layout`] in [`LINE_TRUNCATED_MARKER`], which takes
+/// the place of as many characters so that the cap still holds. The marker is styled like the text
+/// it follows. `style_runs` are those of the shortened text.
+fn mark_truncated_line(
+    truncated_text: &str,
+    style_runs: &[(Range<usize>, StyleAndFont)],
+) -> (String, Vec<(Range<usize>, StyleAndFont)>) {
+    let marker_chars = LINE_TRUNCATED_MARKER.chars().count();
+    let kept_chars = MAX_LAYOUT_LINE_CHARS - marker_chars;
+    let kept_bytes = truncated_text
+        .char_indices()
+        .nth(kept_chars)
+        .map_or(truncated_text.len(), |(index, _)| index);
+    let mut text = String::with_capacity(kept_bytes + LINE_TRUNCATED_MARKER.len());
+    text.push_str(&truncated_text[..kept_bytes]);
+    text.push_str(LINE_TRUNCATED_MARKER);
+
+    let mut runs: Vec<_> = style_runs
+        .iter()
+        .filter(|(range, _)| range.start < kept_chars)
+        .map(|(range, style)| (range.start..range.end.min(kept_chars), *style))
+        .collect();
+    if let Some(style) = runs.last().map(|(_, style)| *style) {
+        runs.push((kept_chars..kept_chars + marker_chars, style));
+    }
+    (text, runs)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,15 +184,18 @@ impl<'a> TextLayout<'a> {
         }
 
         let shaped_text = truncate_text_for_layout(text);
-        let clamped_style_runs = (shaped_text.len() < text.len()).then(|| {
-            // Only pay for a new run list when the text actually lost characters.
-            clamp_style_runs_for_layout(style_runs)
-        });
+        // Only pay for new text and a new run list when the text actually lost characters.
+        let marked = (shaped_text.len() < text.len())
+            .then(|| mark_truncated_line(shaped_text, &clamp_style_runs_for_layout(style_runs)));
+        let (shaped_text, style_runs) = match &marked {
+            Some((text, runs)) => (text.as_str(), runs.as_slice()),
+            None => (shaped_text, style_runs),
+        };
 
         Arc::new(self.font_cache.layout_text_uncached(
             shaped_text,
             paragraph_style.line_style(),
-            clamped_style_runs.as_deref().unwrap_or(style_runs),
+            style_runs,
             max_width,
             f32::MAX,
             alignment,

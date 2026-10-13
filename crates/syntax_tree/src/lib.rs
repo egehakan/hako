@@ -30,6 +30,29 @@ const MAX_SYNTAX_TREES: usize = 3;
 /// https://github.com/tree-sitter/tree-sitter/issues/222#issuecomment-435987441
 const MAX_PARSE_BYTES: usize = 2 * 1024 * 1024; // 2 MB
 
+/// Maximum number of lines for which we attempt to parse a syntax tree. A buffer of more lines
+/// is in the editor's reduced mode, which does without highlighting.
+const MAX_PARSE_LINES: usize = warp_util::large_file::FULL_EDITOR_MAX_LINES;
+
+/// Most characters a single highlight request may span. The ranges asked for are the lines in
+/// view, so more than this means a line too long to be worth running the query over on the UI
+/// thread, such as a minified bundle.
+const MAX_HIGHLIGHT_CHARS: usize = 200_000;
+
+/// Whether a buffer of this size is left unparsed.
+fn exceeds_parse_limits(byte_len: usize, line_count: usize) -> bool {
+    byte_len > MAX_PARSE_BYTES || line_count > MAX_PARSE_LINES
+}
+
+/// Whether `ranges` span more text than one highlight request covers.
+fn exceeds_highlight_limit(ranges: &RangeSet<CharOffset>) -> bool {
+    let chars: usize = ranges
+        .iter()
+        .map(|range| range.end.as_usize().saturating_sub(range.start.as_usize()))
+        .sum();
+    chars > MAX_HIGHLIGHT_CHARS
+}
+
 thread_local! {
     static PARSER: RefCell<Parser> = RefCell::new(Parser::new());
 }
@@ -147,6 +170,10 @@ impl SyntaxTreeState {
         render_content_version: Option<BufferVersion>,
         ctx: &AppContext,
     ) -> Option<Ref<'_, Highlights>> {
+        if exceeds_highlight_limit(&ranges) {
+            return None;
+        }
+
         // If no render content version is provided, default the most recent content version.
         let buffer_version = render_content_version.unwrap_or(self.buffer_version);
 
@@ -228,13 +255,13 @@ impl SyntaxTreeState {
 
     /// Re-parse the tree based on the updated tree and source content.
     ///
-    /// Returns `None` if the buffer exceeds [`MAX_PARSE_BYTES`].
+    /// Returns `None` if the buffer exceeds [`MAX_PARSE_BYTES`] or [`MAX_PARSE_LINES`].
     async fn parse_text(
         content: BufferSnapshot,
         old_tree: Option<Tree>,
         language: &Language,
     ) -> Option<Tree> {
-        if content.byte_len() > MAX_PARSE_BYTES {
+        if exceeds_parse_limits(content.byte_len(), content.max_point().row as usize) {
             return None;
         }
         Some(PARSER.with(|parser| {
@@ -363,7 +390,7 @@ impl DecorationLayer for SyntaxTreeState {
                 },
                 move |model, new_tree, ctx| {
                     let Some(new_tree) = new_tree else {
-                        // Buffer exceeded MAX_PARSE_BYTES; skip updating the syntax tree, but
+                        // Buffer exceeded the parse limits; skip updating the syntax tree, but
                         // still emit DecorationUpdated so any delayed rendering is flushed
                         let mut syntax_tree_lock = model.syntax_tree.lock();
                         syntax_tree_lock.remove(&version);
@@ -404,3 +431,7 @@ fn point_to_syntax_point(point: Point) -> arborium::tree_sitter::Point {
         column: point.column as usize,
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

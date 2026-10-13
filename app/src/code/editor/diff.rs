@@ -613,6 +613,16 @@ impl DiffModel {
         self.is_computing_or_abort_stale(version);
     }
 
+    /// Stands in for a computation at `version` that is not made: no differences are reported,
+    /// and whatever waits for the diff of that version is told it is there.
+    pub fn skip_diff(&mut self, version: BufferVersion, ctx: &mut ModelContext<Self>) {
+        if let Some((abort_handle, _)) = self.abort_handle.take() {
+            abort_handle.abort();
+        }
+        self.status = DiffStatus::default();
+        ctx.emit(DiffModelEvent::DiffUpdated { version });
+    }
+
     /// Given the new content, compute the new set of diff contents.
     pub fn compute_diff(
         &mut self,

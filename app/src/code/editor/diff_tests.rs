@@ -533,3 +533,44 @@ fn test_coalesce_replacements() {
         assert_eq!(diff_model.diff_by_index(4), Some((10..11, true)));
     });
 }
+
+#[test]
+fn test_a_skipped_diff_reports_no_differences_and_says_it_is_done() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use warp_editor::content::version::BufferVersion;
+    use warpui::App;
+
+    use super::DiffModelEvent;
+
+    App::test((), |mut app| async move {
+        let mut diff_model = DiffModel::new();
+        diff_model.set_base(MultilineString::apply("one\ntwo\n"));
+        diff_model
+            .compute_diff_for_test("one\nTWO\nthree\n".to_string())
+            .await;
+        assert!(diff_model.diff_hunk_count() > 0);
+        let diff_model = app.add_model(|_| diff_model);
+
+        let reported = Rc::new(RefCell::new(Vec::new()));
+        let versions = reported.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&diff_model, move |_, event, _| match event {
+                DiffModelEvent::DiffUpdated { version } => versions.borrow_mut().push(*version),
+                DiffModelEvent::UnifiedDiffComputed(_) => {}
+            });
+        });
+        let version = BufferVersion::new();
+        diff_model.update(&mut app, |diff_model, ctx| {
+            diff_model.skip_diff(version, ctx)
+        });
+
+        diff_model.read(&app, |diff_model, _| {
+            assert_eq!(diff_model.diff_hunk_count(), 0);
+            // The base stays, for the day the buffer is small enough to compare again.
+            assert!(diff_model.has_base());
+        });
+        assert_eq!(*reported.borrow(), [version]);
+    });
+}

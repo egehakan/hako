@@ -176,6 +176,11 @@ impl Searcher {
             .map_or(0, |results| results.matches.len())
     }
 
+    /// Whether there are more matches than were found, the search having stopped at its limit.
+    pub fn is_capped(&self) -> bool {
+        self.results.as_ref().is_some_and(SearchResults::is_capped)
+    }
+
     /// The index of the currently-selected match within the overall search results.
     pub fn selected_match(&self) -> Option<usize> {
         self.selected_result

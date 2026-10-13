@@ -14421,3 +14421,29 @@ fn test_unindent_panic_simpler_case() {
         });
     });
 }
+
+#[test]
+fn test_editor_mode_follows_the_size_and_the_line_count() {
+    use warp_util::large_file::{EditorMode, FULL_EDITOR_MAX_BYTES, FULL_EDITOR_MAX_LINES};
+
+    use crate::content::buffer::BufferSnapshot;
+
+    let small = BufferSnapshot::from_plain_text("fn main() {}\n");
+    assert_eq!(small.editor_mode(), EditorMode::Full);
+
+    let many_lines = BufferSnapshot::from_plain_text(&"x\n".repeat(FULL_EDITOR_MAX_LINES + 2));
+    assert_eq!(many_lines.editor_mode(), EditorMode::Reduced);
+
+    let large = BufferSnapshot::from_plain_text(&"y".repeat(FULL_EDITOR_MAX_BYTES as usize + 1));
+    assert_eq!(large.editor_mode(), EditorMode::Reduced);
+
+    App::test((), |mut app| async move {
+        let (buffer, _selection) = Buffer::mock_from_markdown(
+            "Hello\nWorld",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        buffer.read(&app, |buffer, _| assert!(!buffer.is_reduced()));
+    });
+}

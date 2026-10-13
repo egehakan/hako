@@ -7,7 +7,10 @@
 use warpui_core::fonts::{FamilyId, Properties};
 use warpui_core::text_layout::{StyleAndFont, TextStyle};
 
-use super::{MAX_LAYOUT_LINE_CHARS, clamp_style_runs_for_layout, truncate_text_for_layout};
+use super::{
+    LINE_TRUNCATED_MARKER, MAX_LAYOUT_LINE_CHARS, clamp_style_runs_for_layout, mark_truncated_line,
+    truncate_text_for_layout,
+};
 
 fn test_style() -> StyleAndFont {
     StyleAndFont::new(FamilyId(0), Properties::default(), TextStyle::new())
@@ -111,4 +114,55 @@ fn test_clamp_style_runs_for_layout_drops_a_run_starting_exactly_at_the_cap() {
     // The cap is exclusive as an index, so a run starting at it covers no shaped text.
     assert_eq!(clamped.len(), 1);
     assert_eq!(clamped[0].0, 0..MAX_LAYOUT_LINE_CHARS);
+}
+
+#[test]
+fn test_mark_truncated_line_ends_in_the_marker_and_stays_at_the_cap() {
+    let style = test_style();
+    let over_cap = "é".repeat(MAX_LAYOUT_LINE_CHARS + 500);
+    let truncated = truncate_text_for_layout(&over_cap);
+    let runs = clamp_style_runs_for_layout(&[
+        (0..40, style),
+        (40..MAX_LAYOUT_LINE_CHARS + 500, style),
+    ]);
+
+    let (text, runs) = mark_truncated_line(truncated, &runs);
+
+    let marker_chars = LINE_TRUNCATED_MARKER.chars().count();
+    let kept_chars = MAX_LAYOUT_LINE_CHARS - marker_chars;
+    assert_eq!(text.chars().count(), MAX_LAYOUT_LINE_CHARS);
+    assert!(text.ends_with(LINE_TRUNCATED_MARKER));
+    assert!(text.chars().take(kept_chars).all(|c| c == 'é'));
+    // The runs cover the kept text and then the marker, with no gap and nothing past the end.
+    let ranges: Vec<_> = runs.iter().map(|(range, _)| range.clone()).collect();
+    assert_eq!(
+        ranges,
+        [0..40, 40..kept_chars, kept_chars..MAX_LAYOUT_LINE_CHARS]
+    );
+}
+
+#[test]
+fn test_mark_truncated_line_drops_runs_that_start_under_the_marker() {
+    let style = test_style();
+    let over_cap = "a".repeat(MAX_LAYOUT_LINE_CHARS + 1);
+    let truncated = truncate_text_for_layout(&over_cap);
+    let kept_chars = MAX_LAYOUT_LINE_CHARS - LINE_TRUNCATED_MARKER.chars().count();
+    let runs = [
+        (0..kept_chars + 2, style),
+        (kept_chars + 2..MAX_LAYOUT_LINE_CHARS, style),
+    ];
+
+    let (_, runs) = mark_truncated_line(truncated, &runs);
+
+    let ranges: Vec<_> = runs.iter().map(|(range, _)| range.clone()).collect();
+    assert_eq!(ranges, [0..kept_chars, kept_chars..MAX_LAYOUT_LINE_CHARS]);
+}
+
+#[test]
+fn test_mark_truncated_line_without_styles_adds_none() {
+    let over_cap = "a".repeat(MAX_LAYOUT_LINE_CHARS + 1);
+    let (text, runs) = mark_truncated_line(truncate_text_for_layout(&over_cap), &[]);
+
+    assert!(text.ends_with(LINE_TRUNCATED_MARKER));
+    assert!(runs.is_empty());
 }

@@ -23,6 +23,7 @@ use vec1::{Vec1, vec1};
 use warp_core::platform::SessionPlatform;
 use warp_core::safe_error;
 use warp_util::content_version::ContentVersion;
+use warp_util::large_file::{EditorMode, FileShape};
 use warpui_core::elements::ListIndentLevel;
 use warpui_core::fonts::Weight;
 use warpui_core::text::point::Point;
@@ -549,6 +550,25 @@ impl BufferSnapshot {
     pub fn byte_len(&self) -> usize {
         self.byte_len.as_usize()
     }
+
+    /// Point coordinate at the end of the content.
+    pub fn max_point(&self) -> Point {
+        self.content.extent()
+    }
+
+    /// How much of an editor's feature set content of this size gets.
+    pub fn editor_mode(&self) -> EditorMode {
+        editor_mode_for(self.byte_len, self.max_point())
+    }
+}
+
+fn editor_mode_for(byte_len: ByteOffset, max_point: Point) -> EditorMode {
+    FileShape {
+        bytes: byte_len.as_usize() as u64,
+        lines: max_point.row as usize,
+        ..Default::default()
+    }
+    .editor_mode()
 }
 
 /// Model for storing the content of an editor.
@@ -2566,6 +2586,17 @@ impl Buffer {
     /// ByteOffset at the end of buffer.
     pub fn max_byte_offset(&self) -> ByteOffset {
         self.content.extent()
+    }
+
+    /// How much of an editor's feature set the buffer gets at its present size. Costs nothing to
+    /// ask, so every feature that works on the whole buffer can check before it starts.
+    pub fn editor_mode(&self) -> EditorMode {
+        editor_mode_for(self.max_byte_offset(), self.max_point())
+    }
+
+    /// Whether the buffer is too large for the features that work on all of it.
+    pub fn is_reduced(&self) -> bool {
+        self.editor_mode() == EditorMode::Reduced
     }
 
     /// Total number of character offset of the given row.

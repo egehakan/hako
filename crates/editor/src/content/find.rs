@@ -49,10 +49,21 @@ pub struct Query {
     engine: Box<Engine>,
 }
 
+/// Most matches a search reports. Every match becomes a decoration and, on "Replace All", an edit
+/// applied on the UI thread, so a query like `e` in a large buffer must not yield millions.
+pub const MAX_SEARCH_MATCHES: usize = 50_000;
+
 /// Results of a search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResults {
     pub matches: Vec<Match>,
+}
+
+impl SearchResults {
+    /// Whether the search stopped at [`MAX_SEARCH_MATCHES`], leaving later matches unreported.
+    pub fn is_capped(&self) -> bool {
+        self.matches.len() >= MAX_SEARCH_MATCHES
+    }
 }
 
 impl RestorableSearchResults for &SearchResults {
@@ -257,6 +268,9 @@ impl Engine {
             // characters.
             if results.len() % 1000 == 1 {
                 futures_lite::future::yield_now().await;
+            }
+            if results.len() >= MAX_SEARCH_MATCHES {
+                break;
             }
         }
 

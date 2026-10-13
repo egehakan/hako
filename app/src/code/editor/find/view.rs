@@ -377,7 +377,10 @@ impl CodeEditorFind {
             !self.replace_query(ctx).is_empty(),
             self.searcher.as_ref(ctx).match_count() > 0,
         );
-        let should_enable_replace = has_replace_query && has_match;
+        // Replacing only the matches that were found before the search stopped would pass for
+        // having replaced them all.
+        let should_enable_replace =
+            has_replace_query && has_match && !self.searcher.as_ref(ctx).is_capped();
         self.replace_all_button.update(ctx, |button, ctx| {
             button.set_disabled(!should_enable_replace, ctx);
         });
@@ -479,14 +482,16 @@ impl CodeEditorFind {
             None => 0,
             Some(idx) => idx + 1,
         };
+        let searcher = self.searcher.as_ref(app);
         let label = format!(
-            "{}/{}",
+            "{}/{}{}",
             if index > 0 {
                 index.to_string()
             } else {
                 "?".to_string()
             },
-            self.searcher.as_ref(app).match_count()
+            searcher.match_count(),
+            if searcher.is_capped() { "+" } else { "" }
         );
         Text::new_inline(label, appearance.ui_font_family(), FIND_EDITOR_FONT_SIZE)
             .with_color(blended_colors::text_sub(

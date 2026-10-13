@@ -9,7 +9,7 @@ use string_offset::CharOffset;
 use sum_tree::SumTree;
 use warpui_core::App;
 
-use super::{Engine, Match, SearchConfig};
+use super::{Engine, MAX_SEARCH_MATCHES, Match, SearchConfig, SearchResults};
 use crate::content::buffer::Buffer;
 use crate::content::cursor::BufferSumTree;
 use crate::content::text::{BufferBlockStyle, BufferText, IndentBehavior};
@@ -520,4 +520,38 @@ impl PartialEq<(Match, String)> for ExpectedMatch<'_> {
             && self.end == other_offsets.end
             && self.match_text == other_text
     }
+}
+
+#[test]
+fn test_search_stops_at_the_match_limit() {
+    App::test((), |mut app| async move {
+        let text = "a ".repeat(MAX_SEARCH_MATCHES + 500);
+        let (buffer, _selection) = Buffer::mock_from_markdown(
+            &text,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+
+        buffer.read(&app, |buffer, _| {
+            let mut engine = Engine::new(&SearchConfig::new("a")).expect("Could not compile search");
+            let matches = engine
+                .find_blocking(&buffer.content, CharOffset::zero())
+                .expect("Could not run search");
+            assert_eq!(matches.len(), MAX_SEARCH_MATCHES);
+            // The matches reported are the first ones, in order.
+            assert_eq!(matches[0].start, CharOffset::from(1));
+            assert_eq!(
+                matches[MAX_SEARCH_MATCHES - 1].start,
+                CharOffset::from(2 * MAX_SEARCH_MATCHES - 1)
+            );
+            assert!(SearchResults { matches }.is_capped());
+
+            let mut engine = Engine::new(&SearchConfig::new("a a a")).expect("compiles");
+            let few = engine
+                .find_blocking(&buffer.content, CharOffset::zero())
+                .expect("Could not run search");
+            assert!(!SearchResults { matches: few }.is_capped());
+        });
+    });
 }

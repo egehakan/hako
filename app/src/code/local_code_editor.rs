@@ -63,7 +63,7 @@ use warpui::{
 
 use crate::ai::persisted_workspace::{PersistedWorkspace, PersistedWorkspaceEvent};
 use crate::code::blame::{
-    BlameCommit, BlameEvent, BlameFile, BlameLookup, BlameModel, BlameResult, RepoInfo,
+    BlameCommit, BlameEvent, BlameFile, BlameLookup, BlameModel, BlameResult, BufferSize, RepoInfo,
     annotation_text,
 };
 use crate::code::blame_card::{BlameCard, BlameCardHandles, BlameCardTrigger};
@@ -141,6 +141,7 @@ pub fn init(app: &mut AppContext) {
 
 /// Shown when a file is explicitly formatted and nothing is set up to format it.
 const NO_FORMATTER_NOTICE: &str = "No formatter is available for this file.";
+const TOO_LARGE_TO_FORMAT_NOTICE: &str = "This file is too large to format.";
 
 /// What asked for the buffer to be formatted.
 #[derive(Debug, Clone, Copy)]
@@ -1061,7 +1062,9 @@ impl LocalCodeEditorView {
     }
 
     fn try_connect_lsp_server(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.lsp_server.is_some() {
+        // The server is never told about a buffer in reduced mode, so it has nothing to say
+        // about one either.
+        if self.lsp_server.is_some() || self.is_reduced(ctx) {
             return;
         }
         let lsp_manager = LspManagerModel::handle(ctx);
@@ -1150,6 +1153,17 @@ impl LocalCodeEditorView {
         });
     }
 
+    /// Whether the buffer is too large for the features that work on all of it.
+    fn is_reduced(&self, ctx: &AppContext) -> bool {
+        self.editor
+            .as_ref(ctx)
+            .model
+            .as_ref(ctx)
+            .buffer()
+            .as_ref(ctx)
+            .is_reduced()
+    }
+
     fn is_lsp_server_available(&self, ctx: &mut ViewContext<Self>) -> bool {
         self.lsp_server
             .as_ref()
@@ -1187,6 +1201,11 @@ impl LocalCodeEditorView {
     /// Formats the buffer with its project's formatter when one applies, and with the language
     /// server otherwise.
     fn format_buffer(&mut self, trigger: FormatTrigger, ctx: &mut ViewContext<Self>) {
+        // A formatter is handed the whole text and answers with edits to all of it.
+        if self.is_reduced(ctx) {
+            self.finish_format(trigger, Some(TOO_LARGE_TO_FORMAT_NOTICE.to_owned()), ctx);
+            return;
+        }
         #[cfg(feature = "local_fs")]
         {
             if self.format_with_project_formatter(trigger, ctx) {
@@ -1648,10 +1667,18 @@ impl LocalCodeEditorView {
         let version = self.editor.as_ref(ctx).version(ctx);
         let editor = self.editor.clone();
 
+        let size = {
+            let buffer = self.editor.as_ref(ctx).model.as_ref(ctx).buffer().as_ref(ctx);
+            BufferSize {
+                bytes: buffer.max_byte_offset().as_usize(),
+                lines: buffer.max_point().row as usize,
+            }
+        };
         let lookup = BlameModel::handle(ctx).update(ctx, |model, ctx| {
             model.lookup(
                 &path,
                 version,
+                size,
                 |app| editor.as_ref(app).text(app).into_string(),
                 ctx,
             )

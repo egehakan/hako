@@ -1194,6 +1194,7 @@ impl CodeEditorView {
                     // Get all search results from the find model
                     if let Some(results) = self.searcher.as_ref(ctx).results()
                         && !results.matches.is_empty()
+                        && !results.is_capped()
                     {
                         // Convert all match ranges to selection offsets with case preservation
                         let capture_expander = self.capture_expander(ctx);

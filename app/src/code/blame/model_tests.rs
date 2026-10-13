@@ -227,11 +227,12 @@ fn repo_config_without_values_is_unset() {
 
 #[test]
 fn large_buffers_are_over_the_limits() {
-    assert!(!exceeds_blame_limits("fn main() {}\n"));
-    assert!(!exceeds_blame_limits(&"x\n".repeat(MAX_BLAME_LINES)));
-    assert!(exceeds_blame_limits(&"x\n".repeat(MAX_BLAME_LINES + 1)));
-    assert!(!exceeds_blame_limits(&"x".repeat(MAX_BLAME_BYTES)));
-    assert!(exceeds_blame_limits(&"x".repeat(MAX_BLAME_BYTES + 1)));
+    let size = |bytes, lines| BufferSize { bytes, lines };
+    assert!(!exceeds_blame_limits(size(13, 1)));
+    assert!(!exceeds_blame_limits(size(100_000, MAX_BLAME_LINES)));
+    assert!(exceeds_blame_limits(size(100_002, MAX_BLAME_LINES + 1)));
+    assert!(!exceeds_blame_limits(size(MAX_BLAME_BYTES, 1)));
+    assert!(exceeds_blame_limits(size(MAX_BLAME_BYTES + 1, 1)));
 }
 
 async fn git(repo: &Path, args: &[&str]) -> String {
@@ -302,6 +303,24 @@ async fn untracked_file_has_no_blame() {
     .await;
 
     assert_eq!(result, BlameResult::NotTracked);
+}
+
+#[tokio::test]
+async fn only_files_in_the_commit_are_worth_blaming() {
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo = repo_dir.path();
+    init_repo(repo).await;
+    let head = git(repo, &["rev-parse", "HEAD"]).await;
+    let root = repo.to_str().expect("utf-8 path");
+    // Untracked, and then staged but in no commit: neither has a history to show.
+    std::fs::write(repo.join("dump.sql"), "INSERT INTO t VALUES (1);\n").expect("write file");
+    std::fs::write(repo.join("staged.txt"), "new\n").expect("write file");
+    git(repo, &["add", "staged.txt"]).await;
+
+    assert!(is_in_commit(file(root, "notes.txt"), head.clone()).await);
+    assert!(!is_in_commit(file(root, "dump.sql"), head.clone()).await);
+    assert!(!is_in_commit(file(root, "staged.txt"), head.clone()).await);
+    assert!(!is_in_commit(file(root, "notes.txt"), "0".repeat(40)).await);
 }
 
 #[tokio::test]
