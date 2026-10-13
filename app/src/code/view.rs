@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "local_fs")]
 use std::sync::Arc;
+#[cfg(feature = "local_fs")]
+use std::time::Duration;
 
 #[cfg(feature = "local_fs")]
 use file_viewer_ui::FileViewerEvent;
 use file_viewer_ui::{FileViewerAction, FileViewerView};
 #[cfg(feature = "local_fs")]
 use file_viewers::kind::{self as viewer_kind, ViewerKind};
+use instant::Instant;
 use lsp::LspManagerModel;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
@@ -22,6 +25,8 @@ use warp_util::file::FileLoadError;
 use warp_util::large_file::{OpenDecision, decision_for_size};
 use warp_util::large_file::OpenIntent;
 use warp_util::path::LineAndColumnArg;
+#[cfg(feature = "local_fs")]
+use warpui::r#async::Timer;
 #[cfg(feature = "local_fs")]
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
@@ -46,6 +51,7 @@ use super::buffer_location::LocalOrRemotePath;
 use super::diff_viewer::DiffViewer;
 use super::editor::view::{CodeEditorEvent, CodeEditorView};
 use super::editor_management::{CodeManager, CodeSource, TabOpenMode};
+use super::load_journal;
 use super::local_code_editor::{LocalCodeEditorEvent, LocalCodeEditorView};
 use crate::code::editor::scroll::ScrollPosition;
 use crate::code::editor::view::CodeEditorRenderOptions;
@@ -102,6 +108,15 @@ const LANGUAGE_ICON_WIDTH: f32 = 16.;
 const TAB_INTERNAL_MARGIN: f32 = 4.;
 const TAB_HORIZONTAL_MARGIN: f32 = 8.;
 const TAB_PADDING: f32 = 2.;
+
+/// Largest file a restored session loads into its tab right away. A larger one waits for
+/// [`RESTORED_TAB_LOAD_DELAY`], so that laying it out does not hold up the terminals starting
+/// next to it.
+#[cfg(feature = "local_fs")]
+const RESTORED_INSTANT_MAX_BYTES: u64 = 256 * 1024;
+
+#[cfg(feature = "local_fs")]
+const RESTORED_TAB_LOAD_DELAY: Duration = Duration::from_millis(1500);
 
 // Keybinding constants - exported so AI document view can reuse
 pub const SAVE_FILE_BINDING_NAME: &str = "code_view:save";
@@ -316,6 +331,27 @@ enum TabContent {
     /// A file with no text form, or one kept out of an editor: there is no buffer, and nothing
     /// to edit or save.
     Viewer(ViewHandle<FileViewerView>),
+    /// A tab of a restored session whose file has not been looked at yet. It is when the tab is
+    /// first shown.
+    Deferred,
+}
+
+/// The load of a file into an editor, from when it is noted in the load journal.
+#[derive(Clone, Copy)]
+struct PendingLoad {
+    started: Instant,
+    stage: LoadStage,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadStage {
+    /// The file is being read.
+    Reading,
+    /// The content is in the buffer and has yet to be laid out.
+    InBuffer,
+    /// The content is laid out, which is the last thing that could have gone wrong, and has
+    /// yet to be drawn.
+    LaidOut,
 }
 
 #[derive(Clone)]
@@ -325,6 +361,8 @@ pub struct TabData {
     mouse_state_handles: TabDataMouseStateHandles,
     /// Whether the next file opened as a preview takes this tab's place.
     preview: bool,
+    /// Set until the tab's file has been drawn in its editor, or failed to load.
+    pending_load: Option<PendingLoad>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,7 +394,7 @@ impl TabData {
     fn editor(&self) -> Option<&ViewHandle<LocalCodeEditorView>> {
         match &self.content {
             TabContent::Editor { editor_view, .. } => Some(editor_view),
-            TabContent::Viewer(_) => None,
+            TabContent::Viewer(_) | TabContent::Deferred => None,
         }
     }
 
@@ -365,7 +403,7 @@ impl TabData {
     fn rendered(&self) -> Option<&RenderedForm> {
         match &self.content {
             TabContent::Editor { rendered, .. } => rendered.as_ref(),
-            TabContent::Viewer(_) => None,
+            TabContent::Viewer(_) | TabContent::Deferred => None,
         }
     }
 
@@ -373,8 +411,36 @@ impl TabData {
     fn set_rendered(&mut self, form: Option<RenderedForm>) {
         match &mut self.content {
             TabContent::Editor { rendered, .. } => *rendered = form,
-            TabContent::Viewer(_) => {}
+            TabContent::Viewer(_) | TabContent::Deferred => {}
         }
+    }
+
+    /// A tab for the file at `location` that looks at the file only once it is shown.
+    fn deferred(location: LocalOrRemotePath) -> Self {
+        Self {
+            location: Some(location),
+            content: TabContent::Deferred,
+            mouse_state_handles: Default::default(),
+            preview: false,
+            pending_load: None,
+        }
+    }
+
+    /// Crosses the tab's file out of the load journal, the load having ended one way or another
+    /// with the app still running.
+    fn end_pending_load(&mut self) -> Option<PendingLoad> {
+        let pending = self.pending_load.take()?;
+        if let Some(path) = self.local_path() {
+            load_journal::finish(&path);
+        }
+        Some(pending)
+    }
+
+    fn display_path(&self) -> String {
+        self.location
+            .as_ref()
+            .map(LocalOrRemotePath::display_path)
+            .unwrap_or_default()
     }
 }
 
@@ -383,6 +449,7 @@ impl TabData {
 pub(crate) enum TabContentForTest {
     Editor,
     Viewer(ViewerKind),
+    Deferred,
 }
 
 /// What a new tab shows besides an editor.
@@ -525,12 +592,18 @@ impl CodeView {
     ) {
         let Some(index) = self.tab_group.iter().position(|tab| match &tab.content {
             TabContent::Viewer(tab_viewer) => tab_viewer.id() == viewer.id(),
-            TabContent::Editor { .. } => false,
+            TabContent::Editor { .. } | TabContent::Deferred => false,
         }) else {
             return;
         };
         let intent = match viewer.as_ref(ctx).kind() {
             ViewerKind::LargeText => OpenIntent::Anyway,
+            ViewerKind::NotLoaded => {
+                if let Some(path) = self.tab_group[index].local_path() {
+                    load_journal::forget_interruption(&path);
+                }
+                OpenIntent::Automatic
+            }
             ViewerKind::Image
             | ViewerKind::Svg
             | ViewerKind::Pdf
@@ -547,9 +620,10 @@ impl CodeView {
     /// Builds what the tab at `index` shows again, for `intent`.
     #[cfg(feature = "local_fs")]
     fn rebuild_tab(&mut self, index: usize, intent: OpenIntent, ctx: &mut ViewContext<Self>) {
-        let Some(tab) = self.tab_group.get(index) else {
+        let Some(tab) = self.tab_group.get_mut(index) else {
             return;
         };
+        tab.end_pending_load();
         let (location, preview) = (tab.location.clone(), tab.preview);
         self.tab_group[index] = self.build_tab_data(location, preview, intent, ctx);
         self.tab_content_replaced(index, ctx);
@@ -848,8 +922,10 @@ impl CodeView {
     ) -> Self {
         let mut view = Self::new_internal(source, ctx);
         for tab_snapshot in tabs {
-            let location = tab_snapshot.path.clone().map(LocalOrRemotePath::Local);
-            let tab_data = view.build_tab_data(location, false, OpenIntent::Automatic, ctx);
+            let tab_data = match tab_snapshot.path.clone() {
+                Some(path) => TabData::deferred(LocalOrRemotePath::Local(path)),
+                None => view.build_tab_data(None, false, OpenIntent::Automatic, ctx),
+            };
             view.tab_group.push(tab_data);
         }
         let clamped_index = if view.tab_group.is_empty() {
@@ -858,7 +934,92 @@ impl CodeView {
             active_tab_index.min(view.tab_group.len() - 1)
         };
         view.active_tab_index = clamped_index;
+        if !view.tab_group.is_empty() {
+            view.set_title_after_content_update(ctx);
+        }
+        #[cfg(feature = "local_fs")]
+        view.load_restored_active_tab(ctx);
         view
+    }
+
+    /// Loads the active tab of a restored session: at once when its file is small, and after
+    /// the rest of the window has had time to start otherwise.
+    #[cfg(feature = "local_fs")]
+    fn load_restored_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        let active_path = self
+            .tab_at(self.active_tab_index)
+            .and_then(TabData::local_path);
+        // Only an editor is worth waiting with: a viewer, the note about a large file and the
+        // note about an interrupted load all cost next to nothing.
+        let loads_instantly = active_path.is_none_or(|path| {
+            load_journal::was_interrupted(&path)
+                || Self::is_too_large_by_size(&path)
+                || std::fs::metadata(&path)
+                    .ok()
+                    .is_none_or(|metadata| metadata.len() <= RESTORED_INSTANT_MAX_BYTES)
+                || viewer_kind::classify(&path).is_some_and(|kind| !kind.is_text_backed())
+        });
+        if loads_instantly {
+            self.load_deferred_tab(self.active_tab_index, ctx);
+            self.update_markdown_mode_segmented_control(ctx);
+            return;
+        }
+        ctx.spawn(Timer::after(RESTORED_TAB_LOAD_DELAY), |me, _, ctx| {
+            if me.load_deferred_tab(me.active_tab_index, ctx) {
+                me.tab_content_replaced(me.active_tab_index, ctx);
+                if ctx.is_self_focused() {
+                    me.focus(ctx);
+                }
+            }
+        });
+    }
+
+    /// Builds what the tab at `index` shows if that was put off so far. Returns whether it was.
+    /// A file whose load an earlier run did not survive is not loaded again: its tab says so and
+    /// offers to.
+    #[cfg(feature = "local_fs")]
+    fn load_deferred_tab(&mut self, index: usize, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(tab) = self.tab_group.get(index) else {
+            return false;
+        };
+        match &tab.content {
+            TabContent::Deferred => {}
+            TabContent::Editor { .. } | TabContent::Viewer(_) => return false,
+        }
+        let (location, preview) = (tab.location.clone(), tab.preview);
+        let interrupted_path = tab
+            .local_path()
+            .filter(|path| load_journal::was_interrupted(path));
+        let new_tab = match interrupted_path {
+            Some(path) => {
+                log::warn!(
+                    "Not reopening {}: the app closed while loading it",
+                    path.display()
+                );
+                TabData {
+                    location,
+                    content: TabContent::Viewer(self.build_viewer(
+                        path,
+                        ViewerKind::NotLoaded,
+                        None,
+                        ctx,
+                    )),
+                    mouse_state_handles: Default::default(),
+                    preview,
+                    pending_load: None,
+                }
+            }
+            None => self.build_tab_data(location, preview, OpenIntent::Automatic, ctx),
+        };
+        self.tab_group[index] = new_tab;
+        true
+    }
+
+    fn tab_index_of_editor(&self, editor: &ViewHandle<LocalCodeEditorView>) -> Option<usize> {
+        self.tab_group.iter().position(|tab| {
+            tab.editor()
+                .is_some_and(|editor_view| editor_view.id() == editor.id())
+        })
     }
 
     /// Creates a code view whose first tab is a preview of the file `source` points at.
@@ -907,13 +1068,6 @@ impl CodeView {
         if let Some(index) = self.tab_index_of_editor(editor) {
             self.keep_tab(index, ctx);
         }
-    }
-
-    fn tab_index_of_editor(&self, editor: &ViewHandle<LocalCodeEditorView>) -> Option<usize> {
-        self.tab_group.iter().position(|tab| {
-            tab.editor()
-                .is_some_and(|editor_view| editor_view.id() == editor.id())
-        })
     }
 
     /// Construct an editor backed by the global shared buffer for the given location.
@@ -1026,6 +1180,7 @@ impl CodeView {
                     content: TabContent::Viewer(viewer),
                     mouse_state_handles: Default::default(),
                     preview,
+                    pending_load: None,
                 };
             }
             NewTabViewer::Renders(viewer) => Some(RenderedForm::Viewer(viewer)),
@@ -1041,6 +1196,18 @@ impl CodeView {
             }
             None => (self.construct_new_file_editor(ctx), None),
         };
+        // On disk before the load can do any harm, so that a session restored after it took the
+        // app down leaves the file alone.
+        let pending_load = tab_location
+            .as_ref()
+            .and_then(|location| location.to_local_path())
+            .map(|path| {
+                load_journal::begin(path);
+                PendingLoad {
+                    started: Instant::now(),
+                    stage: LoadStage::Reading,
+                }
+            });
 
         let editor = code_editor.as_ref(ctx).editor().clone();
 
@@ -1073,12 +1240,16 @@ impl CodeView {
         }
         ctx.subscribe_to_view(&code_editor, |me, code_editor, event, ctx| match event {
             LocalCodeEditorEvent::FileLoaded => {
+                me.note_file_loaded(&code_editor);
                 me.pane_configuration.update(ctx, |pane_config, ctx| {
                     pane_config.refresh_pane_header_overflow_menu_items(ctx);
                 });
                 ctx.emit(CodeViewEvent::Pane(PaneEvent::AppStateChanged));
             }
             LocalCodeEditorEvent::FailedToLoad { error: err } => {
+                if let Some(index) = me.tab_index_of_editor(&code_editor) {
+                    me.tab_group[index].end_pending_load();
+                }
                 match err.as_ref() {
                     FileLoadError::TooLarge { shape, limit } => {
                         log::info!("Not loading into an editor: {shape:?} is over {limit:?}");
@@ -1141,8 +1312,8 @@ impl CodeView {
             LocalCodeEditorEvent::DiffStatusUpdated => (),
             LocalCodeEditorEvent::UserEdited => me.keep_tab_of_editor(&code_editor, ctx),
             LocalCodeEditorEvent::VimMinimizeRequested => (),
-            LocalCodeEditorEvent::ViewportUpdated => (),
-            LocalCodeEditorEvent::LayoutInvalidated => (),
+            LocalCodeEditorEvent::ViewportUpdated => me.note_editor_drawn(&code_editor),
+            LocalCodeEditorEvent::LayoutInvalidated => me.note_editor_laid_out(&code_editor, ctx),
             LocalCodeEditorEvent::DiscardUnsavedChanges { path } => {
                 #[cfg(feature = "local_fs")]
                 GlobalBufferModel::handle(ctx).update(ctx, |global_buffer, ctx| {
@@ -1205,6 +1376,85 @@ impl CodeView {
             },
             mouse_state_handles: Default::default(),
             preview,
+            pending_load,
+        }
+    }
+
+    /// The tab `editor` belongs to, if the load of its file is still being followed.
+    fn tab_with_pending_load(
+        &mut self,
+        editor: &ViewHandle<LocalCodeEditorView>,
+    ) -> Option<&mut TabData> {
+        let index = self.tab_index_of_editor(editor)?;
+        self.tab_group
+            .get_mut(index)
+            .filter(|tab| tab.pending_load.is_some())
+    }
+
+    /// Notes that the content of the file `editor` shows is in its buffer.
+    fn note_file_loaded(&mut self, editor: &ViewHandle<LocalCodeEditorView>) {
+        let Some(tab) = self.tab_with_pending_load(editor) else {
+            return;
+        };
+        let path = tab.display_path();
+        if let Some(pending) = &mut tab.pending_load {
+            pending.stage = LoadStage::InBuffer;
+            log::info!(
+                "Read {path} into its buffer {} ms after it was opened",
+                pending.started.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// Notes that `editor` laid something out. Once that is the content of its file, the load
+    /// has done all it could do to the app, and the file is crossed out of the load journal.
+    fn note_editor_laid_out(
+        &mut self,
+        editor: &ViewHandle<LocalCodeEditorView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let has_laid_out_buffer = editor
+            .as_ref(ctx)
+            .editor()
+            .as_ref(ctx)
+            .has_laid_out_buffer(ctx);
+        let Some(tab) = self.tab_with_pending_load(editor) else {
+            return;
+        };
+        let path = tab.display_path();
+        let Some(pending) = &mut tab.pending_load else {
+            return;
+        };
+        if pending.stage != LoadStage::InBuffer || !has_laid_out_buffer {
+            return;
+        }
+        pending.stage = LoadStage::LaidOut;
+        log::info!(
+            "Laid out {path} {} ms after it was opened",
+            pending.started.elapsed().as_millis()
+        );
+        if let Some(path) = tab.local_path() {
+            load_journal::finish(&path);
+        }
+    }
+
+    /// Notes that `editor` was drawn, which with its file laid out is the file on screen.
+    fn note_editor_drawn(&mut self, editor: &ViewHandle<LocalCodeEditorView>) {
+        let Some(tab) = self.tab_with_pending_load(editor) else {
+            return;
+        };
+        let is_laid_out = tab
+            .pending_load
+            .is_some_and(|pending| pending.stage == LoadStage::LaidOut);
+        if !is_laid_out {
+            return;
+        }
+        let path = tab.display_path();
+        if let Some(pending) = tab.end_pending_load() {
+            log::info!(
+                "Showed {path} in its editor {} ms after it was opened",
+                pending.started.elapsed().as_millis()
+            );
         }
     }
 
@@ -1218,6 +1468,7 @@ impl CodeView {
         match &self.tab_group[index].content {
             TabContent::Editor { .. } => TabContentForTest::Editor,
             TabContent::Viewer(viewer) => TabContentForTest::Viewer(viewer.as_ref(ctx).kind()),
+            TabContent::Deferred => TabContentForTest::Deferred,
         }
     }
 
@@ -1288,6 +1539,8 @@ impl CodeView {
                     editor_view,
                     rendered: None,
                 } => ctx.focus(editor_view),
+                // Held here until there is something in the tab to pass it on to.
+                TabContent::Deferred => ctx.focus_self(),
             }
         }
     }
@@ -1357,6 +1610,7 @@ impl CodeView {
             PreviewPlacement::ReplacePreview(index) => {
                 let new_tab =
                     self.build_tab_data(Some(location.clone()), true, OpenIntent::Automatic, ctx);
+                self.tab_group[index].end_pending_load();
                 self.tab_group[index] = new_tab;
                 GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
                     model.remove_deallocated_buffers(ctx);
@@ -1762,6 +2016,9 @@ impl CodeView {
     }
 
     pub fn cleanup_all_tabs(&mut self, ctx: &mut ViewContext<Self>) {
+        for tab in &mut self.tab_group {
+            tab.end_pending_load();
+        }
         self.tab_group.clear();
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
@@ -1986,7 +2243,7 @@ impl CodeView {
     }
 
     fn remove_tab_data_index(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        self.tab_group.remove(index);
+        self.tab_group.remove(index).end_pending_load();
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
         });
@@ -2099,6 +2356,12 @@ impl CodeView {
 
     pub fn set_active_tab_index(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
         self.active_tab_index = index;
+        #[cfg(feature = "local_fs")]
+        if self.load_deferred_tab(index, ctx) {
+            self.pane_configuration.update(ctx, |pane_config, ctx| {
+                pane_config.refresh_pane_header_overflow_menu_items(ctx);
+            });
+        }
         self.update_tab_bar_state(ctx);
 
         let location = self.tab_at(index).and_then(|tab| tab.location.clone());
@@ -2176,6 +2439,7 @@ impl CodeView {
                         });
                         continue;
                     }
+                    TabContent::Deferred => continue,
                 };
                 editor_view.update(ctx, |editor, ctx| {
                     let was_unsaved = editor.has_unsaved_changes(ctx);
@@ -3034,6 +3298,8 @@ impl CodeView {
                     // Unset preview on merged tabs
                     let mut new_data = tab_data.clone();
                     new_data.preview = false;
+                    // The view that was told of the load's progress is not this one.
+                    new_data.end_pending_load();
 
                     to_extend.push(new_data);
                     // If the newly added tab is the active tab in the source CodeView, update the active tab index to point to it.
@@ -3084,6 +3350,7 @@ impl View for CodeView {
                     editor_view,
                     rendered: None,
                 } => ChildView::new(editor_view).finish(),
+                TabContent::Deferred => Empty::new().finish(),
             };
             match self.source {
                 CodeSource::AIAction { .. } => Flex::column()

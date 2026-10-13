@@ -2763,6 +2763,8 @@ pub(crate) fn app_callbacks(
                 writer.terminate();
             });
 
+            code::load_journal::finish_all();
+
             let auth_state = AuthStateProvider::as_ref(ctx).get();
             ctx.try_record_daily_app_focus_duration(
                 auth_state.user_id().map(|uid| uid.as_string()),

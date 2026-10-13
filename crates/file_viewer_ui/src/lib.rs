@@ -409,6 +409,13 @@ impl FileViewerView {
                         .to_string(),
                 );
             }
+            ViewerKind::NotLoaded => {
+                self.body = Body::Message(
+                    "This file was not reopened because the app closed unexpectedly while \
+                     loading it."
+                        .to_string(),
+                );
+            }
             ViewerKind::LargeText => {
                 self.body = Body::Loading("Reading the start of the file…");
                 self.spawn_load(generation, ctx, move || {
@@ -854,6 +861,7 @@ impl FileViewerView {
     /// The label of the button that asks for the file in an editor, when that can be asked for.
     fn open_in_editor_label(&self) -> Option<&'static str> {
         match (&self.kind, &self.body) {
+            (ViewerKind::NotLoaded, _) => Some("Open"),
             (ViewerKind::LargeText, Body::Peek(peek)) => peek
                 .text
                 .can_open_in_editor()
@@ -1398,7 +1406,8 @@ fn default_zoom_mode(kind: ViewerKind) -> ZoomMode {
         | ViewerKind::Svg
         | ViewerKind::Table
         | ViewerKind::Binary
-        | ViewerKind::LargeText => ZoomMode::Fit,
+        | ViewerKind::LargeText
+        | ViewerKind::NotLoaded => ZoomMode::Fit,
     }
 }
 

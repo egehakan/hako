@@ -39,6 +39,8 @@ pub enum ViewerKind {
     Binary,
     /// Text too large for an editor, of which only the start is shown.
     LargeText,
+    /// A file that is not read until asked for.
+    NotLoaded,
 }
 
 impl ViewerKind {
@@ -74,7 +76,12 @@ impl ViewerKind {
     pub fn is_text_backed(self) -> bool {
         match self {
             Self::Svg | Self::Table => true,
-            Self::Image | Self::Pdf | Self::Office | Self::Binary | Self::LargeText => false,
+            Self::Image
+            | Self::Pdf
+            | Self::Office
+            | Self::Binary
+            | Self::LargeText
+            | Self::NotLoaded => false,
         }
     }
 
@@ -88,6 +95,7 @@ impl ViewerKind {
             Self::Office => "Document",
             Self::Binary => "Binary file",
             Self::LargeText => "Large file",
+            Self::NotLoaded => "Not loaded",
         }
     }
 }
@@ -132,7 +140,8 @@ pub fn classify_content(path: &Path, head: &[u8]) -> Option<ViewerKind> {
             | ViewerKind::Table
             | ViewerKind::Office
             | ViewerKind::Binary
-            | ViewerKind::LargeText,
+            | ViewerKind::LargeText
+            | ViewerKind::NotLoaded,
         )
         | None => binary.then_some(ViewerKind::Binary),
     }

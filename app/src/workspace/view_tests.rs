@@ -1310,6 +1310,109 @@ fn write_text_file(path: &std::path::Path, bytes: u64) {
 
 #[cfg(feature = "local_fs")]
 #[test]
+fn test_restored_tabs_load_only_when_they_are_shown() {
+    use crate::code::view::TabContentForTest;
+
+    App::test((), |mut app| async move {
+        initialize_code_views(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let paths = ["a.rs", "b.rs", "c.rs"].map(|name| temp_dir.path().join(name));
+        for path in &paths {
+            std::fs::write(path, "fn main() {}\n").expect("failed to write file");
+        }
+        let path_refs = paths.iter().map(|path| path.as_path()).collect_vec();
+
+        let view = restored_code_view(&mut app, &path_refs, 1);
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [
+                TabContentForTest::Deferred,
+                TabContentForTest::Editor,
+                TabContentForTest::Deferred
+            ]
+        );
+        // A tab that was never loaded is still a tab of its file, in what is saved of the session
+        // as much as on screen.
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.active_tab_index(), 1);
+            for (index, path) in paths.iter().enumerate() {
+                assert_eq!(view.tab_at(index).and_then(|tab| tab.local_path()), Some(path.clone()));
+            }
+            assert_eq!(view.active_tab_name(ctx).as_deref(), Some("b.rs"));
+        });
+
+        view.update(&mut app, |view, ctx| view.set_active_tab_index(2, ctx));
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [
+                TabContentForTest::Deferred,
+                TabContentForTest::Editor,
+                TabContentForTest::Editor
+            ]
+        );
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_a_restored_tab_whose_load_was_interrupted_is_not_loaded_again() {
+    use file_viewers::kind::ViewerKind;
+
+    use crate::code::load_journal;
+    use crate::code::view::TabContentForTest;
+
+    App::test((), |mut app| async move {
+        initialize_code_views(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let small = temp_dir.path().join("small.rs");
+        let dump = temp_dir.path().join("dump.sql");
+        std::fs::write(&small, "fn main() {}\n").expect("failed to write file");
+        std::fs::write(&dump, "INSERT INTO t VALUES (1);\n").expect("failed to write file");
+        // The run before this one stopped while loading the dump.
+        load_journal::interrupt_for_test(&dump);
+
+        let view = restored_code_view(&mut app, &[&small, &dump], 1);
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [
+                TabContentForTest::Deferred,
+                TabContentForTest::Viewer(ViewerKind::NotLoaded)
+            ]
+        );
+        assert!(load_journal::was_interrupted(&dump));
+
+        // Opening it is the user's call, and from then on the file is like any other.
+        view.update(&mut app, |view, ctx| view.ask_for_editor_for_test(1, ctx));
+        assert_eq!(
+            code_view_tabs(&app, &view),
+            [TabContentForTest::Deferred, TabContentForTest::Editor]
+        );
+        assert!(!load_journal::was_interrupted(&dump));
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_a_restored_tab_of_a_sizeable_file_waits_before_it_loads() {
+    use crate::code::view::TabContentForTest;
+
+    App::test((), |mut app| async move {
+        initialize_code_views(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let sizeable = temp_dir.path().join("generated.sql");
+        write_text_file(&sizeable, 400 * 1024);
+
+        let view = restored_code_view(&mut app, &[&sizeable], 0);
+        assert_eq!(code_view_tabs(&app, &view), [TabContentForTest::Deferred]);
+
+        // Showing the tab is a request to see the file, which does not wait.
+        view.update(&mut app, |view, ctx| view.set_active_tab_index(0, ctx));
+        assert_eq!(code_view_tabs(&app, &view), [TabContentForTest::Editor]);
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
 fn test_a_file_over_the_size_limit_opens_as_a_large_file_until_asked_for() {
     use file_viewers::kind::ViewerKind;
     use warp_util::large_file::AUTO_OPEN_MAX_BYTES;

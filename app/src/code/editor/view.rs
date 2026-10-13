@@ -1648,6 +1648,17 @@ impl CodeEditorView {
         self.model.as_ref(ctx).buffer_version(ctx)
     }
 
+    /// Whether the content the buffer holds now has been laid out. That is the costly part of
+    /// showing a file, and it is done whether or not the editor is on screen.
+    pub fn has_laid_out_buffer(&self, ctx: &AppContext) -> bool {
+        let model = self.model.as_ref(ctx);
+        model
+            .render_state()
+            .as_ref(ctx)
+            .next_render_buffer_version()
+            .is_some_and(|laid_out| laid_out >= model.buffer_version(ctx))
+    }
+
     /// Append text to the end of the buffer regardless of cursor position.
     /// This is used for streaming content where we always want to append at the end,
     /// not at the current cursor position since the user may select text while it's streaming.

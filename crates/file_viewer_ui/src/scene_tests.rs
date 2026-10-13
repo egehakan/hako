@@ -438,3 +438,32 @@ fn a_large_text_file_shows_its_start_and_offers_the_editor() {
         assert_eq!(*asked.borrow(), 1);
     });
 }
+
+#[test]
+fn a_file_that_was_not_reopened_is_not_read_and_offers_to_open() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        // Not even there: a viewer of this kind does not look at the file.
+        let path = dir.path().join("gone.sql");
+        let harness = Harness::open(&mut app, path, ViewerKind::NotLoaded);
+
+        let message = harness.read(&app, |view| match &view.body {
+            Body::Message(message) => message.clone(),
+            Body::Loading(_)
+            | Body::Peek(_)
+            | Body::Image(_)
+            | Body::Pdf(_)
+            | Body::Table(_) => String::new(),
+        });
+        assert!(
+            message.contains("closed unexpectedly while loading it"),
+            "{message}"
+        );
+        assert_eq!(
+            harness.read(&app, |view| view.open_in_editor_label()),
+            Some("Open")
+        );
+        assert_eq!(harness.read(&app, |view| view.info_text()), "Not loaded");
+        harness.paint(&mut app);
+    });
+}
