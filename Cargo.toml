@@ -48,6 +48,7 @@ file_viewer_ui = { path = "crates/file_viewer_ui" }
 file_viewers = { path = "crates/file_viewers" }
 firebase = { path = "crates/firebase" }
 fuzzy_match = { path = "crates/fuzzy_match" }
+hako_remote = { path = "crates/hako_remote" }
 handlebars = { path = "crates/handlebars" }
 http_client = { path = "crates/http_client" }
 http_server = { path = "crates/http_server" }
