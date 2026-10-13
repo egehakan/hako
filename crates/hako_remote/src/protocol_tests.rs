@@ -142,6 +142,10 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("tab.activate"), Some(Method::TabActivate));
     assert_eq!(Method::from_name("tab.close"), Some(Method::TabClose));
     assert_eq!(
+        Method::from_name("folder.create"),
+        Some(Method::FolderCreate)
+    );
+    assert_eq!(
         Method::from_name("term.subscribe"),
         Some(Method::TermSubscribe)
     );
@@ -161,6 +165,7 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("fs.list"), Some(Method::FsList));
     assert_eq!(Method::from_name("fs.read"), Some(Method::FsRead));
     assert_eq!(Method::from_name("fs.write"), Some(Method::FsWrite));
+    assert_eq!(Method::from_name("fs.mkdir"), Some(Method::FsMkdir));
     assert_eq!(
         Method::from_name("fs.transfer_info"),
         Some(Method::FsTransferInfo)
@@ -434,6 +439,30 @@ fn reads_tab_create_params_with_any_field_left_out() {
             folder_id: Some("f1".to_owned()),
             directory: None,
         }
+    );
+}
+
+#[test]
+fn reads_folder_create_params_with_or_without_a_window() {
+    let frontmost: FolderCreateParams =
+        serde_json::from_value(json!({ "directory": "/work/site" })).unwrap();
+    let named: FolderCreateParams =
+        serde_json::from_value(json!({ "directory": "/work/site", "window_id": "3" })).unwrap();
+
+    assert_eq!(
+        frontmost,
+        FolderCreateParams {
+            directory: "/work/site".to_owned(),
+            window_id: None,
+        }
+    );
+    assert_eq!(named.window_id.as_deref(), Some("3"));
+    assert!(serde_json::from_value::<FolderCreateParams>(json!({})).is_err());
+    assert_eq!(
+        json!(FolderCreateResult {
+            folder_id: "12".to_owned()
+        }),
+        json!({ "folder_id": "12" })
     );
 }
 

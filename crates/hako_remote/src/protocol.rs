@@ -176,6 +176,7 @@ pub enum Method {
     TabCreate,
     TabActivate,
     TabClose,
+    FolderCreate,
     TermSubscribe,
     TermUnsubscribe,
     TermResize,
@@ -185,6 +186,7 @@ pub enum Method {
     FsList,
     FsRead,
     FsWrite,
+    FsMkdir,
     FsTransferInfo,
     FsDownload,
     FsUploadBegin,
@@ -209,6 +211,7 @@ impl Method {
             "tab.create" => Some(Self::TabCreate),
             "tab.activate" => Some(Self::TabActivate),
             "tab.close" => Some(Self::TabClose),
+            "folder.create" => Some(Self::FolderCreate),
             "term.subscribe" => Some(Self::TermSubscribe),
             "term.unsubscribe" => Some(Self::TermUnsubscribe),
             "term.resize" => Some(Self::TermResize),
@@ -218,6 +221,7 @@ impl Method {
             "fs.list" => Some(Self::FsList),
             "fs.read" => Some(Self::FsRead),
             "fs.write" => Some(Self::FsWrite),
+            "fs.mkdir" => Some(Self::FsMkdir),
             "fs.transfer_info" => Some(Self::FsTransferInfo),
             "fs.download" => Some(Self::FsDownload),
             "fs.upload_begin" => Some(Self::FsUploadBegin),
@@ -333,6 +337,18 @@ pub struct TabCreateParams {
 pub struct TabCreateResult {
     pub tab_id: String,
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderCreateParams {
+    pub directory: String,
+    #[serde(default)]
+    pub window_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderCreateResult {
+    pub folder_id: String,
 }
 
 /// Params of the methods that act on one tab.
