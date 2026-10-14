@@ -10109,11 +10109,9 @@ impl TerminalView {
     /// reports when the app requested them and arrow keys otherwise.
     fn alt_scroll(&mut self, lines_to_scroll: i32, point: Point, ctx: &mut ViewContext<Self>) {
         let report_mouse = !should_intercept_scroll(&self.model.lock(), ctx);
-        if !report_mouse {
-            // Arrow-key scrolling can change the alt-screen grid content, so
-            // any link highlights are no longer valid.
-            self.highlighted_link.invalidate();
-        }
+        // Scrolling can change the alt-screen grid content, whether the program reads it as
+        // arrow keys or as wheel reports, so any link highlights are no longer valid.
+        self.highlighted_link.invalidate();
 
         let bytes = {
             let model = self.model.lock();
@@ -19470,6 +19468,8 @@ impl TerminalView {
         }
 
         if self.highlighted_link.take(&mut self.model.lock()).is_some() {
+            // Lets the next hover find the link again without leaving the word first.
+            self.last_hover_fragment_boundary = None;
             ctx.reset_cursor();
             ctx.notify();
         }

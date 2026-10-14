@@ -397,13 +397,20 @@ impl super::TerminalView {
         // when necessary.
         let mut new_cursor_shape = None;
 
+        // The content under the pointer may have changed since it was last scanned, so the word
+        // it is on has to be scanned again.
+        if self.highlighted_link.is_invalidated() {
+            self.last_hover_fragment_boundary = None;
+        }
+
         // If a link is highlighted and it's invalidated or we're not hovering it, remove that
         // hover and look for a new one.
-        if self.highlighted_link.is_some() {
+        if self.highlighted_link.is_some() || self.highlighted_link.is_invalidated() {
             // Remove the current highlighted link because we are no longer
             // hovering over it.
-            self.highlighted_link.take(&mut self.model.lock());
-            new_cursor_shape = Some(Cursor::Arrow);
+            if self.highlighted_link.take(&mut self.model.lock()).is_some() {
+                new_cursor_shape = Some(Cursor::Arrow);
+            }
         }
 
         let (hyperlink_at_point, url_at_point, new_fragment_boundary) = {
