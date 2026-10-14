@@ -140,7 +140,11 @@ fn an_acknowledgement_covers_frames_already_let_go_and_never_one_not_sent() {
         acked.iter().map(|sent| sent.frame).collect::<Vec<_>>(),
         [3, 4]
     );
-    assert!(session.acknowledged(5, start + Duration::from_secs(2)).is_empty());
+    assert!(
+        session
+            .acknowledged(5, start + Duration::from_secs(2))
+            .is_empty()
+    );
     assert_eq!(session.last_ack, later);
 }
 
