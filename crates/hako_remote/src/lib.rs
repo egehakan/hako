@@ -3,9 +3,11 @@
 //! and the file, transfer and source control methods. Nothing here knows about the app's windows
 //! or views.
 
+pub mod archive;
 pub mod backoff;
 pub mod boundary;
 pub mod connection;
+pub mod extract;
 pub mod file_ops;
 pub mod files;
 pub mod git;
