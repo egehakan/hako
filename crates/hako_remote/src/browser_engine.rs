@@ -21,13 +21,14 @@ use tokio::time::{MissedTickBehavior, interval, sleep};
 
 use crate::browser::{
     AckParams, BrowserMethod, ClosedEvent, ClosedReason, ConsoleEvent, ConsoleLevel, CopyResult,
-    DialogClosedEvent, DialogEvent, DialogKind, DialogReplyParams, DownloadEvent, EVENT_CLOSED,
-    EVENT_CONSOLE, EVENT_DIALOG, EVENT_DIALOG_CLOSED, EVENT_DOWNLOAD, EVENT_FILE_CHOOSER,
-    EVENT_PICKER, EVENT_STATE, FileChooserEvent, FileChooserReplyParams, FrameHeader, ImageFormat,
-    InputParams, MAX_CONSOLE_CHARS, MAX_CONSOLE_MESSAGES, NavigateParams, OpenParams, OpenResult,
-    PagePicker, PickerEvent, PickerReplyParams, PreviewAddresses, ReloadParams, SessionParams,
-    TabParams, Viewport, ViewportParams, encode_browser_frame, is_local_url, network_status,
-    preview_url, resolve_url, safe_file_name, truncate_chars,
+    DialogClosedEvent, DialogEvent, DialogKind, DialogReplyParams, DownloadEvent, DownloadProgress,
+    DownloadState, DownloadStep, EVENT_CLOSED, EVENT_CONSOLE, EVENT_DIALOG, EVENT_DIALOG_CLOSED,
+    EVENT_DOWNLOAD, EVENT_FILE_CHOOSER, EVENT_PICKER, EVENT_STATE, FileChooserEvent,
+    FileChooserReplyParams, FrameHeader, ImageFormat, InputParams, MAX_CONSOLE_CHARS,
+    MAX_CONSOLE_MESSAGES, NavigateParams, OpenParams, OpenResult, PagePicker, PickerEvent,
+    PickerReplyParams, PreviewAddresses, ReloadParams, SessionParams, TabParams, Viewport,
+    ViewportParams, encode_browser_frame, is_local_url, network_status, preview_url, resolve_url,
+    safe_file_name, truncate_chars,
 };
 use crate::browser_sessions::{InFlight, Sessions, Tab};
 use crate::cdp::{Cdp, CdpEvent};
@@ -252,7 +253,8 @@ enum Internal {
     },
     DownloadSaved {
         guid: String,
-        path: PathBuf,
+        /// `None` when the file could not be kept.
+        path: Option<PathBuf>,
         size: i64,
     },
 }
@@ -292,6 +294,9 @@ struct Download {
     name: String,
     /// Where the file is kept once it has arrived.
     destination: PathBuf,
+    /// In bytes; -1 while not known.
+    size: i64,
+    progress: DownloadProgress,
 }
 
 struct Engine {
@@ -782,15 +787,19 @@ impl Engine {
                 let Some(download) = self.downloads.remove(&guid) else {
                     return;
                 };
+                let (path, state) = match path {
+                    Some(path) => (path, DownloadState::Done),
+                    None => (download.destination, DownloadState::Failed),
+                };
                 self.out.event(
                     EVENT_DOWNLOAD,
-                    &DownloadEvent {
-                        bid: download.bid,
-                        name: download.name,
-                        path: path.display().to_string(),
+                    &DownloadEvent::new(
+                        download.bid,
+                        download.name,
+                        path.display().to_string(),
                         size,
-                        done: true,
-                    },
+                        state,
+                    ),
                 );
             }
         }
@@ -1474,7 +1483,10 @@ impl Engine {
         self.stale.clear();
         self.pickers.clear();
         self.choosers.clear();
-        self.downloads.clear();
+        for (_, download) in self.downloads.drain() {
+            self.out
+                .event(EVENT_DOWNLOAD, &download.event(DownloadState::Failed));
+        }
         self.creating = 0;
         self.idle_since = None;
     }
@@ -1593,35 +1605,36 @@ impl Engine {
                     .join(DOWNLOADS_DIR)
                     .join(guid)
                     .join(&name);
-                self.out.event(
-                    EVENT_DOWNLOAD,
-                    &DownloadEvent {
-                        bid,
-                        name: name.clone(),
-                        path: destination.display().to_string(),
-                        size: -1,
-                        done: false,
-                    },
-                );
-                self.downloads.insert(
-                    guid.to_owned(),
-                    Download {
-                        bid,
-                        name,
-                        destination,
-                    },
-                );
+                let download = Download {
+                    bid,
+                    name,
+                    destination,
+                    size: -1,
+                    progress: DownloadProgress::new(Instant::now()),
+                };
+                self.out
+                    .event(EVENT_DOWNLOAD, &download.event(DownloadState::Progress));
+                self.downloads.insert(guid.to_owned(), download);
             }
             "Browser.downloadProgress" => {
                 let Some(guid) = params["guid"].as_str() else {
                     return;
                 };
-                let Some(download) = self.downloads.get(guid) else {
+                let Some(download) = self.downloads.get_mut(guid) else {
                     return;
                 };
-                let size = params["receivedBytes"].as_f64().unwrap_or(0.0) as i64;
-                match params["state"].as_str() {
-                    Some("completed") => {
+                if let Some(total) = params["totalBytes"].as_f64().filter(|total| *total > 0.0) {
+                    download.size = total as i64;
+                }
+                let received = params["receivedBytes"].as_f64().unwrap_or(0.0) as i64;
+                let state = params["state"].as_str().unwrap_or_default();
+                match download.progress.update(state, received, Instant::now()) {
+                    DownloadStep::Quiet => {}
+                    DownloadStep::Progress => {
+                        let event = download.event(DownloadState::Progress);
+                        self.out.event(EVENT_DOWNLOAD, &event);
+                    }
+                    DownloadStep::Completed => {
                         let file = params["filePath"]
                             .as_str()
                             .map(PathBuf::from)
@@ -1630,25 +1643,19 @@ impl Engine {
                         let internal = self.internal.clone();
                         let guid = guid.to_owned();
                         tokio::task::spawn_blocking(move || {
-                            let saved = destination
-                                .parent()
-                                .map_or(Ok(()), std::fs::create_dir_all)
-                                .and_then(|()| std::fs::rename(&file, &destination));
-                            let path = match saved {
-                                Ok(()) => destination,
-                                Err(error) => {
-                                    log::warn!("[Mac browser] could not move a download: {error}");
-                                    file
-                                }
-                            };
-                            let _ = internal.send(Internal::DownloadSaved { guid, path, size });
+                            let path = keep_download(file, destination);
+                            let _ = internal.send(Internal::DownloadSaved {
+                                guid,
+                                path,
+                                size: received,
+                            });
                         });
                     }
-                    // The protocol has no word for a download that never finished.
-                    Some("canceled") => {
+                    DownloadStep::Ended(state) => {
+                        let event = download.event(state);
+                        self.out.event(EVENT_DOWNLOAD, &event);
                         self.downloads.remove(guid);
                     }
-                    Some(_) | None => {}
                 }
             }
             _ => {}
@@ -2065,6 +2072,34 @@ async fn next_event(events: &mut Option<mpsc::UnboundedReceiver<CdpEvent>>) -> O
     match events {
         Some(events) => events.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+impl Download {
+    fn event(&self, state: DownloadState) -> DownloadEvent {
+        DownloadEvent::new(
+            self.bid,
+            self.name.clone(),
+            self.destination.display().to_string(),
+            self.size,
+            state,
+        )
+    }
+}
+
+/// Moves an arrived download to `destination`, or leaves it where Chrome wrote it when it cannot
+/// be moved. `None` when the file is in neither place.
+fn keep_download(file: PathBuf, destination: PathBuf) -> Option<PathBuf> {
+    let moved = destination
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::rename(&file, &destination));
+    match moved {
+        Ok(()) => Some(destination),
+        Err(error) => {
+            log::warn!("[Mac browser] could not move a download: {error}");
+            file.exists().then_some(file)
+        }
     }
 }
 

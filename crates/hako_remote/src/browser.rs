@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
@@ -434,7 +435,88 @@ pub struct DownloadEvent {
     pub path: String,
     /// In bytes; -1 while not known.
     pub size: i64,
+    /// Kept for apps that predate `state`.
     pub done: bool,
+    pub state: DownloadState,
+}
+
+impl DownloadEvent {
+    pub fn new(bid: u32, name: String, path: String, size: i64, state: DownloadState) -> Self {
+        Self {
+            bid,
+            name,
+            path,
+            size,
+            done: state == DownloadState::Done,
+            state,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadState {
+    Progress,
+    Done,
+    /// Stopped on the Mac.
+    Cancelled,
+    /// The transfer broke, or the file could not be kept.
+    Failed,
+}
+
+/// How often a download that is under way is reported.
+pub const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What one `Browser.downloadProgress` of a download calls for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadStep {
+    /// Nothing to send yet.
+    Quiet,
+    Progress,
+    /// The file has arrived and is to be kept.
+    Completed,
+    Ended(DownloadState),
+}
+
+/// Follows one download through Chrome's `Browser.downloadProgress` events.
+#[derive(Clone, Debug)]
+pub struct DownloadProgress {
+    received: i64,
+    /// Chrome starts a transfer over only after it broke, and reports one it then gives up on as
+    /// `canceled`, the same word as for one stopped on the Mac.
+    restarted: bool,
+    reported: Instant,
+}
+
+impl DownloadProgress {
+    /// A download whose start was reported at `now`.
+    pub fn new(now: Instant) -> Self {
+        Self {
+            received: 0,
+            restarted: false,
+            reported: now,
+        }
+    }
+
+    pub fn update(&mut self, chrome_state: &str, received: i64, now: Instant) -> DownloadStep {
+        match chrome_state {
+            "inProgress" => {
+                if received < self.received {
+                    self.restarted = true;
+                }
+                self.received = received;
+                if now.saturating_duration_since(self.reported) < DOWNLOAD_PROGRESS_INTERVAL {
+                    return DownloadStep::Quiet;
+                }
+                self.reported = now;
+                DownloadStep::Progress
+            }
+            "completed" => DownloadStep::Completed,
+            "canceled" if self.restarted => DownloadStep::Ended(DownloadState::Failed),
+            "canceled" => DownloadStep::Ended(DownloadState::Cancelled),
+            _ => DownloadStep::Quiet,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

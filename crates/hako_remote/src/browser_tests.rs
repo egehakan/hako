@@ -235,3 +235,74 @@ fn download_file_names() {
     assert_eq!(safe_file_name(".hidden"), "hidden");
     assert_eq!(safe_file_name("  "), "download");
 }
+
+#[test]
+fn download_progress_is_reported_at_most_once_a_second() {
+    let start = Instant::now();
+    let mut download = DownloadProgress::new(start);
+    let at = |millis| start + Duration::from_millis(millis);
+    assert_eq!(
+        download.update("inProgress", 10, at(500)),
+        DownloadStep::Quiet
+    );
+    assert_eq!(
+        download.update("inProgress", 20, at(1000)),
+        DownloadStep::Progress
+    );
+    assert_eq!(
+        download.update("inProgress", 30, at(1900)),
+        DownloadStep::Quiet
+    );
+    assert_eq!(
+        download.update("inProgress", 40, at(2000)),
+        DownloadStep::Progress
+    );
+    assert_eq!(
+        download.update("completed", 40, at(2100)),
+        DownloadStep::Completed
+    );
+}
+
+#[test]
+fn download_cancelled_or_failed() {
+    let start = Instant::now();
+    let mut cancelled = DownloadProgress::new(start);
+    cancelled.update("inProgress", 100, start);
+    assert_eq!(
+        cancelled.update("canceled", 0, start),
+        DownloadStep::Ended(DownloadState::Cancelled)
+    );
+
+    // Chrome starts a broken transfer over before it gives up on it.
+    let mut broken = DownloadProgress::new(start);
+    broken.update("inProgress", 100, start);
+    broken.update("inProgress", 0, start);
+    broken.update("inProgress", 100, start);
+    assert_eq!(
+        broken.update("canceled", 0, start),
+        DownloadStep::Ended(DownloadState::Failed)
+    );
+
+    assert_eq!(cancelled.update("paused", 0, start), DownloadStep::Quiet);
+}
+
+#[test]
+fn download_event_states() {
+    let event = |state| {
+        serde_json::to_value(DownloadEvent::new(
+            1,
+            "a.txt".into(),
+            "/d/a.txt".into(),
+            3,
+            state,
+        ))
+        .unwrap()
+    };
+    assert_eq!(
+        event(DownloadState::Done),
+        json!({ "bid": 1, "name": "a.txt", "path": "/d/a.txt", "size": 3, "done": true, "state": "done" })
+    );
+    assert_eq!(event(DownloadState::Progress)["done"], false);
+    assert_eq!(event(DownloadState::Cancelled)["state"], "cancelled");
+    assert_eq!(event(DownloadState::Failed)["state"], "failed");
+}
