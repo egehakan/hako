@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum TrashError {
+pub(crate) enum TrashError {
     #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
     #[error("{0}")]
     Platform(String),
@@ -19,7 +19,7 @@ pub(super) enum TrashError {
 /// Moves the file, folder or link at `path` to the trash and returns where the trash put it,
 /// from where it can be put back. A link is trashed itself, not what it points to.
 #[cfg(all(target_os = "macos", not(test)))]
-pub(super) fn move_to_trash(path: &Path) -> Result<PathBuf, TrashError> {
+pub(crate) fn move_to_trash(path: &Path) -> Result<PathBuf, TrashError> {
     use objc2_foundation::{NSFileManager, NSString, NSURL};
 
     let path = path.to_str().ok_or(TrashError::InvalidPath)?;
@@ -36,7 +36,7 @@ pub(super) fn move_to_trash(path: &Path) -> Result<PathBuf, TrashError> {
 
 /// There is no trash to move to on this platform; nothing is deleted.
 #[cfg(all(not(target_os = "macos"), not(test)))]
-pub(super) fn move_to_trash(_path: &Path) -> Result<PathBuf, TrashError> {
+pub(crate) fn move_to_trash(_path: &Path) -> Result<PathBuf, TrashError> {
     Err(TrashError::Unsupported)
 }
 
@@ -51,7 +51,7 @@ pub(super) const TEST_UNTRASHABLE_PREFIX: &str = "untrashable";
 /// Keeps tests out of the real trash: the item moves into [`TEST_TRASH_DIR`] next to it, under
 /// a name of its own when its name is taken there, as in the real trash.
 #[cfg(test)]
-pub(super) fn move_to_trash(path: &Path) -> Result<PathBuf, TrashError> {
+pub(crate) fn move_to_trash(path: &Path) -> Result<PathBuf, TrashError> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(TrashError::InvalidPath);
     };

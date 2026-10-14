@@ -1,7 +1,7 @@
 //! Remote access. While the setting is on, the app keeps a connection to the relay, answers what
 //! a remote client asks about its windows and tabs, says when they change, and lets the client
 //! add a folder, watch and use a terminal, read, change, download and upload files, make a
-//! directory, and use source control in the repositories under the folders. It also tells the
+//! directory, create, rename, copy, move, trash, zip and unzip files, and use source control in the repositories under the folders. It also tells the
 //! owner's devices when a terminal wants them, and keeps the computer awake while it is on.
 
 mod app_info;
@@ -18,16 +18,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use ::hako_remote::file_ops::{self, CopyKind, Deadline};
 use ::hako_remote::git::{Announce, ChangeLimiter, SourceControl, may_have_changed};
 use ::hako_remote::protocol::{
-    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FolderCreateParams, FsDownloadParams,
-    FsPathParams, FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams,
-    GitChanged, GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitRepoParams,
-    GitShowParams, GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
+    EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FolderCreateParams, FsArchiveParams,
+    FsCopyParams, FsDownloadParams, FsExtractParams, FsPathParams, FsRenameParams, FsTrashParams,
+    FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams, GitChanged,
+    GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitRepoParams, GitShowParams,
+    GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
 use ::hako_remote::{
-    Connection, ConnectionConfig, ConnectionState, Incoming, Responder, files, uploads_area,
+    Connection, ConnectionConfig, ConnectionState, Incoming, Responder, archive, extract, files,
+    uploads_area,
 };
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -42,6 +45,7 @@ use self::keep_awake::KeepAwake;
 pub(crate) use self::notifications::FinishedCommand;
 use self::notifications::Notifications;
 use self::terminal::{ECHO_DELAY, PUMP_INTERVAL, Terminals};
+use crate::code::file_tree::trash::move_to_trash;
 use crate::settings::RemoteAccessSettings;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 
@@ -64,6 +68,9 @@ const SHELL_PATH_WAIT: Duration = Duration::from_secs(10);
 /// How often the uploads area is cleaned while the app runs, which keeps it at least daily even
 /// when the computer's sleep holds the timer back.
 const UPLOADS_AREA_CLEAN_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How often the archives that have been kept long enough are looked for.
+const ARCHIVES_CLEAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteAccessStatus {
@@ -150,8 +157,14 @@ impl HakoRemote {
         };
         let transfers = me.transfers.clone();
         ctx.spawn(
-            async move { transfers.start(SystemTime::now(), &uploads_area::today()) },
-            |me, (), ctx| me.schedule_uploads_area_clean(ctx),
+            async move {
+                transfers.start(SystemTime::now(), &uploads_area::today());
+                archive::clean(&Self::archives_area(), SystemTime::now(), Duration::ZERO);
+            },
+            |me, (), ctx| {
+                me.schedule_uploads_area_clean(ctx);
+                Self::schedule_archives_clean(ctx);
+            },
         );
         me.apply_settings(ctx);
         me
@@ -171,6 +184,21 @@ impl HakoRemote {
             },
             |me, (), ctx| me.schedule_uploads_area_clean(ctx),
         );
+    }
+
+    fn schedule_archives_clean(ctx: &mut ModelContext<Self>) {
+        ctx.spawn(
+            async move {
+                Timer::after(ARCHIVES_CLEAN_INTERVAL).await;
+                archive::clean(&Self::archives_area(), SystemTime::now(), archive::KEPT_FOR);
+            },
+            |_, (), ctx| Self::schedule_archives_clean(ctx),
+        );
+    }
+
+    /// Where folders are zipped to be downloaded.
+    fn archives_area() -> PathBuf {
+        warp_core::paths::data_dir().join(archive::ARCHIVES_AREA)
     }
 
     pub fn status(&self) -> &RemoteAccessStatus {
@@ -424,6 +452,86 @@ impl HakoRemote {
                     |params: FsPathParams| files::mkdir(&params.path).map(|()| json!({})),
                 );
             }
+            Method::FsStat => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsPathParams| file_ops::stat(&params.path),
+                );
+            }
+            Method::FsCreateFile => {
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    |params: FsPathParams| file_ops::create_file(&params.path),
+                );
+            }
+            Method::FsRename => {
+                let home = dirs::home_dir().unwrap_or_default();
+                return Self::answer_in_background(
+                    params,
+                    responder,
+                    ctx,
+                    move |params: FsRenameParams| file_ops::rename(&params, &home),
+                );
+            }
+            Method::FsCopy | Method::FsMove => {
+                let kind = if known_method == Method::FsCopy {
+                    CopyKind::Copy
+                } else {
+                    CopyKind::Move
+                };
+                let deadline = Deadline::from_now();
+                return Self::answer_on_own_thread(
+                    params,
+                    responder,
+                    ctx,
+                    move |params: FsCopyParams| file_ops::copy_or_move(&params, kind, &deadline),
+                );
+            }
+            Method::FsTrash => {
+                let home = dirs::home_dir().unwrap_or_default();
+                let folders = handlers::folder_directories(ctx);
+                return Self::answer_on_own_thread(
+                    params,
+                    responder,
+                    ctx,
+                    move |params: FsTrashParams| {
+                        file_ops::trash(&params, &home, &folders, |path| {
+                            move_to_trash(path).map_err(|error| error.to_string())
+                        })
+                    },
+                );
+            }
+            Method::FsArchive => {
+                let deadline = Deadline::from_now();
+                return Self::answer_on_own_thread(
+                    params,
+                    responder,
+                    ctx,
+                    move |params: FsArchiveParams| {
+                        archive::create(
+                            &params,
+                            &Self::archives_area(),
+                            transfers::MAX_BYTES,
+                            &deadline,
+                        )
+                    },
+                );
+            }
+            Method::FsExtract => {
+                let deadline = Deadline::from_now();
+                return Self::answer_on_own_thread(
+                    params,
+                    responder,
+                    ctx,
+                    move |params: FsExtractParams| {
+                        extract::extract(&params, extract::LIMITS, &deadline)
+                    },
+                );
+            }
             Method::FsTransferInfo => to_json(&transfers::info()),
             Method::FsDownload => {
                 return Self::answer_in_background(
@@ -623,6 +731,32 @@ impl HakoRemote {
                     .and_then(work)
                     .and_then(|result| to_json(&result));
                 responder.respond(outcome);
+            },
+            |_, (), _| {},
+        );
+    }
+
+    /// Answers a request with what `work` makes of its params, on a thread of its own: the work
+    /// can take minutes, which must hold up neither the app's main thread nor other requests.
+    fn answer_on_own_thread<P, R, W>(
+        params: Value,
+        responder: Responder,
+        ctx: &mut ModelContext<Self>,
+        work: W,
+    ) where
+        P: DeserializeOwned + Send + 'static,
+        R: Serialize + Send + 'static,
+        W: FnOnce(P) -> Result<R, RpcError> + Send + 'static,
+    {
+        ctx.spawn(
+            async move {
+                let outcome = match parse(params) {
+                    Ok(params) => file_ops::on_own_thread(move || work(params))
+                        .await
+                        .and_then(|outcome| outcome),
+                    Err(error) => Err(error),
+                };
+                responder.respond(outcome.and_then(|result| to_json(&result)));
             },
             |_, (), _| {},
         );
