@@ -1,11 +1,17 @@
 //! The desktop side of Hako remote access: the wire protocol shared with the relay, the
 //! outbound connection that carries it, the bookkeeping of a terminal's output on its way out,
-//! and the file, transfer and source control methods. Nothing here knows about the app's windows
-//! or views.
+//! the file, transfer and source control methods, and the Mac browser. Nothing here knows about
+//! the app's windows or views.
 
 pub mod archive;
 pub mod backoff;
 pub mod boundary;
+pub mod browser;
+mod browser_engine;
+pub mod browser_input;
+pub mod browser_sessions;
+pub mod cdp;
+pub mod chrome;
 pub mod connection;
 pub mod extract;
 pub mod file_ops;
@@ -31,6 +37,7 @@ pub mod transfers;
 pub mod upload_names;
 pub mod uploads_area;
 
+pub use browser_engine::BrowserConfig;
 pub use connection::{
     ConfigError, Connection, ConnectionConfig, ConnectionState, Incoming, Responder, agent_endpoint,
 };

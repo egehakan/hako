@@ -6,6 +6,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 
 use super::*;
+use crate::browser::PreviewAddresses;
 use crate::protocol::EVENT_WORKSPACE_CHANGED;
 
 #[test]
@@ -117,7 +118,13 @@ fn connects_with_the_key_then_answers_a_request_and_sends_an_event() {
     relay.spawn(relay_once(listener, request, seen_sender));
 
     let config = ConnectionConfig::new(&format!("ws://127.0.0.1:{port}"), "secret-key").unwrap();
-    let (connection, incoming) = Connection::start(config, PreviewPorts::default()).unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let browser = BrowserConfig {
+        data_dir: data_dir.path().to_owned(),
+        previews: PreviewAddresses::default(),
+    };
+    let (connection, incoming) =
+        Connection::start(config, PreviewPorts::default(), browser).unwrap();
 
     assert!(matches!(
         incoming.recv_blocking().unwrap(),

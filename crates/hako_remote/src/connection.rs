@@ -24,6 +24,10 @@ use tokio_rustls::TlsConnector;
 use url::{Host, Url};
 
 use crate::backoff::Backoff;
+use crate::browser::{BrowserMethod, METHOD_PREFIX};
+use crate::browser_engine::{
+    self, BROWSER_QUEUE, BrowserConfig, BrowserGuard, BrowserHandle, Command as BrowserCommand, Out,
+};
 use crate::output_frame::{OutputFrame, SessionIdLengthError};
 use crate::protocol::{
     CLOSE_REPLACED, Frame, IDLE_TIMEOUT, MAX_FRAME_BYTES, PING_INTERVAL, REPLACED_RECONNECT_DELAY,
@@ -179,16 +183,18 @@ pub struct Connection {
     epoch: Arc<AtomicU64>,
     /// Bytes of terminal output queued and not yet handed to the socket.
     output_backlog: Arc<AtomicUsize>,
+    browser: BrowserGuard,
     runtime: Option<Runtime>,
 }
 
 impl Connection {
     /// Starts connecting on a thread of its own. The receiver yields state changes, requests and
-    /// notifications. Byte streams the relay asks for are opened to `ports` on that thread, out
-    /// of the app's way.
+    /// notifications. Byte streams the relay asks for are opened to `ports`, and the Mac browser
+    /// is run, on that thread, out of the app's way.
     pub fn start(
         config: ConnectionConfig,
         ports: PreviewPorts,
+        browser: BrowserConfig,
     ) -> io::Result<(Self, async_channel::Receiver<Incoming>)> {
         let runtime = Builder::new_multi_thread()
             .worker_threads(1)
@@ -200,6 +206,15 @@ impl Connection {
         let (incoming_sender, incoming) = async_channel::unbounded();
         let epoch = Arc::new(AtomicU64::new(0));
         let output_backlog = Arc::new(AtomicUsize::new(0));
+        let (browser_queue, browser_outgoing) = mpsc::channel(BROWSER_QUEUE);
+        let (browser_handle, browser_guard, engine) = browser_engine::start(
+            browser,
+            Out {
+                queue: browser_queue,
+                epoch: epoch.clone(),
+            },
+        );
+        runtime.spawn(engine);
         runtime.spawn(run(
             config,
             ports,
@@ -210,12 +225,17 @@ impl Connection {
                 output_backlog: output_backlog.clone(),
             },
             queue.clone(),
+            Browser {
+                handle: browser_handle,
+                outgoing: browser_outgoing,
+            },
         ));
         Ok((
             Self {
                 queue,
                 epoch,
                 output_backlog,
+                browser: browser_guard,
                 runtime: Some(runtime),
             },
             incoming,
@@ -246,6 +266,11 @@ impl Connection {
         self.output_backlog.load(Ordering::Acquire)
     }
 
+    /// Quits the Mac browser's Chrome, as the app quits.
+    pub fn quit_browser(&self) {
+        self.browser.quit();
+    }
+
     /// Returns whether the message was queued.
     fn send(&self, message: Message) -> bool {
         let epoch = self.epoch.load(Ordering::Acquire);
@@ -260,6 +285,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        self.browser.quit();
         if let Some(runtime) = self.runtime.take() {
             // Dropping a runtime waits for its tasks, which would stall the caller's thread.
             runtime.shutdown_background();
@@ -273,6 +299,13 @@ type Socket = WebSocketStream<ConnectStream>;
 struct Outbox {
     queue: mpsc::UnboundedReceiver<Outgoing>,
     output_backlog: Arc<AtomicUsize>,
+}
+
+/// The Mac browser, as the connection sees it.
+struct Browser {
+    handle: BrowserHandle,
+    /// Its pictures and events, which go after everything else.
+    outgoing: mpsc::Receiver<Message>,
 }
 
 impl Outbox {
@@ -308,6 +341,7 @@ async fn run(
     incoming: async_channel::Sender<Incoming>,
     mut outgoing: Outbox,
     queue: mpsc::UnboundedSender<Outgoing>,
+    mut browser: Browser,
 ) {
     let mut backoff = Backoff::new();
     let mut connections = 0;
@@ -328,11 +362,22 @@ async fn run(
                     queue: queue.clone(),
                 };
                 let end = if report(&incoming, ConnectionState::Connected).await {
-                    serve(socket, sender, &ports, &incoming, &mut outgoing).await
+                    serve(
+                        socket,
+                        sender,
+                        &ports,
+                        &mut browser,
+                        &incoming,
+                        &mut outgoing,
+                    )
+                    .await
                 } else {
                     End::Stopped
                 };
                 epoch.store(0, Ordering::Release);
+                // The relay forgets the browser sessions with the connection.
+                browser.handle.send(BrowserCommand::Disconnected);
+                while browser.outgoing.try_recv().is_ok() {}
                 match end {
                     End::Replaced => (
                         "Another copy of Hako connected with the same access key".to_owned(),
@@ -406,6 +451,7 @@ async fn serve(
     socket: Socket,
     sender: OutgoingSender,
     ports: &PreviewPorts,
+    browser: &mut Browser,
     incoming: &async_channel::Sender<Incoming>,
     outgoing: &mut Outbox,
 ) -> End {
@@ -432,7 +478,7 @@ async fn serve(
                 idle_deadline = Instant::now() + IDLE_TIMEOUT;
                 match message {
                     Message::Text(text) => {
-                        if !dispatch(&text, &sender, incoming, &mut streams).await {
+                        if !dispatch(&text, &sender, &browser.handle, incoming, &mut streams).await {
                             return End::Stopped;
                         }
                     }
@@ -453,6 +499,7 @@ async fn serve(
                 return End::Lost("The server has been silent for a minute".to_owned());
             }
             Some(message) = stream_queue.recv() => message,
+            Some(message) = browser.outgoing.recv() => message,
         };
         // A peer that stopped reading would otherwise block here and keep the idle check, which
         // only runs between sends, from ever firing.
@@ -477,6 +524,7 @@ fn closed(frame: Option<CloseFrame<'_>>) -> End {
 async fn dispatch(
     text: &str,
     sender: &OutgoingSender,
+    browser: &BrowserHandle,
     incoming: &async_channel::Sender<Incoming>,
     streams: &mut Streams,
 ) -> bool {
@@ -488,6 +536,28 @@ async fn dispatch(
         }
     };
     let item = match frame {
+        Frame::Request { id, method, params } if method.starts_with(METHOD_PREFIX) => {
+            let responder = Responder {
+                id,
+                sender: sender.clone(),
+            };
+            match BrowserMethod::from_name(&method) {
+                Some(method) => browser.send(BrowserCommand::Request {
+                    method,
+                    params,
+                    responder,
+                }),
+                None => responder.respond(Err(RpcError::not_supported(&method))),
+            }
+            return true;
+        }
+        Frame::Notification { method, params } if method.starts_with(METHOD_PREFIX) => {
+            match BrowserMethod::from_name(&method) {
+                Some(method) => browser.send(BrowserCommand::Notification { method, params }),
+                None => log::debug!("[Remote access] ignoring the notification {method}"),
+            }
+            return true;
+        }
         Frame::Request { id, method, params } => Incoming::Request {
             method,
             params,

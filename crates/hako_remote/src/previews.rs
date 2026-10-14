@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::browser::PreviewAddress;
+
 /// Under the data directory.
 pub const PREVIEWS_DIR: &str = "previews";
 pub const REQUESTS_DIR: &str = "requests";
@@ -615,6 +617,21 @@ impl Registry {
                 let preview = &entry.stored.preview;
                 let ports = preview.ports.iter().map(|port| port.port).collect();
                 (preview.id.clone(), ports)
+            })
+            .collect()
+    }
+
+    /// Where every preview's first page is, for the Mac browser, which opens stopped ones too.
+    pub fn addresses(&self) -> HashMap<String, PreviewAddress> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                let preview = &entry.stored.preview;
+                let address = PreviewAddress {
+                    port: preview.port,
+                    url_path: preview.url_path.clone(),
+                };
+                (preview.id.clone(), address)
             })
             .collect()
     }
