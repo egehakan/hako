@@ -69,8 +69,8 @@ pub fn extract(
         }
     }
 
-    let (name, directory) = new_directory(destination, &stem)
-        .map_err(|error| failure(&error, &params.destination))?;
+    let (name, directory) =
+        new_directory(destination, &stem).map_err(|error| failure(&error, &params.destination))?;
     match unpack(&mut archive, &plan, &directory, limits, deadline) {
         Ok(entries) => Ok(FsExtract {
             path: joined(&params.destination, &name),

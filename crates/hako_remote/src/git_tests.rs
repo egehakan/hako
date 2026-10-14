@@ -444,12 +444,18 @@ async fn finishes_a_merge_with_a_commit_once_no_marker_remains() {
     let refused = fixture.commit(&repo, &state.message).await.unwrap_err();
     assert_eq!(refused.code, ErrorCode::Conflict);
     assert!(refused.message.contains("README.md"));
-    assert_eq!(fixture.status(&repo).await.merge.map(|m| m.conflicts), Some(vec!["README.md".to_owned()]));
+    assert_eq!(
+        fixture.status(&repo).await.merge.map(|m| m.conflicts),
+        Some(vec!["README.md".to_owned()])
+    );
 
     write(&repo, "README.md", "both\n");
     let committed = fixture.commit(&repo, &state.message).await.unwrap();
     assert_eq!(committed.repo.operation, None);
-    assert_eq!(git(&repo, &["rev-parse", "HEAD^2"]), git(&repo, &["rev-parse", "feature"]));
+    assert_eq!(
+        git(&repo, &["rev-parse", "HEAD^2"]),
+        git(&repo, &["rev-parse", "feature"])
+    );
     assert_eq!(fixture.status(&repo).await.merge, None);
 }
 

@@ -25,8 +25,7 @@ use ::hako_remote::protocol::{
     FsCopyParams, FsDownloadParams, FsExtractParams, FsPathParams, FsRenameParams, FsTrashParams,
     FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams, GitChanged,
     GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitMergeParams, GitRepoParams,
-    GitShowParams,
-    GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
+    GitShowParams, GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
 use ::hako_remote::{

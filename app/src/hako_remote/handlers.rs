@@ -2,14 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
+use ::hako_remote::files;
 use ::hako_remote::protocol::{
-    FolderCreateParams, FolderCreateResult, FolderRenameParams, FsRoots, RpcError,
-    TabCreateParams, TabCreateResult, TabParams, TabRenameParams, TerminalColors, Theme,
+    FolderCreateParams, FolderCreateResult, FolderRenameParams, FsRoots, RpcError, TabCreateParams,
+    TabCreateResult, TabParams, TabRenameParams, TerminalColors, Theme,
 };
 use ::hako_remote::rename::{
     MAX_FOLDER_NAME_CHARS, MAX_TAB_TITLE_CHARS, chosen_name, well_formed_tab_id,
 };
-use ::hako_remote::files;
 use pathfinder_color::ColorU;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

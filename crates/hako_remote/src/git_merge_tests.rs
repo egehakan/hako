@@ -143,7 +143,11 @@ async fn stops_at_conflicts_and_leaves_the_merge_unfinished() {
 #[tokio::test]
 async fn refuses_when_local_changes_would_be_overwritten() {
     let fixture = Fixture::new();
-    write(&fixture.app, "shared.txt", "an edit that is not committed\n");
+    write(
+        &fixture.app,
+        "shared.txt",
+        "an edit that is not committed\n",
+    );
     let before = fixture.id("HEAD");
 
     let refused = fixture
@@ -215,13 +219,19 @@ async fn aborts_a_merge_only_while_there_is_one() {
     assert_eq!(aborted.head, before);
     assert!(!fixture.is_merging());
     assert_eq!(git(&fixture.app, &["status", "--porcelain"]), "");
-    assert_eq!(merge_state(fixture.app(), &fixture.git).await.unwrap(), None);
+    assert_eq!(
+        merge_state(fixture.app(), &fixture.git).await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
 async fn refuses_to_commit_a_merge_while_markers_remain() {
     let fixture = Fixture::new();
-    assert_eq!(check_conflict_markers(fixture.app(), &fixture.git).await, Ok(()));
+    assert_eq!(
+        check_conflict_markers(fixture.app(), &fixture.git).await,
+        Ok(())
+    );
     fixture.diverge();
     fixture.merge("feature", GitMergeKind::Local).await.unwrap();
 
@@ -232,7 +242,10 @@ async fn refuses_to_commit_a_merge_while_markers_remain() {
     assert_eq!(refused.message, "Conflict markers remain in:\nshared.txt");
 
     write(&fixture.app, "shared.txt", "one\nTWO from both\nthree\n");
-    assert_eq!(check_conflict_markers(fixture.app(), &fixture.git).await, Ok(()));
+    assert_eq!(
+        check_conflict_markers(fixture.app(), &fixture.git).await,
+        Ok(())
+    );
 }
 
 #[test]
@@ -263,7 +276,10 @@ fn names_at_most_twenty_paths() {
 fn reads_the_branch_and_message_git_prepared() {
     let prepared = "Merge branch 'feature' into main\n\n# Conflicts:\n#\tshared.txt\n";
     assert_eq!(merged_branch(prepared).as_deref(), Some("feature"));
-    assert_eq!(without_comments(prepared), "Merge branch 'feature' into main");
+    assert_eq!(
+        without_comments(prepared),
+        "Merge branch 'feature' into main"
+    );
     assert_eq!(
         merged_branch("Merge remote-tracking branch 'origin/x'").as_deref(),
         Some("origin/x")
