@@ -10,6 +10,8 @@ mod handlers;
 mod keep_awake;
 mod notifications;
 mod previews;
+#[cfg(unix)]
+mod quit_signals;
 mod snapshot;
 mod terminal;
 mod terminal_snapshot;
@@ -173,6 +175,8 @@ impl HakoRemote {
         );
         me.apply_settings(ctx);
         Self::start_previews(ctx);
+        #[cfg(unix)]
+        quit_signals::quit_on_signals(ctx);
         me
     }
 
