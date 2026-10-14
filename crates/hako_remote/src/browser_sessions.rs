@@ -69,6 +69,7 @@ pub struct Session {
     tabs: Vec<Tab>,
     active: Option<String>,
     next_frame: u32,
+    newest_sent: Option<u32>,
     in_flight: VecDeque<InFlight>,
     /// When the client last acknowledged a picture, or opened the session.
     pub last_ack: Instant,
@@ -86,6 +87,7 @@ impl Session {
             tabs: Vec::new(),
             active: None,
             next_frame: 1,
+            newest_sent: None,
             in_flight: VecDeque::new(),
             last_ack: now,
             last_frame: now,
@@ -118,6 +120,7 @@ impl Session {
     pub fn frame_sent(&mut self, devtools_session: &str, screencast: i64, now: Instant) -> u32 {
         let frame = self.next_frame;
         self.next_frame = self.next_frame.wrapping_add(1).max(1);
+        self.newest_sent = Some(frame);
         self.in_flight.push_back(InFlight {
             frame,
             devtools_session: devtools_session.to_owned(),
@@ -129,13 +132,22 @@ impl Session {
     }
 
     /// Takes the pictures that the client's acknowledgement of `frame` covers: it and every one
-    /// sent before it.
+    /// sent before it. A client acknowledges a picture it skipped only with the next one it
+    /// draws, so a number already moved past still counts; one never sent is ignored.
     pub fn acknowledged(&mut self, frame: u32, now: Instant) -> Vec<InFlight> {
-        let Some(position) = self.in_flight.iter().position(|sent| sent.frame == frame) else {
+        let Some(newest) = self.newest_sent else {
             return Vec::new();
         };
+        if !not_after(frame, newest) {
+            return Vec::new();
+        }
         self.last_ack = now;
-        self.in_flight.drain(..=position).collect()
+        let covered = self
+            .in_flight
+            .iter()
+            .take_while(|sent| not_after(sent.frame, frame))
+            .count();
+        self.in_flight.drain(..covered).collect()
     }
 
     /// Takes every picture in flight, as when they can no longer reach the client.
@@ -182,6 +194,11 @@ impl Session {
             tabs: self.tab_infos(),
         }
     }
+}
+
+/// Whether frame number `a` was sent no later than `b`, numbers having wrapped around.
+fn not_after(a: u32, b: u32) -> bool {
+    b.wrapping_sub(a) < 1 << 31
 }
 
 /// What closing a tab did to its session.

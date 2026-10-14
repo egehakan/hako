@@ -119,6 +119,39 @@ fn frames_are_numbered_and_acknowledged_in_order() {
 }
 
 #[test]
+fn an_acknowledgement_covers_frames_already_let_go_and_never_one_not_sent() {
+    let mut sessions = Sessions::default();
+    let start = Instant::now();
+    let bid = sessions.open(viewport(), start);
+    let session = sessions.get_mut(bid).unwrap();
+    let later = start + Duration::from_secs(1);
+    assert!(session.acknowledged(1, later).is_empty());
+    assert_eq!(session.last_ack, start);
+
+    for screencast in 10..14 {
+        session.frame_sent("S", screencast, start);
+    }
+    // Frames 1 and 2 were let go when the tab changed; the client skipped 3 and drew 4.
+    session.in_flight.drain(..2);
+    assert!(session.acknowledged(2, later).is_empty());
+    assert_eq!(session.last_ack, later);
+    let acked = session.acknowledged(4, later);
+    assert_eq!(
+        acked.iter().map(|sent| sent.frame).collect::<Vec<_>>(),
+        [3, 4]
+    );
+    assert!(session.acknowledged(5, start + Duration::from_secs(2)).is_empty());
+    assert_eq!(session.last_ack, later);
+}
+
+#[test]
+fn frame_numbers_compare_across_wrapping() {
+    assert!(not_after(u32::MAX, 1));
+    assert!(!not_after(1, u32::MAX));
+    assert!(not_after(7, 7));
+}
+
+#[test]
 fn quiet_sessions_and_the_last_used() {
     let mut sessions = Sessions::default();
     let start = Instant::now();
