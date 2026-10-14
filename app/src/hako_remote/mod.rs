@@ -3,7 +3,7 @@
 //! add a folder, watch and use a terminal, read, change, download and upload files, make a
 //! directory, create, rename, copy, move, trash, zip and unzip files, and use source control in the repositories under the folders. It also tells the
 //! owner's devices when a terminal wants them, and keeps the computer awake while it is on.
-//! Previews run whether or not it is on.
+//! Previews run whether or not it is on; the Mac browser that shows them runs on the connection.
 
 mod app_info;
 mod handlers;
@@ -31,8 +31,8 @@ use ::hako_remote::protocol::{
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
 use ::hako_remote::{
-    Connection, ConnectionConfig, ConnectionState, Incoming, Responder, archive, extract, files,
-    uploads_area,
+    BrowserConfig, Connection, ConnectionConfig, ConnectionState, Incoming, Responder, archive,
+    extract, files, uploads_area,
 };
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -181,6 +181,13 @@ impl HakoRemote {
         self.transfers.abandon_all();
     }
 
+    /// Quits the Mac browser's Chrome, as the app quits.
+    pub fn quit_browser(&self) {
+        if let Some(connection) = &self.connection {
+            connection.quit_browser();
+        }
+    }
+
     fn schedule_uploads_area_clean(&self, ctx: &mut ModelContext<Self>) {
         let transfers = self.transfers.clone();
         ctx.spawn(
@@ -268,8 +275,12 @@ impl HakoRemote {
     ) -> Result<(), String> {
         let config =
             ConnectionConfig::new(server_address, key).map_err(|error| error.to_string())?;
-        let (connection, incoming) = Connection::start(config, self.previews.ports.clone())
-            .map_err(|error| {
+        let browser = BrowserConfig {
+            data_dir: warp_core::paths::data_dir(),
+            previews: self.previews.addresses.clone(),
+        };
+        let (connection, incoming) =
+            Connection::start(config, self.previews.ports.clone(), browser).map_err(|error| {
                 log::error!("[Remote access] could not start the connection thread: {error}");
                 "The connection could not be started".to_owned()
             })?;

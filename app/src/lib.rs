@@ -2762,6 +2762,7 @@ pub(crate) fn app_callbacks(
             #[cfg(not(target_family = "wasm"))]
             if ctx.has_singleton_model::<hako_remote::HakoRemote>() {
                 hako_remote::HakoRemote::as_ref(ctx).abandon_uploads();
+                hako_remote::HakoRemote::as_ref(ctx).quit_browser();
             }
 
             NotebookManager::handle(ctx).update(ctx, |manager, ctx| {

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ::hako_remote::browser::PreviewAddresses;
 use ::hako_remote::file_ops;
 use ::hako_remote::notify::one_line;
 use ::hako_remote::previews::{
@@ -45,6 +46,8 @@ pub(super) struct Previews {
     loaded: bool,
     /// Shared with the connection, which opens streams to these ports.
     pub(super) ports: PreviewPorts,
+    /// Shared with the Mac browser, which opens these pages.
+    pub(super) addresses: PreviewAddresses,
     /// The terminal of each preview's tab, by preview id, to tell whose command has ended.
     terminals: HashMap<String, EntityId>,
     /// Previews whose tab is the first one of a window that is opening.
@@ -437,6 +440,9 @@ impl HakoRemote {
             return;
         }
         self.previews.ports.set(self.previews.registry.open_ports());
+        self.previews
+            .addresses
+            .set(self.previews.registry.addresses());
         self.write_previews_state(ctx);
         self.announce_previews(ctx);
     }
