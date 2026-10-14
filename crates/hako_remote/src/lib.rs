@@ -22,6 +22,7 @@ mod git_test_support;
 pub mod notify;
 pub mod output_frame;
 pub mod output_stream;
+pub mod previews;
 pub mod prompt_lines;
 pub mod protocol;
 pub mod rename;

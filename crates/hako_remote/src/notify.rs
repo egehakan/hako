@@ -68,6 +68,7 @@ impl Notice {
             body: body(self.detail.as_deref(), place),
             session_id,
             tab_id,
+            preview_id: None,
         }
     }
 }

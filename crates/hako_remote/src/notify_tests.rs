@@ -25,6 +25,7 @@ fn notify(session_id: &str, title: &str) -> Notify {
         body: String::new(),
         session_id: session_id.to_owned(),
         tab_id: None,
+        preview_id: None,
     }
 }
 
