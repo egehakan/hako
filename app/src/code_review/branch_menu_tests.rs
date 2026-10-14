@@ -1,3 +1,7 @@
+use pathfinder_geometry::vector::vec2f;
+use warpui::platform::WindowStyle;
+use warpui::{App, Presenter, WindowInvalidation};
+
 use super::*;
 
 const NOW: i64 = 2_000_000;
@@ -272,4 +276,103 @@ fn a_branch_held_by_another_worktree_says_where_it_is_checked_out() {
     };
 
     assert_eq!(branch_detail(&held, NOW), "checked out in /work/app-hotfix");
+}
+
+/// The list of a menu with one branch that can be merged on the second and third rows, the
+/// third one focused.
+struct MergeRowsView {
+    mouse_states: [MouseStateHandle; 2],
+    list_state: UniformListState,
+}
+
+impl Entity for MergeRowsView {
+    type Event = ();
+}
+
+impl TypedActionView for MergeRowsView {
+    type Action = ();
+}
+
+impl View for MergeRowsView {
+    fn ui_name() -> &'static str {
+        "MergeRowsView"
+    }
+
+    fn render(&self, _: &AppContext) -> Box<dyn Element> {
+        let item = |label: &str, merge_button| DisplayedRow::Item {
+            label: label.to_owned(),
+            detail: Some("3 days ago".to_owned()),
+            highlighted: Vec::new(),
+            mark: RowMark::None,
+            is_enabled: true,
+            is_focusable: true,
+            merge_button,
+        };
+        let merge_button = |mouse_state: &MouseStateHandle| {
+            Some(MergeButton {
+                label: MERGE_LABEL.to_owned(),
+                focused_label: "Merge into main".to_owned(),
+                mouse_state: mouse_state.clone(),
+            })
+        };
+        let rows = vec![
+            DisplayedRow::Item {
+                label: NEW_BRANCH_LABEL.to_owned(),
+                detail: None,
+                highlighted: Vec::new(),
+                mark: RowMark::Plus,
+                is_enabled: true,
+                is_focusable: true,
+                merge_button: None,
+            },
+            item("feature/login", merge_button(&self.mouse_states[0])),
+            item("origin/release", merge_button(&self.mouse_states[1])),
+        ];
+        ConstrainedBox::new(row_list(rows, Some(2), self.list_state.clone()).finish())
+            .with_width(MENU_WIDTH)
+            .with_height(MENU_MAX_LIST_HEIGHT)
+            .finish()
+    }
+}
+
+#[test]
+fn merge_buttons_are_tall_enough_to_draw_their_label() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (window_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| MergeRowsView {
+            mouse_states: Default::default(),
+            list_state: Default::default(),
+        });
+        let root_view_id = app.root_view_id(window_id).expect("a root view");
+        let mut presenter = Presenter::new(window_id);
+
+        app.update(|ctx| {
+            presenter.invalidate(
+                WindowInvalidation {
+                    updated: [root_view_id].into_iter().collect(),
+                    ..Default::default()
+                },
+                ctx,
+            );
+            let scene = presenter.build_scene(vec2f(MENU_WIDTH, MENU_MAX_LIST_HEIGHT), 1., None, ctx);
+
+            let appearance = Appearance::as_ref(ctx);
+            let theme = appearance.theme();
+            let label_height = appearance.ui_font_size() * DETAIL_FONT_SIZE_RATIO;
+            for background in [theme.surface_3(), theme.surface_2()] {
+                let background: warpui::elements::Fill = background.into();
+                let buttons: Vec<_> = scene
+                    .layers()
+                    .flat_map(|layer| &layer.rects)
+                    .filter(|rect| rect.background == background)
+                    .collect();
+                assert_eq!(buttons.len(), 1, "one button on {background:?}");
+                assert!(
+                    buttons[0].bounds.height() >= label_height,
+                    "a button {} high cannot hold its label",
+                    buttons[0].bounds.height()
+                );
+            }
+        });
+    });
 }

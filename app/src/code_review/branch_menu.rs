@@ -678,24 +678,11 @@ impl BranchMenu {
     fn render_rows(&self, ctx: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(ctx);
         let theme = appearance.theme();
-        let selected = self.selected_index;
-        let displayed_rows = self.displayed_rows();
-        let row_count = displayed_rows.len();
-
-        let list = UniformList::new(self.list_state.clone(), row_count, move |mut range, app| {
-            let appearance = Appearance::as_ref(app);
-            range.end = cmp::min(range.end, row_count);
-            range
-                .map(|row_index| {
-                    displayed_rows[row_index].render(
-                        row_index,
-                        selected == Some(row_index),
-                        appearance,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-        });
+        let list = row_list(
+            self.displayed_rows(),
+            self.selected_index,
+            self.list_state.clone(),
+        );
 
         let scrollable = Scrollable::vertical(
             self.scroll_state.clone(),
@@ -713,6 +700,25 @@ impl BranchMenu {
             .with_max_height(MENU_MAX_LIST_HEIGHT)
             .finish()
     }
+}
+
+/// The rows of the list. Every row takes the height of the first one.
+fn row_list(
+    displayed_rows: Vec<DisplayedRow>,
+    selected: Option<usize>,
+    list_state: UniformListState,
+) -> impl ScrollableElement {
+    let row_count = displayed_rows.len();
+    UniformList::new(list_state, row_count, move |mut range, app: &AppContext| {
+        let appearance = Appearance::as_ref(app);
+        range.end = cmp::min(range.end, row_count);
+        range
+            .map(|row_index| {
+                displayed_rows[row_index].render(row_index, selected == Some(row_index), appearance)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -962,8 +968,9 @@ impl MergeButton {
                 .with_max_width(MERGE_BUTTON_MAX_WIDTH)
                 .finish(),
             )
+            // No vertical padding: a row is only as tall as its name, and a text that does not
+            // fit the height it is given is not drawn at all.
             .with_horizontal_padding(6.)
-            .with_vertical_padding(1.)
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
             .with_background(background)
             .finish()
