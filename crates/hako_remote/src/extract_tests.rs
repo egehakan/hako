@@ -61,7 +61,7 @@ fn listing(root: &str) -> Vec<String> {
 }
 
 #[test]
-fn unpacks_into_a_new_directory_named_after_the_file() {
+fn unpacks_the_contents_of_a_single_top_directory_into_one_named_after_it() {
     let (_directory, root) = tree();
     let entries = [
         Entry::Directory("album/"),
@@ -73,9 +73,9 @@ fn unpacks_into_a_new_directory_named_after_the_file() {
         Entry::File("album/.DS_Store", "finder"),
     ];
     let extracted = run(&root, &entries).unwrap();
-    assert_eq!(extracted.path, format!("{root}/photos"));
-    assert_eq!(extracted.entries, 5);
-    let album = format!("{root}/photos/album");
+    assert_eq!(extracted.path, format!("{root}/album"));
+    assert_eq!(extracted.entries, 4);
+    let album = format!("{root}/album");
     assert_eq!(
         fs::read_to_string(format!("{album}/deep/b.txt")).unwrap(),
         "b"
@@ -94,7 +94,6 @@ fn unpacks_into_a_new_directory_named_after_the_file() {
         0o640
     );
     assert_eq!(listing(&album), ["a.txt", "deep", "latest"]);
-    assert_eq!(listing(&format!("{root}/photos")), ["album"]);
 
     let again = extract(
         &params(&format!("{root}/photos.zip"), &root),
@@ -102,17 +101,46 @@ fn unpacks_into_a_new_directory_named_after_the_file() {
         &Deadline::from_now(),
     )
     .unwrap();
-    assert_eq!(again.path, format!("{root}/photos (2)"));
+    assert_eq!(again.path, format!("{root}/album (2)"));
+    assert_eq!(listing(&again.path), ["a.txt", "deep", "latest"]);
+}
+
+#[test]
+fn unpacks_anything_else_into_a_new_directory_named_after_the_file() {
+    let shapes: [(&[Entry], &[&str]); 3] = [
+        (
+            &[Entry::File("album/a.txt", "a"), Entry::File("b.txt", "b")],
+            &["album", "b.txt"],
+        ),
+        (
+            &[
+                Entry::File("album/a.txt", "a"),
+                Entry::File("other/b.txt", "b"),
+            ],
+            &["album", "other"],
+        ),
+        (&[Entry::File("notes.txt", "n")], &["notes.txt"]),
+    ];
+    for (entries, expected) in shapes {
+        let (_directory, root) = tree();
+        let extracted = run(&root, entries).unwrap();
+        assert_eq!(extracted.path, format!("{root}/photos"));
+        assert_eq!(listing(&extracted.path), expected);
+    }
 }
 
 #[test]
 fn refuses_entries_that_would_land_outside_and_leaves_nothing_behind() {
-    let hostile: [&[Entry]; 7] = [
+    let hostile: [&[Entry]; 8] = [
         &[Entry::File("ok.txt", "ok"), Entry::File("../evil.txt", "x")],
         &[Entry::File("/etc/evil.txt", "x")],
         &[Entry::File("a/../../evil.txt", "x")],
         &[Entry::Link("link", "../outside")],
         &[Entry::Link("link", "/etc")],
+        &[
+            Entry::File("album/a.txt", "a"),
+            Entry::Link("album/link", "../outside"),
+        ],
         &[Entry::Link("here", "."), Entry::Link("link", "here/..")],
         &[
             Entry::Directory("sub/"),

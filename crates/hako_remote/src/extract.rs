@@ -37,7 +37,9 @@ const NAME_ATTEMPTS: u32 = 10_000;
 type Archive = ZipArchive<BufReader<File>>;
 
 /// Unpacks the zip file at `params.path` into a new directory in `params.destination`, named
-/// after the file. On any failure the new directory is removed again.
+/// after the file. When everything in the archive lies in one top-level directory, its contents
+/// are unpacked instead, into a new directory named after it. On any failure the new directory
+/// is removed again.
 pub fn extract(
     params: &FsExtractParams,
     limits: Limits,
@@ -54,9 +56,20 @@ pub fn extract(
     }
     let file = File::open(zip_file).map_err(|error| failure(&error, path))?;
     let mut archive = ZipArchive::new(BufReader::new(file)).map_err(damaged)?;
-    let plan = plan(&mut archive, limits)?;
+    let mut plan = plan(&mut archive, limits)?;
+    let stem = match strip_single_top(&mut plan) {
+        Some(top) => top,
+        None => directory_name(last_segment(path)),
+    };
+    for planned in &plan {
+        if let PlannedKind::Link(target) = &planned.kind
+            && !link_stays_inside(target, planned.components.len().saturating_sub(1))
+        {
+            return Err(outside(&planned.name));
+        }
+    }
 
-    let (name, directory) = new_directory(destination, &directory_name(last_segment(path)))
+    let (name, directory) = new_directory(destination, &stem)
         .map_err(|error| failure(&error, &params.destination))?;
     match unpack(&mut archive, &plan, &directory, limits, deadline) {
         Ok(entries) => Ok(FsExtract {
@@ -107,6 +120,8 @@ fn new_directory(destination: &Path, stem: &str) -> std::io::Result<(String, Pat
 #[derive(Debug)]
 struct Planned {
     index: usize,
+    /// The entry's name in the archive.
+    name: String,
     /// The path in the new directory, one name after the other.
     components: Vec<String>,
     kind: PlannedKind,
@@ -122,7 +137,7 @@ enum PlannedKind {
 }
 
 /// Looks at every entry before anything is written, and refuses the archive for any that
-/// cannot be unpacked safely.
+/// cannot be unpacked safely. Where links point is checked by the caller.
 fn plan(archive: &mut Archive, limits: Limits) -> Result<Vec<Planned>, RpcError> {
     if archive.len() as u64 > limits.entries {
         return Err(RpcError::too_large(
@@ -165,22 +180,39 @@ fn plan(archive: &mut Archive, limits: Limits) -> Result<Vec<Planned>, RpcError>
                 .take(MAX_LINK_BYTES)
                 .read_to_string(&mut target)
                 .map_err(damaged)?;
-            if !link_stays_inside(&target, components.len() - 1) {
-                return Err(outside(&name));
-            }
             PlannedKind::Link(target)
         } else {
             PlannedKind::File
         };
+        let components = components.into_iter().map(str::to_owned).collect();
         plan.push(Planned {
             index,
-            components: components.into_iter().map(str::to_owned).collect(),
+            name,
+            components,
             kind,
             mode,
             modified,
         });
     }
     Ok(plan)
+}
+
+/// When every planned entry lies in one top-level directory, takes that directory off the
+/// front of each path, leaves out the entry for the directory itself, and answers with its name.
+fn strip_single_top(plan: &mut Vec<Planned>) -> Option<String> {
+    let top = plan.first()?.components.first()?.clone();
+    let all_inside = plan.iter().all(|planned| {
+        planned.components.first() == Some(&top)
+            && (planned.components.len() > 1 || matches!(planned.kind, PlannedKind::Directory))
+    });
+    if !all_inside {
+        return None;
+    }
+    plan.retain(|planned| planned.components.len() > 1);
+    for planned in plan.iter_mut() {
+        planned.components.remove(0);
+    }
+    Some(top)
 }
 
 fn too_large(limits: Limits) -> RpcError {
