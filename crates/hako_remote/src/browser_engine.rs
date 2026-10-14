@@ -1192,7 +1192,12 @@ impl Engine {
                 .call(
                     Some(&picker.devtools_session),
                     "Runtime.evaluate",
-                    json!({ "expression": expression, "contextId": picker.context, "returnByValue": true }),
+                    json!({
+                        "expression": expression,
+                        "contextId": picker.context,
+                        "returnByValue": true,
+                        "userGesture": true,
+                    }),
                 )
                 .await;
             responder.respond(match outcome {

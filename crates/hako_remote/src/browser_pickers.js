@@ -17,6 +17,8 @@
   const ids = new WeakMap();
   const elements = new Map();
   let next = 0;
+  // A tap may come as a touch and then as the mouse events made from it.
+  let lastReport = { el: null, at: 0 };
 
   const kindOf = (el) => {
     if (el instanceof HTMLSelectElement) return "select";
@@ -41,6 +43,9 @@
     return el;
   };
   const report = (el) => {
+    const now = performance.now();
+    if (lastReport.el === el && now - lastReport.at < 500) return;
+    lastReport = { el, at: now };
     const kind = kindOf(el);
     const message = { kind, id: idOf(el) };
     if (kind === "select") {
@@ -74,6 +79,35 @@
       report(el);
     },
     true,
+  );
+  // With touch emulated, a tap can reach a picker without a mousedown: it is taken as the finger
+  // lifts, unless the finger moved, as it does in a scroll that started on the field.
+  let touchStart = null;
+  addEventListener(
+    "touchstart",
+    (event) => {
+      const touch = event.touches[0];
+      touchStart =
+        pickerOf(event.target) && touch && event.touches.length === 1
+          ? { x: touch.clientX, y: touch.clientY }
+          : null;
+    },
+    true,
+  );
+  addEventListener(
+    "touchend",
+    (event) => {
+      const el = pickerOf(event.target);
+      const touch = event.changedTouches[0];
+      const start = touchStart;
+      touchStart = null;
+      if (!el || !start || !touch) return;
+      if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 10) return;
+      event.preventDefault();
+      el.focus();
+      report(el);
+    },
+    { capture: true, passive: false },
   );
   // The pickers of inputs open on click as well.
   addEventListener(
