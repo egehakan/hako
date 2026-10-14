@@ -1271,6 +1271,94 @@ fn test_possible_file_paths_candidate_count_is_bounded() {
     );
 }
 
+/// A program that breaks long lines itself, as Claude Code does, continues a path on the next row
+/// after indentation, with a hard line break between the two rows.
+#[test]
+fn test_possible_file_paths_across_hard_wrapped_lines() {
+    let first_line = "\u{25cf} Edited /home/user/workspace/project/src/modules/";
+    let second_line = "  core/README.md and more";
+    let full_path = "/home/user/workspace/project/src/modules/core/README.md";
+    let path_start = first_line.chars().position(|c| c == '/').unwrap();
+    let expected_range = Point {
+        row: 0,
+        col: path_start,
+    }..=Point {
+        row: 1,
+        col: "  core/README.md".len() - 1,
+    };
+    let blockgrid = mock_blockgrid(&format!("{first_line}\r\n{second_line}"));
+
+    for hover_point in [Point { row: 0, col: 20 }, Point { row: 1, col: 4 }] {
+        let possible_paths = blockgrid
+            .grid_handler
+            .possible_file_paths_at_point(hover_point);
+
+        assert!(
+            possible_paths.iter().any(|possible_path| {
+                possible_path.path.path == full_path && possible_path.range == expected_range
+            }),
+            "expected hard-wrapped file path candidate at {hover_point:?} in {possible_paths:?}"
+        );
+        // Each row on its own still offers its part.
+        let own_part = if hover_point.row == 0 {
+            "/home/user/workspace/project/src/modules/"
+        } else {
+            "core/README.md"
+        };
+        assert!(
+            possible_paths
+                .iter()
+                .any(|possible_path| possible_path.path.path == own_part),
+            "expected {own_part} at {hover_point:?} in {possible_paths:?}"
+        );
+    }
+}
+
+#[test]
+fn test_possible_file_paths_across_several_hard_wrapped_lines() {
+    let first_line = "  /home/user/workspace/project/";
+    let second_line = "  src/modules/core/internal/";
+    let third_line = "  README.md";
+    let blockgrid = mock_blockgrid(&format!(
+        "{first_line}\r\n{second_line}\r\n{third_line}"
+    ));
+    let full_path = "/home/user/workspace/project/src/modules/core/internal/README.md";
+
+    for hover_point in [
+        Point { row: 0, col: 5 },
+        Point { row: 1, col: 5 },
+        Point { row: 2, col: 5 },
+    ] {
+        let possible_paths = blockgrid
+            .grid_handler
+            .possible_file_paths_at_point(hover_point);
+
+        assert!(
+            possible_paths.iter().any(|possible_path| {
+                possible_path.path.path == full_path
+                    && possible_path.range == (Point { row: 0, col: 2 }..=Point { row: 2, col: 10 })
+            }),
+            "expected a path over three rows at {hover_point:?} in {possible_paths:?}"
+        );
+    }
+}
+
+/// Rows are not joined across a break when either side of it is not a word.
+#[test]
+fn test_possible_file_paths_do_not_join_rows_at_separators() {
+    let blockgrid = mock_blockgrid("see src/main.rs.\r\n  (more) text here");
+    let possible_paths = blockgrid
+        .grid_handler
+        .possible_file_paths_at_point(Point { row: 0, col: 8 });
+
+    assert!(
+        possible_paths
+            .iter()
+            .all(|possible_path| possible_path.range.end().row == 0),
+        "expected no candidate past the first row in {possible_paths:?}"
+    );
+}
+
 #[test]
 fn test_fragment_boundary_at_point() {
     let assert_fragment_boundary =

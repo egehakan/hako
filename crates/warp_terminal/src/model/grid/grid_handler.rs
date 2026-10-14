@@ -88,6 +88,9 @@ const LINK_NUM_CHARACTER_SCAN: usize = 4096;
 /// leaving realistic paths (including paths with a few spaces) unaffected.
 const MAX_LINK_PATH_FRAGMENTS: usize = 32;
 
+/// How many rows before and after the hovered one a hard-wrapped path is followed over.
+const MAX_HARD_WRAP_CONTINUATION_ROWS: usize = 4;
+
 /// Max number of characters to scan for a URL.
 const URL_SCAN_CHARACTER_MAX_COUNT: usize = 1000;
 
@@ -177,7 +180,7 @@ pub fn is_file_link_separator(c: char) -> bool {
 
 /// Represents a range of cells with information on their combined content and total
 /// cell width.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Fragment {
     content: String,
     total_cell_width: usize,
@@ -186,6 +189,10 @@ struct Fragment {
 impl Fragment {
     fn has_separator(&self) -> bool {
         self.content.chars().any(is_file_link_separator)
+    }
+
+    fn is_blank(&self) -> bool {
+        self.content.chars().all(|c| matches!(c, ' ' | '\t' | '\0'))
     }
 }
 
@@ -228,6 +235,17 @@ enum IncludeFirstWideChar {
 
 pub trait ContainsPoint {
     fn contains(&self, point: Point) -> bool;
+}
+
+/// The fragments found on each side of a hovered point, as far as hard-wrapped rows may continue
+/// them.
+struct HardWrapScan {
+    prefix_chunks: Vec<Fragment>,
+    /// The row the prefix starts at, when it starts at the beginning of that row.
+    first_prefix_row: Option<usize>,
+    suffix_chunks: Vec<Fragment>,
+    /// The row the suffix ends at, when it reaches the end of that row.
+    last_suffix_row: Option<usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1378,6 +1396,49 @@ impl GridHandler {
             append_fragments_across_soft_wrap(&mut suffix_chunks, fragments);
         }
 
+        let prefix_starts_at_row_start =
+            first_prefix_row == point.row || scanned_prefix_width <= LINK_NUM_CHARACTER_SCAN;
+        let suffix_reaches_row_end =
+            last_suffix_row == point.row || scanned_suffix_width <= LINK_NUM_CHARACTER_SCAN;
+        let hard_wrapped = self.join_hard_wrapped_rows(
+            HardWrapScan {
+                prefix_chunks: prefix_chunks.clone(),
+                first_prefix_row: prefix_starts_at_row_start.then_some(first_prefix_row),
+                suffix_chunks: suffix_chunks.clone(),
+                last_suffix_row: suffix_reaches_row_end.then_some(last_suffix_row),
+            },
+        );
+
+        let mut candidates = Vec::new();
+        if let Some((prefix_chunks, suffix_chunks)) = hard_wrapped {
+            // Only the candidates that span a row break are new; the rest are found below.
+            candidates.extend(
+                self.path_candidates(point, prefix_chunks, suffix_chunks)
+                    .into_iter()
+                    .filter(|(_, range)| {
+                        (range.start().row..range.end().row).any(|row| !self.row_wraps(row))
+                    }),
+            );
+        }
+        candidates.extend(self.path_candidates(point, prefix_chunks, suffix_chunks));
+
+        candidates
+            .into_iter()
+            .map(|(path, range)| PossiblePath {
+                path,
+                range: self.displayed_path_range(range),
+            })
+            .collect()
+    }
+
+    /// Every path that the fragments before and after `point` can form, longest first, with the
+    /// cells it spans.
+    fn path_candidates(
+        &self,
+        point: Point,
+        mut prefix_chunks: Vec<Fragment>,
+        mut suffix_chunks: Vec<Fragment>,
+    ) -> Vec<(CleanPathResult, RangeInclusive<Point>)> {
         // Bound the number of fragment combinations the candidate search below
         // considers. That search is O(prefix_chunks * suffix_chunks) and each
         // combination is filesystem-checked by the caller, so a hover over
@@ -1460,31 +1521,161 @@ impl GridHandler {
                     true, /*forward*/
                 );
 
-                possible_paths.push(PossiblePath {
-                    path: cleaned_path,
-                    range: if self.has_displayed_output() {
-                        let displayed_starting_point = self
-                            .maybe_translate_point_from_original_to_displayed(starting_point);
-                        let displayed_ending_point = self
-                            .maybe_translate_point_from_original_to_displayed(ending_point);
-                        if displayed_starting_point > displayed_ending_point {
-                            report_error!(
-                                "File path range translation to displayed points failed: range start is greater than range end",
-                                extra: { "start" => ?displayed_starting_point, "end" => ?displayed_ending_point }
-                            );
-                            starting_point..=ending_point
-                        } else {
-                            displayed_starting_point..=displayed_ending_point
-                        }
-                    } else {
-                        starting_point..=ending_point
-                    },
-                })
+                possible_paths.push((cleaned_path, starting_point..=ending_point));
             }
         }
 
         possible_paths.reverse();
         possible_paths
+    }
+
+    fn displayed_path_range(&self, range: RangeInclusive<Point>) -> RangeInclusive<Point> {
+        if !self.has_displayed_output() {
+            return range;
+        }
+        let (starting_point, ending_point) = range.into_inner();
+        let displayed_starting_point =
+            self.maybe_translate_point_from_original_to_displayed(starting_point);
+        let displayed_ending_point =
+            self.maybe_translate_point_from_original_to_displayed(ending_point);
+        if displayed_starting_point > displayed_ending_point {
+            report_error!(
+                "File path range translation to displayed points failed: range start is greater than range end",
+                extra: { "start" => ?displayed_starting_point, "end" => ?displayed_ending_point }
+            );
+            starting_point..=ending_point
+        } else {
+            displayed_starting_point..=displayed_ending_point
+        }
+    }
+
+    /// The fragments around a hovered point, continued over rows that a program broke a long
+    /// line into itself: a row whose content ends in a word, followed by a row that starts with
+    /// indentation and then a word. Claude Code breaks long paths this way. `None` when neither
+    /// side continues.
+    fn join_hard_wrapped_rows(
+        &self,
+        scan: HardWrapScan,
+    ) -> Option<(Vec<Fragment>, Vec<Fragment>)> {
+        let HardWrapScan {
+            mut prefix_chunks,
+            first_prefix_row,
+            mut suffix_chunks,
+            last_suffix_row,
+        } = scan;
+
+        let mut suffix_joined = false;
+        if let Some(last_suffix_row) = last_suffix_row {
+            for row in last_suffix_row..last_suffix_row + MAX_HARD_WRAP_CONTINUATION_ROWS {
+                let Some(gap) = self.width_after_last_word(&mut suffix_chunks, row) else {
+                    break;
+                };
+                let Some((mut next, indentation)) = self.fragments_after_indentation(row + 1)
+                else {
+                    break;
+                };
+                let continuation = next.remove(0);
+                let word = suffix_chunks.last_mut().expect("the row ends in a word");
+                word.content.push_str(&continuation.content);
+                word.total_cell_width += gap + indentation + continuation.total_cell_width;
+                suffix_joined = true;
+                let fills_row = next.is_empty();
+                suffix_chunks.extend(next);
+                if !fills_row {
+                    break;
+                }
+            }
+        }
+
+        let mut prefix_joined = false;
+        if let Some(first_prefix_row) = first_prefix_row {
+            let mut row = first_prefix_row;
+            while row > 0 && first_prefix_row - row < MAX_HARD_WRAP_CONTINUATION_ROWS {
+                let indentation_end = prefix_chunks
+                    .iter()
+                    .take_while(|fragment| fragment.is_blank())
+                    .count();
+                let starts_with_word = match prefix_chunks.get(indentation_end) {
+                    Some(fragment) => !fragment.has_separator(),
+                    None => suffix_chunks
+                        .first()
+                        .is_some_and(|fragment| !fragment.has_separator()),
+                };
+                if !starts_with_word {
+                    break;
+                }
+                let mut previous = self.line_to_fragments(
+                    row - 1,
+                    0..self.columns().saturating_sub(1),
+                    IncludeFirstWideChar::No,
+                );
+                let Some(gap) = self.width_after_last_word(&mut previous, row - 1) else {
+                    break;
+                };
+                let mut word = previous.pop().expect("the row ends in a word");
+                word.total_cell_width += gap;
+                for indentation in prefix_chunks.drain(..indentation_end) {
+                    word.total_cell_width += indentation.total_cell_width;
+                }
+                match prefix_chunks.first_mut() {
+                    Some(start) => {
+                        start.content.insert_str(0, &word.content);
+                        start.total_cell_width += word.total_cell_width;
+                    }
+                    None => prefix_chunks.push(word),
+                }
+                prefix_joined = true;
+                let fills_row = previous.iter().all(Fragment::is_blank);
+                previous.append(&mut prefix_chunks);
+                prefix_chunks = previous;
+                row -= 1;
+                if !fills_row {
+                    break;
+                }
+            }
+        }
+
+        (prefix_joined || suffix_joined).then_some((prefix_chunks, suffix_chunks))
+    }
+
+    /// If `row` ends a line rather than wrapping, and `fragments` (its content up to its end)
+    /// end in a word, drops the blanks after that word and returns how many cells lie between
+    /// the word and the end of the row.
+    fn width_after_last_word(&self, fragments: &mut Vec<Fragment>, row: usize) -> Option<usize> {
+        if self.row_wraps(row) {
+            return None;
+        }
+        let mut gap = self.columns().saturating_sub(self.row(row)?.line_length());
+        while fragments.last().is_some_and(Fragment::is_blank) {
+            gap += fragments.pop()?.total_cell_width;
+        }
+        fragments.last().filter(|fragment| !fragment.has_separator())?;
+        Some(gap)
+    }
+
+    /// The fragments of `row` after its indentation, and the indentation's width, if the row
+    /// starts with a word after it.
+    fn fragments_after_indentation(&self, row: usize) -> Option<(Vec<Fragment>, usize)> {
+        if row >= self.total_rows() {
+            return None;
+        }
+        let mut fragments = self.line_to_fragments(
+            row,
+            0..self.columns().saturating_sub(1),
+            IncludeFirstWideChar::No,
+        );
+        let indentation_end = fragments
+            .iter()
+            .take_while(|fragment| fragment.is_blank())
+            .count();
+        let indentation = fragments
+            .drain(..indentation_end)
+            .map(|fragment| fragment.total_cell_width)
+            .sum();
+        fragments
+            .first()
+            .filter(|fragment| !fragment.has_separator())?;
+        Some((fragments, indentation))
     }
 
     fn advance_point_by_columns(&self, mut point: Point, count: usize, forward: bool) -> Point {
