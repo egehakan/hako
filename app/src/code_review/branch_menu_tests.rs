@@ -204,6 +204,41 @@ fn every_branch_but_the_current_one_can_be_merged_into_it() {
 }
 
 #[test]
+fn every_row_that_offers_a_merge_shows_its_button_and_the_focused_one_names_the_current_branch() {
+    let list = fixture();
+    let rows = branch_rows(&list, "", MenuMode::Listing);
+    let labels = |is_focused| {
+        rows.iter()
+            .map(|row| merge_button_label(row, &list, is_focused))
+            .collect::<Vec<_>>()
+    };
+    let merge = Some("Merge".to_owned());
+    let merge_into_main = Some("Merge into main".to_owned());
+
+    // New branch, heading, main, feature/login, hotfix, heading, origin/release.
+    assert_eq!(
+        labels(false),
+        [None, None, None, merge.clone(), merge.clone(), None, merge]
+    );
+    assert_eq!(
+        labels(true),
+        [
+            None,
+            None,
+            None,
+            merge_into_main.clone(),
+            merge_into_main.clone(),
+            None,
+            merge_into_main,
+        ]
+    );
+    assert_eq!(
+        merge_button_label(&plain(1), &BranchList::Loading, false),
+        None
+    );
+}
+
+#[test]
 fn a_branch_shows_how_far_it_is_from_its_upstream_and_when_it_last_changed() {
     let tracked = GitBranch {
         upstream: Some("origin/main".to_owned()),

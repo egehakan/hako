@@ -11,13 +11,15 @@ use warp_core::ui::theme::Fill;
 use warp_editor::editor::NavigationKey;
 use warpui::color::ColorU;
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
     DispatchEventResult, DropShadow, Element, Empty, EventHandler, Expanded, Flex, Highlight,
-    MainAxisSize, MouseInBehavior, ParentElement, Radius, ScrollStateHandle, Scrollable,
-    ScrollableElement, ScrollbarWidth, Text, UniformList, UniformListState,
+    Hoverable, MainAxisSize, MouseInBehavior, MouseStateHandle, ParentElement, Radius,
+    ScrollStateHandle, Scrollable, ScrollableElement, ScrollbarWidth, Shrinkable, Text,
+    UniformList, UniformListState,
 };
 use warpui::fonts::{Properties, Weight};
 use warpui::keymap::FixedBinding;
+use warpui::platform::Cursor;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::{
@@ -46,6 +48,11 @@ const CHECK_SLOT_SIZE: f32 = 12.;
 const DETAIL_MAX_WIDTH: f32 = 220.;
 const DETAIL_FONT_SIZE_RATIO: f32 = 0.9;
 const MERGE_BUTTON_MAX_WIDTH: f32 = 200.;
+const MERGE_BUTTON_GAP: f32 = 8.;
+/// The branch name is laid out before the detail and offered nearly all the room, so that the
+/// detail gives way first when a row runs out of space.
+const NAME_FLEX: f32 = 1000.;
+const MERGE_LABEL: &str = "Merge";
 
 const SEARCH_PLACEHOLDER: &str = "Search branches\u{2026}";
 const NAME_PLACEHOLDER: &str = "Name of the new branch";
@@ -124,6 +131,25 @@ pub(crate) fn merge_target(row: &BranchRow, list: &BranchList) -> Option<(String
         GitBranchKind::Remote => GitMergeKind::Remote,
     };
     Some((branch.name.clone(), kind))
+}
+
+/// The label of the row's merge button, if the row offers a merge: short on every row, and naming
+/// the current branch on the focused one.
+pub(crate) fn merge_button_label(
+    row: &BranchRow,
+    list: &BranchList,
+    is_focused: bool,
+) -> Option<String> {
+    merge_target(row, list)?;
+    let BranchList::Loaded(branches) = list else {
+        return None;
+    };
+    let current = branches.current.as_deref()?;
+    Some(if is_focused {
+        format!("Merge into {current}")
+    } else {
+        MERGE_LABEL.to_owned()
+    })
 }
 
 /// Whether the row can be focused: it can be picked, or it offers a merge.
@@ -319,6 +345,8 @@ pub struct BranchMenu {
     search_query: String,
     list_state: UniformListState,
     scroll_state: ScrollStateHandle,
+    /// Hover state of the merge button of each row, by index into `rows`.
+    merge_button_states: Vec<MouseStateHandle>,
 }
 
 impl BranchMenu {
@@ -372,6 +400,7 @@ impl BranchMenu {
             search_query: String::new(),
             list_state: Default::default(),
             scroll_state: Default::default(),
+            merge_button_states: Vec::new(),
         };
         menu.refresh_rows();
         menu
@@ -379,6 +408,12 @@ impl BranchMenu {
 
     /// Puts the menu back to how it opens: no search, and branches still to be listed.
     pub fn reset(&mut self, ctx: &mut ViewContext<Self>) {
+        // A button the pointer was on when the menu closed would otherwise reopen hovered.
+        for state in &self.merge_button_states {
+            if let Ok(mut state) = state.lock() {
+                state.reset_interaction_state();
+            }
+        }
         self.list = BranchList::Loading;
         self.set_mode(MenuMode::Listing, String::new(), ctx);
     }
@@ -439,6 +474,10 @@ impl BranchMenu {
 
     fn refresh_rows(&mut self) {
         self.rows = branch_rows(&self.list, &self.search_query, self.mode);
+        if self.merge_button_states.len() < self.rows.len() {
+            self.merge_button_states
+                .resize_with(self.rows.len(), Default::default);
+        }
         let is_searching = !self.search_query.trim().is_empty();
         self.selected_index = match self.mode {
             MenuMode::Listing if is_searching => self.first_branch_row(),
@@ -572,15 +611,19 @@ impl BranchMenu {
             BranchList::Loaded(branches) => (Some(branches), branches.head.as_deref()),
             BranchList::Loading | BranchList::Failed(_) => (None, None),
         };
-        let current = branches.and_then(|branches| branches.current.as_deref());
         self.rows
             .iter()
-            .map(|row| {
+            .zip(&self.merge_button_states)
+            .map(|(row, mouse_state)| {
                 let is_enabled = is_selectable(row, &self.list);
                 let is_focusable = is_focusable(row, &self.list);
-                let merge_label = merge_target(row, &self.list)
-                    .zip(current)
-                    .map(|(_, current)| format!("Merge into {current}"));
+                let merge_button = merge_button_label(row, &self.list, false)
+                    .zip(merge_button_label(row, &self.list, true))
+                    .map(|(label, focused_label)| MergeButton {
+                        label,
+                        focused_label,
+                        mouse_state: mouse_state.clone(),
+                    });
                 match row {
                     BranchRow::NewBranch => DisplayedRow::Item {
                         label: NEW_BRANCH_LABEL.to_owned(),
@@ -589,7 +632,7 @@ impl BranchMenu {
                         mark: RowMark::Plus,
                         is_enabled,
                         is_focusable,
-                        merge_label: None,
+                        merge_button: None,
                     },
                     BranchRow::Create => DisplayedRow::Item {
                         label: format!(
@@ -601,7 +644,7 @@ impl BranchMenu {
                         mark: RowMark::Plus,
                         is_enabled,
                         is_focusable,
-                        merge_label: None,
+                        merge_button: None,
                     },
                     BranchRow::Branch { index, highlighted } => {
                         match branches
@@ -619,7 +662,7 @@ impl BranchMenu {
                                 // The current branch is not picked, and reads as usual.
                                 is_enabled: is_enabled || is_current(branch, branches),
                                 is_focusable,
-                                merge_label,
+                                merge_button,
                             },
                             None => DisplayedRow::Note(String::new()),
                         }
@@ -690,11 +733,18 @@ enum DisplayedRow {
         is_enabled: bool,
         /// Takes the focus when hovered, which an item that only offers a merge does too.
         is_focusable: bool,
-        /// Shown on the focused item, which then merges its branch when clicked.
-        merge_label: Option<String>,
+        merge_button: Option<MergeButton>,
     },
     Error(String),
     Note(String),
+}
+
+/// The button at the end of an item that merges its branch into the current one.
+struct MergeButton {
+    label: String,
+    /// Shown instead of `label` while the item is focused.
+    focused_label: String,
+    mouse_state: MouseStateHandle,
 }
 
 impl DisplayedRow {
@@ -711,7 +761,8 @@ impl DisplayedRow {
         let font_size = appearance.ui_font_size();
         let sub_text_color = theme.sub_text_color(theme.surface_2()).into_solid();
 
-        let (label, detail, highlighted, mark, is_enabled, is_focusable, merge_label) = match self {
+        let (label, detail, highlighted, mark, is_enabled, is_focusable, merge_button) = match self
+        {
             DisplayedRow::Item {
                 label,
                 detail,
@@ -719,7 +770,7 @@ impl DisplayedRow {
                 mark,
                 is_enabled,
                 is_focusable,
-                merge_label,
+                merge_button,
             } => (
                 label,
                 detail,
@@ -727,7 +778,7 @@ impl DisplayedRow {
                 *mark,
                 *is_enabled,
                 *is_focusable,
-                merge_label,
+                merge_button,
             ),
             DisplayedRow::Header(title) => {
                 return Self::render_plain(
@@ -794,6 +845,26 @@ impl DisplayedRow {
             );
         }
 
+        let detail: Box<dyn Element> = match detail {
+            Some(detail) => Container::new(
+                ConstrainedBox::new(
+                    Text::new_inline(
+                        detail.clone(),
+                        font_family,
+                        font_size * DETAIL_FONT_SIZE_RATIO,
+                    )
+                    .with_color(detail_color)
+                    // The end of a path says more than its start.
+                    .with_clip(ClipConfig::start())
+                    .finish(),
+                )
+                .with_max_width(DETAIL_MAX_WIDTH)
+                .finish(),
+            )
+            .with_margin_left(12.)
+            .finish(),
+            None => Empty::new().finish(),
+        };
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max)
@@ -802,34 +873,10 @@ impl DisplayedRow {
                     .with_margin_right(CHECK_GAP)
                     .finish(),
             )
-            .with_child(Expanded::new(1., label_text.finish()).finish());
-        let merge_label = merge_label.as_ref().filter(|_| is_focused);
-        if let Some(merge_label) = merge_label {
-            row.add_child(Self::render_merge_button(
-                merge_label,
-                row_index,
-                appearance,
-            ));
-        } else if let Some(detail) = detail {
-            row.add_child(
-                Container::new(
-                    ConstrainedBox::new(
-                        Text::new_inline(
-                            detail.clone(),
-                            font_family,
-                            font_size * DETAIL_FONT_SIZE_RATIO,
-                        )
-                        .with_color(detail_color)
-                        // The end of a path says more than its start.
-                        .with_clip(ClipConfig::start())
-                        .finish(),
-                    )
-                    .with_max_width(DETAIL_MAX_WIDTH)
-                    .finish(),
-                )
-                .with_margin_left(12.)
-                .finish(),
-            );
+            .with_child(Shrinkable::new(NAME_FLEX, label_text.finish()).finish())
+            .with_child(Expanded::new(1., Align::new(detail).right().finish()).finish());
+        if let Some(merge_button) = merge_button {
+            row.add_child(merge_button.render(row_index, is_focused, appearance));
         }
 
         let mut container = Container::new(row.finish())
@@ -861,45 +908,6 @@ impl DisplayedRow {
             .finish()
     }
 
-    /// The secondary action of the focused branch, which merges it into the current one.
-    fn render_merge_button(
-        label: &str,
-        row_index: usize,
-        appearance: &Appearance,
-    ) -> Box<dyn Element> {
-        let theme = appearance.theme();
-        let background = theme.surface_2();
-        let button = Container::new(
-            ConstrainedBox::new(
-                Text::new_inline(
-                    label.to_owned(),
-                    appearance.ui_font_family(),
-                    appearance.ui_font_size() * DETAIL_FONT_SIZE_RATIO,
-                )
-                .with_color(theme.main_text_color(background).into_solid())
-                .with_clip(ClipConfig::ellipsis())
-                .finish(),
-            )
-            .with_max_width(MERGE_BUTTON_MAX_WIDTH)
-            .finish(),
-        )
-        .with_horizontal_padding(6.)
-        .with_vertical_padding(1.)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
-        .with_background(background)
-        .finish();
-        Container::new(
-            EventHandler::new(button)
-                .on_left_mouse_down(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(BranchMenuAction::MergeRow { index: row_index });
-                    DispatchEventResult::StopPropagation
-                })
-                .finish(),
-        )
-        .with_margin_left(12.)
-        .finish()
-    }
-
     /// A row that cannot be picked: a heading, an error or a note.
     fn render_plain(text: Box<dyn Element>, indent: f32) -> Box<dyn Element> {
         Container::new(
@@ -913,6 +921,62 @@ impl DisplayedRow {
         .with_padding_right(ROW_HORIZONTAL_PADDING)
         .with_vertical_padding(ROW_VERTICAL_PADDING)
         .finish()
+    }
+}
+
+impl MergeButton {
+    /// Quiet on most rows; the focused row's button names the current branch and stands out
+    /// against the row's highlight.
+    fn render(
+        &self,
+        row_index: usize,
+        is_focused: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let font_size = appearance.ui_font_size() * DETAIL_FONT_SIZE_RATIO;
+        let label = if is_focused {
+            &self.focused_label
+        } else {
+            &self.label
+        };
+        let button = Hoverable::new(self.mouse_state.clone(), |mouse_state| {
+            let background = if is_focused && !mouse_state.is_hovered() {
+                theme.surface_2()
+            } else {
+                theme.surface_3()
+            };
+            let text_color = if is_focused {
+                theme.main_text_color(background)
+            } else {
+                theme.sub_text_color(background)
+            };
+            Container::new(
+                ConstrainedBox::new(
+                    Text::new_inline(label.clone(), font_family, font_size)
+                        .with_color(text_color.into_solid())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                )
+                .with_max_width(MERGE_BUTTON_MAX_WIDTH)
+                .finish(),
+            )
+            .with_horizontal_padding(6.)
+            .with_vertical_padding(1.)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+            .with_background(background)
+            .finish()
+        })
+        // Acting on the press, as the row does, keeps the press from also switching branch.
+        .on_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(BranchMenuAction::MergeRow { index: row_index });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+        Container::new(button)
+            .with_margin_left(MERGE_BUTTON_GAP)
+            .finish()
     }
 }
 
