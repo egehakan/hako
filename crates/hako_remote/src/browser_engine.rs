@@ -1141,9 +1141,10 @@ impl Engine {
         let target = parse::<DialogReplyParams>(params).and_then(|params| {
             let session = self
                 .sessions
-                .get(params.bid)
+                .get_mut(params.bid)
                 .ok_or_else(|| no_session(params.bid))?;
-            let tab = match &params.tab {
+            let showing = session.dialog.take();
+            let tab = match params.tab.as_ref().or(showing.as_ref()) {
                 Some(tab) => session.tab(tab),
                 None => session.active_tab(),
             }
@@ -1726,6 +1727,9 @@ impl Engine {
                 let Some(kind) = params["type"].as_str().and_then(DialogKind::from_devtools) else {
                     return;
                 };
+                if let Some(session) = self.sessions.get_mut(bid) {
+                    session.dialog = Some(target.clone());
+                }
                 self.out.event(
                     EVENT_DIALOG,
                     &DialogEvent {
@@ -1744,6 +1748,13 @@ impl Engine {
                 );
             }
             "Page.javascriptDialogClosed" => {
+                if let Some(session) = self
+                    .sessions
+                    .get_mut(bid)
+                    .filter(|session| session.dialog.as_ref() == Some(&target))
+                {
+                    session.dialog = None;
+                }
                 self.out
                     .event(EVENT_DIALOG_CLOSED, &DialogClosedEvent { bid, tab: target });
             }

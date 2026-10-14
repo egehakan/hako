@@ -78,6 +78,8 @@ pub struct Session {
     /// When the client last did anything with the session.
     pub last_used: Instant,
     pub input: InputTranslator,
+    /// The tab showing a dialog, which a reply naming no tab answers.
+    pub dialog: Option<String>,
 }
 
 impl Session {
@@ -93,6 +95,7 @@ impl Session {
             last_frame: now,
             last_used: now,
             input: InputTranslator::default(),
+            dialog: None,
         }
     }
 
