@@ -166,6 +166,17 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("fs.read"), Some(Method::FsRead));
     assert_eq!(Method::from_name("fs.write"), Some(Method::FsWrite));
     assert_eq!(Method::from_name("fs.mkdir"), Some(Method::FsMkdir));
+    assert_eq!(Method::from_name("fs.stat"), Some(Method::FsStat));
+    assert_eq!(
+        Method::from_name("fs.create_file"),
+        Some(Method::FsCreateFile)
+    );
+    assert_eq!(Method::from_name("fs.rename"), Some(Method::FsRename));
+    assert_eq!(Method::from_name("fs.copy"), Some(Method::FsCopy));
+    assert_eq!(Method::from_name("fs.move"), Some(Method::FsMove));
+    assert_eq!(Method::from_name("fs.trash"), Some(Method::FsTrash));
+    assert_eq!(Method::from_name("fs.archive"), Some(Method::FsArchive));
+    assert_eq!(Method::from_name("fs.extract"), Some(Method::FsExtract));
     assert_eq!(
         Method::from_name("fs.transfer_info"),
         Some(Method::FsTransferInfo)

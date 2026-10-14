@@ -138,6 +138,9 @@ pub enum ErrorCode {
 pub struct RpcError {
     pub code: ErrorCode,
     pub message: String,
+    /// The limit that was passed, for some `too_large` errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
 }
 
 impl RpcError {
@@ -145,6 +148,14 @@ impl RpcError {
         Self {
             code,
             message: message.into(),
+            limit: None,
+        }
+    }
+
+    pub fn too_large(message: impl Into<String>, limit: u64) -> Self {
+        Self {
+            limit: Some(limit),
+            ..Self::new(ErrorCode::TooLarge, message)
         }
     }
 
@@ -187,6 +198,14 @@ pub enum Method {
     FsRead,
     FsWrite,
     FsMkdir,
+    FsStat,
+    FsCreateFile,
+    FsRename,
+    FsCopy,
+    FsMove,
+    FsTrash,
+    FsArchive,
+    FsExtract,
     FsTransferInfo,
     FsDownload,
     FsUploadBegin,
@@ -226,6 +245,14 @@ impl Method {
             "fs.read" => Some(Self::FsRead),
             "fs.write" => Some(Self::FsWrite),
             "fs.mkdir" => Some(Self::FsMkdir),
+            "fs.stat" => Some(Self::FsStat),
+            "fs.create_file" => Some(Self::FsCreateFile),
+            "fs.rename" => Some(Self::FsRename),
+            "fs.copy" => Some(Self::FsCopy),
+            "fs.move" => Some(Self::FsMove),
+            "fs.trash" => Some(Self::FsTrash),
+            "fs.archive" => Some(Self::FsArchive),
+            "fs.extract" => Some(Self::FsExtract),
             "fs.transfer_info" => Some(Self::FsTransferInfo),
             "fs.download" => Some(Self::FsDownload),
             "fs.upload_begin" => Some(Self::FsUploadBegin),
@@ -537,6 +564,100 @@ pub struct FsWriteParams {
 pub struct FsWrite {
     pub mtime: i64,
     pub size: u64,
+}
+
+/// The result of `fs.stat`, which describes a link itself rather than what it points to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsStat {
+    pub kind: FsEntryKind,
+    /// In bytes; zero for a directory.
+    pub size: u64,
+    pub mtime: i64,
+    /// What a link points to, as it is written in the link.
+    pub target: Option<String>,
+}
+
+/// The result of `fs.create_file`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsCreateFile {
+    pub mtime: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsRenameParams {
+    pub path: String,
+    /// The new name, in the same directory.
+    pub name: String,
+}
+
+/// A path a method answers with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsPath {
+    pub path: String,
+}
+
+/// Params of `fs.copy` and `fs.move`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsCopyParams {
+    pub sources: Vec<String>,
+    /// The directory the items go into.
+    pub destination: String,
+    /// `None` means [`FsOnConflict::Fail`].
+    #[serde(default)]
+    pub on_conflict: Option<FsOnConflict>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsTrashParams {
+    pub paths: Vec<String>,
+}
+
+/// What became of one item of a request that acts on several.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsItemResult {
+    pub source: String,
+    /// Where the item is now; `None` when that is not known, as after an error.
+    pub path: Option<String>,
+    pub error: Option<RpcError>,
+}
+
+/// The result of `fs.copy`, `fs.move` and `fs.trash`: one entry per item, in order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsItemResults {
+    pub results: Vec<FsItemResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsArchiveParams {
+    pub path: String,
+    /// Whether to leave out the directories that are only caches and dependencies; `None` means
+    /// yes.
+    #[serde(default)]
+    pub skip_heavy: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsArchive {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    /// How many directories were left out.
+    pub skipped: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsExtractParams {
+    pub path: String,
+    /// The directory the new directory is made in.
+    pub destination: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsExtract {
+    /// The new directory.
+    pub path: String,
+    /// How many files, directories and links were written.
+    pub entries: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
