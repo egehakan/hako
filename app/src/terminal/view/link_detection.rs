@@ -12,7 +12,9 @@ use crate::terminal::model::terminal_model::{WithinBlock, WithinModel};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        use warpui::SingletonEntity as _;
         use crate::{
+            terminal::cli_agent_sessions::CLIAgentSessionsModel,
             terminal::model::grid::grid_handler,
             terminal::ShellLaunchData,
             util::file::{FileLink, absolute_path_if_valid, ShellPathType},
@@ -582,10 +584,18 @@ impl super::TerminalView {
                 .and_then(|block| block.pwd().map(String::from)),
         };
 
+        // A CLI agent such as Claude Code in its fullscreen mode reads the mouse like an editor
+        // does, but the paths it prints are meant to be opened.
+        let is_scannable = match from_editor {
+            TerminalEditor::No => true,
+            TerminalEditor::Yes => CLIAgentSessionsModel::as_ref(ctx)
+                .session(self.view_id)
+                .is_some(),
+        };
         match pwd_to_scan_for {
             // Check if we are hovering on any file path. Don't scan for file path
             // if user is hovering from an editor like vim or nano.
-            Some(path) if matches!(from_editor, TerminalEditor::No) => {
+            Some(path) if is_scannable => {
                 let possible_paths = self.model.lock().possible_file_paths_at_point(position);
                 let max_columns = self.size_info.columns;
                 let shell_launch_data = self
