@@ -23,6 +23,7 @@ pub mod output_frame;
 pub mod output_stream;
 pub mod prompt_lines;
 pub mod protocol;
+pub mod rename;
 pub mod transfers;
 pub mod upload_names;
 pub mod uploads_area;

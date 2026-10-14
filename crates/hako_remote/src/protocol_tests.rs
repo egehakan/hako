@@ -141,9 +141,14 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("tab.create"), Some(Method::TabCreate));
     assert_eq!(Method::from_name("tab.activate"), Some(Method::TabActivate));
     assert_eq!(Method::from_name("tab.close"), Some(Method::TabClose));
+    assert_eq!(Method::from_name("tab.rename"), Some(Method::TabRename));
     assert_eq!(
         Method::from_name("folder.create"),
         Some(Method::FolderCreate)
+    );
+    assert_eq!(
+        Method::from_name("folder.rename"),
+        Some(Method::FolderRename)
     );
     assert_eq!(
         Method::from_name("term.subscribe"),

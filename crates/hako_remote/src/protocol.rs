@@ -187,7 +187,9 @@ pub enum Method {
     TabCreate,
     TabActivate,
     TabClose,
+    TabRename,
     FolderCreate,
+    FolderRename,
     TermSubscribe,
     TermUnsubscribe,
     TermResize,
@@ -234,7 +236,9 @@ impl Method {
             "tab.create" => Some(Self::TabCreate),
             "tab.activate" => Some(Self::TabActivate),
             "tab.close" => Some(Self::TabClose),
+            "tab.rename" => Some(Self::TabRename),
             "folder.create" => Some(Self::FolderCreate),
+            "folder.rename" => Some(Self::FolderRename),
             "term.subscribe" => Some(Self::TermSubscribe),
             "term.unsubscribe" => Some(Self::TermUnsubscribe),
             "term.resize" => Some(Self::TermResize),
@@ -384,6 +388,22 @@ pub struct FolderCreateParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderCreateResult {
     pub folder_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabRenameParams {
+    pub tab_id: String,
+    /// `None` goes back to the automatic title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderRenameParams {
+    pub folder_id: String,
+    /// `None` goes back to the default name.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Params of the methods that act on one tab.

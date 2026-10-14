@@ -398,7 +398,13 @@ impl HakoRemote {
             Method::TabClose => {
                 done(parse(params).and_then(|params| handlers::close_tab(params, ctx)))
             }
+            Method::TabRename => {
+                done(parse(params).and_then(|params| handlers::rename_tab(params, ctx)))
+            }
             Method::FolderCreate => return Self::create_folder(params, responder, ctx),
+            Method::FolderRename => {
+                done(parse(params).and_then(|params| handlers::rename_folder(params, ctx)))
+            }
             Method::TermSubscribe => {
                 return match parse(params) {
                     Ok(params) => {

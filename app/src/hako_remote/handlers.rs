@@ -2,11 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
-use ::hako_remote::files;
 use ::hako_remote::protocol::{
-    FolderCreateParams, FolderCreateResult, FsRoots, RpcError, TabCreateParams, TabCreateResult,
-    TabParams, TerminalColors, Theme,
+    FolderCreateParams, FolderCreateResult, FolderRenameParams, FsRoots, RpcError,
+    TabCreateParams, TabCreateResult, TabParams, TabRenameParams, TerminalColors, Theme,
 };
+use ::hako_remote::rename::{
+    MAX_FOLDER_NAME_CHARS, MAX_TAB_TITLE_CHARS, chosen_name, well_formed_tab_id,
+};
+use ::hako_remote::files;
 use pathfinder_color::ColorU;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,6 +25,7 @@ use crate::pane_group::PaneGroup;
 use crate::root_view::{OpenPath, open_new_from_path, open_new_window_get_handles};
 use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::tab_folders::format_hex_color;
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::view::{RemoteCloseRefusal, RemoteTabPlace};
 use crate::workspace::{Workspace, WorkspaceRegistry};
 
@@ -51,6 +55,24 @@ fn find_tab(
         .ok_or_else(|| RpcError::not_found("No such tab"))
 }
 
+fn find_folder(
+    folder_id: &str,
+    ctx: &AppContext,
+) -> Result<(ViewHandle<Workspace>, TabGroupId), RpcError> {
+    snapshot::workspace_windows(ctx)
+        .into_iter()
+        .find_map(|(_, workspace)| {
+            let group_id = workspace
+                .as_ref(ctx)
+                .tab_groups
+                .values()
+                .find(|group| group.is_folder() && snapshot::folder_id(group.id) == folder_id)?
+                .id;
+            Some((workspace, group_id))
+        })
+        .ok_or_else(|| RpcError::not_found("No such folder"))
+}
+
 /// Where a new tab goes.
 enum TabDestination {
     Window(ViewHandle<Workspace>, RemoteTabPlace),
@@ -62,21 +84,11 @@ enum TabDestination {
 fn tab_destination(params: TabCreateParams, ctx: &AppContext) -> Result<TabDestination, RpcError> {
     let windows = snapshot::workspace_windows(ctx);
     if let Some(folder_id) = params.folder_id {
-        return windows
-            .into_iter()
-            .find_map(|(_, workspace)| {
-                let group_id = workspace
-                    .as_ref(ctx)
-                    .tab_groups
-                    .values()
-                    .find(|group| group.is_folder() && snapshot::folder_id(group.id) == folder_id)?
-                    .id;
-                Some(TabDestination::Window(
-                    workspace,
-                    RemoteTabPlace::Folder(group_id),
-                ))
-            })
-            .ok_or_else(|| RpcError::not_found("No such folder"));
+        let (workspace, group_id) = find_folder(&folder_id, ctx)?;
+        return Ok(TabDestination::Window(
+            workspace,
+            RemoteTabPlace::Folder(group_id),
+        ));
     }
 
     let directory = match params.directory {
@@ -256,6 +268,32 @@ pub(super) fn close_tab(params: TabParams, ctx: &mut AppContext) -> Result<(), R
             }
             RemoteCloseRefusal::LastTab => RpcError::failed("The last tab cannot be closed"),
         })
+}
+
+pub(super) fn rename_tab(params: TabRenameParams, ctx: &mut AppContext) -> Result<(), RpcError> {
+    well_formed_tab_id(&params.tab_id)?;
+    let title = chosen_name(params.title.as_deref(), MAX_TAB_TITLE_CHARS)?;
+    let (_, workspace, pane_group_id) = find_tab(&params.tab_id, ctx)?;
+    let renamed = workspace.update(ctx, |workspace, ctx| {
+        workspace.rename_tab_for_remote(pane_group_id, title, ctx)
+    });
+    renamed
+        .then_some(())
+        .ok_or_else(|| RpcError::not_found("No such tab"))
+}
+
+pub(super) fn rename_folder(
+    params: FolderRenameParams,
+    ctx: &mut AppContext,
+) -> Result<(), RpcError> {
+    let name = chosen_name(params.name.as_deref(), MAX_FOLDER_NAME_CHARS)?;
+    let (workspace, group_id) = find_folder(&params.folder_id, ctx)?;
+    let renamed = workspace.update(ctx, |workspace, ctx| {
+        workspace.rename_folder_for_remote(group_id, name, ctx)
+    });
+    renamed
+        .then_some(())
+        .ok_or_else(|| RpcError::not_found("No such folder"))
 }
 
 fn closing_a_window_quits_the_app(ctx: &AppContext) -> bool {

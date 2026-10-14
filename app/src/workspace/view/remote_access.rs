@@ -1,4 +1,5 @@
-//! What a remote client can ask of a window: opening and closing tabs.
+//! What a remote client can ask of a window: opening, closing and renaming tabs, and renaming
+//! folders.
 
 use std::path::PathBuf;
 
@@ -85,6 +86,52 @@ impl Workspace {
             self.window_close_confirmed = true;
         }
         Ok(())
+    }
+
+    /// Gives the tab of `pane_group_id` its own title, or for `None` goes back to the automatic
+    /// one, as renaming it on the Mac does. Returns whether there is such a tab.
+    pub(crate) fn rename_tab_for_remote(
+        &mut self,
+        pane_group_id: EntityId,
+        title: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(tab) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.pane_group.id() == pane_group_id)
+        else {
+            return false;
+        };
+        tab.pane_group.update(ctx, |pane_group, ctx| {
+            pane_group.set_custom_title(title, ctx);
+        });
+        self.update_window_title(ctx);
+        ctx.dispatch_global_action("workspace:save_app", ());
+        ctx.notify();
+        true
+    }
+
+    /// Names the folder of `group_id`, or for `None` goes back to its default name, as renaming
+    /// it on the Mac does. Returns whether there is such a folder.
+    pub(crate) fn rename_folder_for_remote(
+        &mut self,
+        group_id: TabGroupId,
+        name: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(group) = self
+            .tab_groups
+            .get_mut(&group_id)
+            .filter(|group| group.is_folder())
+        else {
+            return false;
+        };
+        group.name = name;
+        self.publish_tab_folder(group_id, ctx);
+        ctx.dispatch_global_action("workspace:save_app", ());
+        ctx.notify();
+        true
     }
 }
 

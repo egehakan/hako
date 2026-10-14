@@ -7,7 +7,8 @@ use warpui::{App, SingletonEntity};
 
 use super::{RemoteCloseRefusal, RemoteTabPlace};
 use crate::terminal::general_settings::GeneralSettings;
-use crate::workspace::tab_folders::normalized_directory;
+use crate::workspace::tab_folders::{TabFolders, normalized_directory};
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::TabSettings;
 use crate::workspace::view::tests::{initialize_app, mock_workspace};
 
@@ -108,6 +109,58 @@ fn a_remote_tab_for_a_folder_whose_directory_is_gone_does_not_open() {
 
             assert!(opened.is_none());
             assert_eq!(workspace.tab_count(), 1);
+        });
+    });
+}
+
+#[test]
+fn a_remote_rename_sets_and_resets_the_tab_title() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let tab = workspace.tabs[0].pane_group.id();
+            let automatic = workspace.tab_title(0, ctx);
+
+            assert!(workspace.rename_tab_for_remote(tab, Some("Builds".to_owned()), ctx));
+            assert_eq!(workspace.tab_title(0, ctx), "Builds");
+
+            assert!(workspace.rename_tab_for_remote(tab, None, ctx));
+            assert_eq!(workspace.tab_title(0, ctx), automatic);
+
+            let not_a_tab = ctx.view_id();
+            assert!(!workspace.rename_tab_for_remote(not_a_tab, Some("x".to_owned()), ctx));
+        });
+    });
+}
+
+#[test]
+fn a_remote_rename_names_the_folder_in_every_window_and_back() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let directory = normalized_directory(temp.path()).join("project");
+        fs::create_dir_all(&directory).expect("project dir");
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let group_id = workspace.add_tab_folder_for_directory(directory.clone(), ctx);
+
+            assert!(workspace.rename_folder_for_remote(group_id, Some("Site".to_owned()), ctx));
+            assert_eq!(workspace.tab_groups[&group_id].display_name(), "Site");
+            let shared = TabFolders::as_ref(ctx)
+                .folders()
+                .iter()
+                .find(|folder| folder.directory == directory)
+                .and_then(|folder| folder.name.clone());
+            assert_eq!(shared.as_deref(), Some("Site"));
+
+            assert!(workspace.rename_folder_for_remote(group_id, None, ctx));
+            assert_eq!(workspace.tab_groups[&group_id].display_name(), "project");
+
+            assert!(!workspace.rename_folder_for_remote(TabGroupId::new(), None, ctx));
         });
     });
 }

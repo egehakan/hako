@@ -5282,6 +5282,12 @@ impl PaneGroup {
         }
     }
 
+    /// Sets the tab-level custom title, or clears it for `None`, leaving focus where it is.
+    pub fn set_custom_title(&mut self, title: Option<String>, ctx: &mut ViewContext<Self>) {
+        self.custom_title = title.filter(|title| !title.is_empty());
+        ctx.notify();
+    }
+
     pub fn clear_title(&mut self, ctx: &mut ViewContext<Self>) {
         self.custom_title = None;
 
