@@ -1,4 +1,5 @@
 use std::iter;
+use std::path::{Path, PathBuf};
 
 use warp_util::path::{CleanPathResult, LineAndColumnArg};
 
@@ -10,6 +11,8 @@ use super::{
 use crate::terminal::model::grid::grid_handler::PossiblePath;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinModel;
+use crate::test_util::mock_blockgrid;
+use warp_terminal::model::grid::Dimensions;
 
 #[test]
 fn strips_only_sentence_periods() {
@@ -331,4 +334,119 @@ fn only_an_existing_regular_file_is_opened_as_one() {
         existing_file_of_hyperlink(&uri(&directory.path().join("gone.md")), None),
         None
     );
+}
+
+/// The file, and line, that a hover on the middle of `needle` on `row` of the screen highlights
+/// for a click to open, with relative paths taken from `cwd`. Rows are separated by `\n` where
+/// the terminal wrapped them and by `\r\n` where the program broke the line.
+fn file_at(screen: &str, row: usize, needle: &str, cwd: &Path) -> Option<(PathBuf, Option<usize>)> {
+    let line = screen.split('\n').nth(row).expect("the row exists");
+    let start = line.find(needle).expect("the needle is on the row");
+    let col = line[..start].chars().count() + needle.chars().count() / 2;
+    let grid = mock_blockgrid(screen);
+    let candidates = grid
+        .grid_handler()
+        .possible_file_paths_at_point(Point { row, col })
+        .into_iter()
+        .map(WithinModel::AltScreen);
+    let link = TerminalView::compute_valid_paths(
+        cwd.to_str().unwrap(),
+        candidates,
+        grid.grid_handler().columns(),
+        None,
+    )?;
+    let GridHighlightedLink::File(file_link) = link else {
+        return None;
+    };
+    let file_link = file_link.get_inner();
+    Some((
+        file_link.absolute_path.clone(),
+        file_link
+            .line_and_column_num
+            .map(|line_and_column| line_and_column.line_num),
+    ))
+}
+
+fn project_with(files: &[&str]) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    for file in files {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "x\n").unwrap();
+    }
+    (dir, root)
+}
+
+#[test]
+fn paths_in_the_shapes_tools_print_them_open_the_file() {
+    let (_dir, root) = project_with(&[
+        "src/main.rs",
+        "my dir/file name.txt",
+        "report (1).pdf",
+        "@scope/pkg/index.js",
+        "c++/a+b.txt",
+        "\u{e7}al\u{131}\u{15f}ma/\u{f6}zet.md",
+    ]);
+    let abs = root.to_str().unwrap();
+    let main = root.join("src/main.rs");
+    let cases = [
+        (format!("see {abs}/my dir/file name.txt now"), "name", root.join("my dir/file name.txt"), None),
+        (format!("see {abs}/report (1).pdf now"), "report", root.join("report (1).pdf"), None),
+        (format!("see {abs}/@scope/pkg/index.js"), "pkg", root.join("@scope/pkg/index.js"), None),
+        (format!("see {abs}/c++/a+b.txt now"), "a+b", root.join("c++/a+b.txt"), None),
+        (
+            format!("see {abs}/\u{e7}al\u{131}\u{15f}ma/\u{f6}zet.md now"),
+            "\u{f6}zet",
+            root.join("\u{e7}al\u{131}\u{15f}ma/\u{f6}zet.md"),
+            None,
+        ),
+        ("src/main.rs:12:5: error".to_owned(), "main", main.clone(), Some(12)),
+        ("see src/main.rs, then src/main.rs.".to_owned(), "main", main.clone(), None),
+        ("(see src/main.rs:12)".to_owned(), "main", main.clone(), Some(12)),
+        ("edit `src/main.rs` or \"src/main.rs\"".to_owned(), "main", main.clone(), None),
+        ("        modified:   src/main.rs".to_owned(), "main", main.clone(), None),
+        ("-rw-r--r--@ 1 me staff 2 Oct 14 12:00 report (1).pdf".to_owned(), "report", root.join("report (1).pdf"), None),
+        ("src/main.rs:12:fn main() {".to_owned(), "main", main.clone(), Some(12)),
+        ("see [main](src/main.rs) here".to_owned(), "main.rs", main.clone(), None),
+        ("\u{23bf}  Updated src/main.rs with 3 additions".to_owned(), "main", main.clone(), None),
+    ];
+    for (screen, needle, file, line) in cases {
+        assert_eq!(
+            file_at(&screen, 0, needle, &root),
+            Some((file, line)),
+            "in {screen:?}"
+        );
+    }
+}
+
+#[test]
+fn a_path_broken_over_rows_after_indentation_opens_the_whole_file() {
+    let (_dir, root) = project_with(&["very/long/directory/structure/for/a/really_long_file_name.rs"]);
+    let path = root.join("very/long/directory/structure/for/a/really_long_file_name.rs");
+    let path_text = path.to_str().unwrap();
+    let (first, rest) = path_text.split_at(path_text.find("structure").unwrap());
+    let screen = format!("\u{25cf} Edited {first}\r\n  {rest} with 2 additions");
+
+    assert_eq!(file_at(&screen, 0, "directory", &root), Some((path.clone(), None)));
+    assert_eq!(file_at(&screen, 1, "really", &root), Some((path, None)));
+}
+
+#[test]
+fn rows_are_joined_only_into_a_path_that_exists() {
+    let (_dir, root) = project_with(&["src/main.rs", "src/mainly.rs"]);
+    let screen = "  read src/mai\r\n  nly.rs and stop";
+
+    assert_eq!(
+        file_at(screen, 0, "mai", &root),
+        Some((root.join("src/mainly.rs"), None))
+    );
+    assert_eq!(file_at(screen, 1, "stop", &root), None);
+
+    let screen = "  read src/main.rs\r\n  only that";
+    assert_eq!(
+        file_at(screen, 0, "main", &root),
+        Some((root.join("src/main.rs"), None))
+    );
+    assert_eq!(file_at(screen, 1, "only", &root), None);
 }
