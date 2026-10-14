@@ -65,7 +65,9 @@ use crate::util::git::{
     git_operation_in_progress,
 };
 use crate::view_components::DismissibleToast;
-use crate::view_components::action_button::{ActionButton, DangerPrimaryTheme, NakedTheme};
+use crate::view_components::action_button::{
+    ActionButton, DangerPrimaryTheme, NakedTheme, PrimaryTheme,
+};
 use crate::workspace::ToastStack;
 
 /// Every row shares one height so the list can be virtualised.
@@ -368,10 +370,15 @@ impl Default for RepoMouseStates {
 }
 
 /// What a confirmation asks about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ConfirmedAction {
     Discard,
     AbortMerge,
+    /// Merging a branch into the one that is checked out.
+    Merge {
+        branch: String,
+        kind: GitMergeKind,
+    },
 }
 
 struct Confirmation {
@@ -466,7 +473,11 @@ impl NestedReposView {
                 let repo = me.branch_menu_repo.clone();
                 me.close_branch_menu(ctx);
                 if let Some(repo) = repo {
-                    me.merge(&repo, branch.clone(), *kind, ctx);
+                    let action = ConfirmedAction::Merge {
+                        branch: branch.clone(),
+                        kind: *kind,
+                    };
+                    me.ask_to_confirm(&repo, action, "Merge".to_owned(), ctx);
                 }
             }
             BranchMenuEvent::Close => me.close_branch_menu(ctx),
@@ -1204,8 +1215,18 @@ impl NestedReposView {
         if self.git_dialog.is_some() || self.confirmation.is_some() || self.is_running(repo_root) {
             return;
         }
-        self.confirm_button
-            .update(ctx, |button, ctx| button.set_label(label, ctx));
+        let is_destructive = match action {
+            ConfirmedAction::Discard | ConfirmedAction::AbortMerge => true,
+            ConfirmedAction::Merge { .. } => false,
+        };
+        self.confirm_button.update(ctx, |button, ctx| {
+            button.set_label(label, ctx);
+            if is_destructive {
+                button.set_theme(DangerPrimaryTheme, ctx);
+            } else {
+                button.set_theme(PrimaryTheme, ctx);
+            }
+        });
         self.confirmation = Some(Confirmation {
             repo_root: repo_root.to_path_buf(),
             action,
@@ -1224,11 +1245,12 @@ impl NestedReposView {
             return;
         }
         let repo = confirmation.repo_root.clone();
-        let action = confirmation.action;
+        let action = confirmation.action.clone();
         self.confirmation = None;
         match action {
             ConfirmedAction::Discard => self.discard(repo, ctx),
             ConfirmedAction::AbortMerge => self.abort_merge(&repo, ctx),
+            ConfirmedAction::Merge { branch, kind } => self.merge(&repo, branch, kind, ctx),
         }
     }
 
@@ -2045,11 +2067,11 @@ impl NestedReposView {
             || confirmation.repo_root.display().to_string(),
             |entry| entry.display_name.clone(),
         );
-        let (title, description) = match confirmation.action {
+        let (title, description) = match &confirmation.action {
             ConfirmedAction::Discard => {
                 let file_count = entry.map_or(0, changed_file_count);
                 (
-                    "Discard all uncommitted changes?",
+                    "Discard all uncommitted changes?".to_owned(),
                     format!(
                         "This discards {} in {repo_name}: edits to tracked files are reverted and \
                          untracked files are deleted. It cannot be undone.",
@@ -2065,7 +2087,7 @@ impl NestedReposView {
                     .unwrap_or_else(|| "the other branch".to_owned());
                 let current = status.map_or_else(String::new, |status| status.branch.clone());
                 (
-                    "Abort the merge?",
+                    "Abort the merge?".to_owned(),
                     format!(
                         "This abandons merging {merged} into {current} in {repo_name}: every file \
                          goes back to how it was before the merge, and the conflicts resolved so \
@@ -2073,10 +2095,24 @@ impl NestedReposView {
                     ),
                 )
             }
+            ConfirmedAction::Merge { branch, .. } => {
+                let current = entry.and_then(|entry| entry.status.as_ref()).map_or_else(
+                    || "the current branch".to_owned(),
+                    |status| status.branch.clone(),
+                );
+                (
+                    format!("Merge {branch} into {current}?"),
+                    format!(
+                        "This merges {branch} into {current} in {repo_name}. If they conflict, \
+                         the merge stops for you to resolve the conflicts, then commit or abort \
+                         it."
+                    ),
+                )
+            }
         };
 
         let dialog = Dialog::new(
-            title.to_string(),
+            title,
             Some(description),
             UiComponentStyles {
                 width: Some(460.),
