@@ -1,6 +1,7 @@
 use std::iter;
 use std::path::{Path, PathBuf};
 
+use warp_terminal::model::grid::Dimensions;
 use warp_util::path::{CleanPathResult, LineAndColumnArg};
 
 use super::super::TerminalView;
@@ -12,7 +13,6 @@ use crate::terminal::model::grid::grid_handler::PossiblePath;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinModel;
 use crate::test_util::mock_blockgrid;
-use warp_terminal::model::grid::Dimensions;
 
 #[test]
 fn strips_only_sentence_periods() {
@@ -391,25 +391,90 @@ fn paths_in_the_shapes_tools_print_them_open_the_file() {
     let abs = root.to_str().unwrap();
     let main = root.join("src/main.rs");
     let cases = [
-        (format!("see {abs}/my dir/file name.txt now"), "name", root.join("my dir/file name.txt"), None),
-        (format!("see {abs}/report (1).pdf now"), "report", root.join("report (1).pdf"), None),
-        (format!("see {abs}/@scope/pkg/index.js"), "pkg", root.join("@scope/pkg/index.js"), None),
-        (format!("see {abs}/c++/a+b.txt now"), "a+b", root.join("c++/a+b.txt"), None),
+        (
+            format!("see {abs}/my dir/file name.txt now"),
+            "name",
+            root.join("my dir/file name.txt"),
+            None,
+        ),
+        (
+            format!("see {abs}/report (1).pdf now"),
+            "report",
+            root.join("report (1).pdf"),
+            None,
+        ),
+        (
+            format!("see {abs}/@scope/pkg/index.js"),
+            "pkg",
+            root.join("@scope/pkg/index.js"),
+            None,
+        ),
+        (
+            format!("see {abs}/c++/a+b.txt now"),
+            "a+b",
+            root.join("c++/a+b.txt"),
+            None,
+        ),
         (
             format!("see {abs}/\u{e7}al\u{131}\u{15f}ma/\u{f6}zet.md now"),
             "\u{f6}zet",
             root.join("\u{e7}al\u{131}\u{15f}ma/\u{f6}zet.md"),
             None,
         ),
-        ("src/main.rs:12:5: error".to_owned(), "main", main.clone(), Some(12)),
-        ("see src/main.rs, then src/main.rs.".to_owned(), "main", main.clone(), None),
-        ("(see src/main.rs:12)".to_owned(), "main", main.clone(), Some(12)),
-        ("edit `src/main.rs` or \"src/main.rs\"".to_owned(), "main", main.clone(), None),
-        ("        modified:   src/main.rs".to_owned(), "main", main.clone(), None),
-        ("-rw-r--r--@ 1 me staff 2 Oct 14 12:00 report (1).pdf".to_owned(), "report", root.join("report (1).pdf"), None),
-        ("src/main.rs:12:fn main() {".to_owned(), "main", main.clone(), Some(12)),
-        ("see [main](src/main.rs) here".to_owned(), "main.rs", main.clone(), None),
-        ("\u{23bf}  Updated src/main.rs with 3 additions".to_owned(), "main", main.clone(), None),
+        (
+            "src/main.rs:12:5: error".to_owned(),
+            "main",
+            main.clone(),
+            Some(12),
+        ),
+        (
+            "see src/main.rs, then src/main.rs.".to_owned(),
+            "main",
+            main.clone(),
+            None,
+        ),
+        (
+            "(see src/main.rs:12)".to_owned(),
+            "main",
+            main.clone(),
+            Some(12),
+        ),
+        (
+            "edit `src/main.rs` or \"src/main.rs\"".to_owned(),
+            "main",
+            main.clone(),
+            None,
+        ),
+        (
+            "        modified:   src/main.rs".to_owned(),
+            "main",
+            main.clone(),
+            None,
+        ),
+        (
+            "-rw-r--r--@ 1 me staff 2 Oct 14 12:00 report (1).pdf".to_owned(),
+            "report",
+            root.join("report (1).pdf"),
+            None,
+        ),
+        (
+            "src/main.rs:12:fn main() {".to_owned(),
+            "main",
+            main.clone(),
+            Some(12),
+        ),
+        (
+            "see [main](src/main.rs) here".to_owned(),
+            "main.rs",
+            main.clone(),
+            None,
+        ),
+        (
+            "\u{23bf}  Updated src/main.rs with 3 additions".to_owned(),
+            "main",
+            main.clone(),
+            None,
+        ),
     ];
     for (screen, needle, file, line) in cases {
         assert_eq!(
@@ -422,13 +487,17 @@ fn paths_in_the_shapes_tools_print_them_open_the_file() {
 
 #[test]
 fn a_path_broken_over_rows_after_indentation_opens_the_whole_file() {
-    let (_dir, root) = project_with(&["very/long/directory/structure/for/a/really_long_file_name.rs"]);
+    let (_dir, root) =
+        project_with(&["very/long/directory/structure/for/a/really_long_file_name.rs"]);
     let path = root.join("very/long/directory/structure/for/a/really_long_file_name.rs");
     let path_text = path.to_str().unwrap();
     let (first, rest) = path_text.split_at(path_text.find("structure").unwrap());
     let screen = format!("\u{25cf} Edited {first}\r\n  {rest} with 2 additions");
 
-    assert_eq!(file_at(&screen, 0, "directory", &root), Some((path.clone(), None)));
+    assert_eq!(
+        file_at(&screen, 0, "directory", &root),
+        Some((path.clone(), None))
+    );
     assert_eq!(file_at(&screen, 1, "really", &root), Some((path, None)));
 }
 

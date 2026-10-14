@@ -1319,9 +1319,7 @@ fn test_possible_file_paths_across_several_hard_wrapped_lines() {
     let first_line = "  /home/user/workspace/project/";
     let second_line = "  src/modules/core/internal/";
     let third_line = "  README.md";
-    let blockgrid = mock_blockgrid(&format!(
-        "{first_line}\r\n{second_line}\r\n{third_line}"
-    ));
+    let blockgrid = mock_blockgrid(&format!("{first_line}\r\n{second_line}\r\n{third_line}"));
     let full_path = "/home/user/workspace/project/src/modules/core/internal/README.md";
 
     for hover_point in [

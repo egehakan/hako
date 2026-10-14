@@ -354,7 +354,8 @@ fn merge_buttons_are_tall_enough_to_draw_their_label() {
                 },
                 ctx,
             );
-            let scene = presenter.build_scene(vec2f(MENU_WIDTH, MENU_MAX_LIST_HEIGHT), 1., None, ctx);
+            let scene =
+                presenter.build_scene(vec2f(MENU_WIDTH, MENU_MAX_LIST_HEIGHT), 1., None, ctx);
 
             let appearance = Appearance::as_ref(ctx);
             let theme = appearance.theme();

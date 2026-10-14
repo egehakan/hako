@@ -1400,14 +1400,12 @@ impl GridHandler {
             first_prefix_row == point.row || scanned_prefix_width <= LINK_NUM_CHARACTER_SCAN;
         let suffix_reaches_row_end =
             last_suffix_row == point.row || scanned_suffix_width <= LINK_NUM_CHARACTER_SCAN;
-        let hard_wrapped = self.join_hard_wrapped_rows(
-            HardWrapScan {
-                prefix_chunks: prefix_chunks.clone(),
-                first_prefix_row: prefix_starts_at_row_start.then_some(first_prefix_row),
-                suffix_chunks: suffix_chunks.clone(),
-                last_suffix_row: suffix_reaches_row_end.then_some(last_suffix_row),
-            },
-        );
+        let hard_wrapped = self.join_hard_wrapped_rows(HardWrapScan {
+            prefix_chunks: prefix_chunks.clone(),
+            first_prefix_row: prefix_starts_at_row_start.then_some(first_prefix_row),
+            suffix_chunks: suffix_chunks.clone(),
+            last_suffix_row: suffix_reaches_row_end.then_some(last_suffix_row),
+        });
 
         let mut candidates = Vec::new();
         if let Some((prefix_chunks, suffix_chunks)) = hard_wrapped {
@@ -1553,10 +1551,7 @@ impl GridHandler {
     /// line into itself: a row whose content ends in a word, followed by a row that starts with
     /// indentation and then a word. Claude Code breaks long paths this way. `None` when neither
     /// side continues.
-    fn join_hard_wrapped_rows(
-        &self,
-        scan: HardWrapScan,
-    ) -> Option<(Vec<Fragment>, Vec<Fragment>)> {
+    fn join_hard_wrapped_rows(&self, scan: HardWrapScan) -> Option<(Vec<Fragment>, Vec<Fragment>)> {
         let HardWrapScan {
             mut prefix_chunks,
             first_prefix_row,
@@ -1649,7 +1644,9 @@ impl GridHandler {
         while fragments.last().is_some_and(Fragment::is_blank) {
             gap += fragments.pop()?.total_cell_width;
         }
-        fragments.last().filter(|fragment| !fragment.has_separator())?;
+        fragments
+            .last()
+            .filter(|fragment| !fragment.has_separator())?;
         Some(gap)
     }
 
