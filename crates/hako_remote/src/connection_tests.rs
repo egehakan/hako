@@ -117,7 +117,7 @@ fn connects_with_the_key_then_answers_a_request_and_sends_an_event() {
     relay.spawn(relay_once(listener, request, seen_sender));
 
     let config = ConnectionConfig::new(&format!("ws://127.0.0.1:{port}"), "secret-key").unwrap();
-    let (connection, incoming) = Connection::start(config).unwrap();
+    let (connection, incoming) = Connection::start(config, PreviewPorts::default()).unwrap();
 
     assert!(matches!(
         incoming.recv_blocking().unwrap(),

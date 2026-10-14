@@ -23,6 +23,7 @@ pub const EVENT_TERM_SIZE: &str = "term.size";
 pub const EVENT_TERM_CLOSED: &str = "term.closed";
 pub const EVENT_GIT_CHANGED: &str = "git.changed";
 pub const EVENT_NOTIFY: &str = "notify";
+pub const EVENT_PREVIEWS_CHANGED: &str = "previews.changed";
 
 pub const NOTIFICATION_TERM_INPUT: &str = "term.input";
 
@@ -56,6 +57,27 @@ pub enum Frame {
     Ping,
     #[serde(rename = "pong")]
     Pong,
+    /// Asks for a byte stream to a port of a preview.
+    #[serde(rename = "sopen")]
+    StreamOpen {
+        sid: u32,
+        preview: String,
+        /// The preview's main port when left out.
+        #[serde(default)]
+        port: Option<u16>,
+    },
+    #[serde(rename = "sopened")]
+    StreamOpened { sid: u32 },
+    /// The sender sends no more data on the stream; with an error, the stream is gone.
+    #[serde(rename = "sclose")]
+    StreamClose {
+        sid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<RpcError>,
+    },
+    /// The receiver has passed `bytes` more of the stream's data on.
+    #[serde(rename = "sack")]
+    StreamAck { sid: u32, bytes: u64 },
 }
 
 impl Frame {
@@ -227,6 +249,10 @@ pub enum Method {
     GitShow,
     GitMerge,
     GitMergeAbort,
+    PreviewList,
+    PreviewStop,
+    PreviewRestart,
+    PreviewRemove,
 }
 
 impl Method {
@@ -278,6 +304,10 @@ impl Method {
             "git.show" => Some(Self::GitShow),
             "git.merge" => Some(Self::GitMerge),
             "git.merge_abort" => Some(Self::GitMergeAbort),
+            "preview.list" => Some(Self::PreviewList),
+            "preview.stop" => Some(Self::PreviewStop),
+            "preview.restart" => Some(Self::PreviewRestart),
+            "preview.remove" => Some(Self::PreviewRemove),
             _ => None,
         }
     }
@@ -1156,6 +1186,9 @@ pub struct Notify {
     pub body: String,
     pub session_id: String,
     pub tab_id: Option<String>,
+    /// The preview a `preview_ready` is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1164,6 +1197,7 @@ pub enum NotifyKind {
     AgentWaiting,
     AgentDone,
     CommandDone,
+    PreviewReady,
 }
 
 pub const NOTIFY_TITLE_MAX_CHARS: usize = 100;

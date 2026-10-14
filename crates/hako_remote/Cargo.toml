@@ -21,7 +21,7 @@ rustls-platform-verifier = "0.7.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26.4"
 url.workspace = true
 zip = "2.1"

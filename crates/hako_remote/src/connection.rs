@@ -29,6 +29,7 @@ use crate::protocol::{
     CLOSE_REPLACED, Frame, IDLE_TIMEOUT, MAX_FRAME_BYTES, PING_INTERVAL, REPLACED_RECONNECT_DELAY,
     Response, RpcError,
 };
+use crate::streams::{PreviewPorts, STREAM_QUEUE, Streams};
 
 const AGENT_PATH: &str = "/ws/agent";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -183,9 +184,11 @@ pub struct Connection {
 
 impl Connection {
     /// Starts connecting on a thread of its own. The receiver yields state changes, requests and
-    /// notifications.
+    /// notifications. Byte streams the relay asks for are opened to `ports` on that thread, out
+    /// of the app's way.
     pub fn start(
         config: ConnectionConfig,
+        ports: PreviewPorts,
     ) -> io::Result<(Self, async_channel::Receiver<Incoming>)> {
         let runtime = Builder::new_multi_thread()
             .worker_threads(1)
@@ -199,6 +202,7 @@ impl Connection {
         let output_backlog = Arc::new(AtomicUsize::new(0));
         runtime.spawn(run(
             config,
+            ports,
             epoch.clone(),
             incoming_sender,
             Outbox {
@@ -299,6 +303,7 @@ enum End {
 
 async fn run(
     config: ConnectionConfig,
+    ports: PreviewPorts,
     epoch: Arc<AtomicU64>,
     incoming: async_channel::Sender<Incoming>,
     mut outgoing: Outbox,
@@ -323,7 +328,7 @@ async fn run(
                     queue: queue.clone(),
                 };
                 let end = if report(&incoming, ConnectionState::Connected).await {
-                    serve(socket, sender, &incoming, &mut outgoing).await
+                    serve(socket, sender, &ports, &incoming, &mut outgoing).await
                 } else {
                     End::Stopped
                 };
@@ -395,17 +400,29 @@ async fn connect(config: &ConnectionConfig) -> Result<Socket, String> {
     }
 }
 
+/// Passes frames between the socket and the app, and between the socket and the byte streams,
+/// until the connection ends, which ends every stream with it.
 async fn serve(
     socket: Socket,
     sender: OutgoingSender,
+    ports: &PreviewPorts,
     incoming: &async_channel::Sender<Incoming>,
     outgoing: &mut Outbox,
 ) -> End {
     let (mut sink, mut stream) = socket.split();
     let mut ping = interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
     let mut idle_deadline = Instant::now() + IDLE_TIMEOUT;
+    let (stream_out, mut stream_queue) = tokio::sync::mpsc::channel(STREAM_QUEUE);
+    let (mut streams, mut ended) = Streams::new(ports.clone(), stream_out);
     loop {
         let message = tokio::select! {
+            // Terminal output and answers go before stream data, which waits while they queue.
+            biased;
+            queued = outgoing.next() => match queued {
+                Some(queued) if queued.epoch == sender.epoch => queued.message,
+                Some(_) => continue,
+                None => return End::Stopped,
+            },
             received = stream.next() => {
                 let message = match received {
                     Some(Ok(message)) => message,
@@ -415,24 +432,27 @@ async fn serve(
                 idle_deadline = Instant::now() + IDLE_TIMEOUT;
                 match message {
                     Message::Text(text) => {
-                        if !dispatch(&text, &sender, incoming).await {
+                        if !dispatch(&text, &sender, incoming, &mut streams).await {
                             return End::Stopped;
                         }
                     }
+                    Message::Binary(frame) => {
+                        streams.data(&frame);
+                    }
                     Message::Close(frame) => return closed(frame),
-                    Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
                 }
                 continue;
             }
-            queued = outgoing.next() => match queued {
-                Some(queued) if queued.epoch == sender.epoch => queued.message,
-                Some(_) => continue,
-                None => return End::Stopped,
-            },
+            Some((sid, key)) = ended.recv() => {
+                streams.ended(sid, key);
+                continue;
+            }
             _ = ping.tick() => Message::Ping(Vec::new()),
             () = sleep_until(idle_deadline) => {
                 return End::Lost("The server has been silent for a minute".to_owned());
             }
+            Some(message) = stream_queue.recv() => message,
         };
         // A peer that stopped reading would otherwise block here and keep the idle check, which
         // only runs between sends, from ever firing.
@@ -452,11 +472,13 @@ fn closed(frame: Option<CloseFrame<'_>>) -> End {
     }
 }
 
-/// Hands a text frame to the app. Returns false once the app no longer listens.
+/// Hands a text frame to the app, or a stream message to its stream. Returns false once the app
+/// no longer listens.
 async fn dispatch(
     text: &str,
     sender: &OutgoingSender,
     incoming: &async_channel::Sender<Incoming>,
+    streams: &mut Streams,
 ) -> bool {
     let frame = match Frame::decode(text) {
         Ok(frame) => frame,
@@ -475,7 +497,17 @@ async fn dispatch(
             },
         },
         Frame::Notification { method, params } => Incoming::Notification { method, params },
-        Frame::Response(_) | Frame::Event { .. } | Frame::Ping | Frame::Pong => return true,
+        frame @ (Frame::StreamOpen { .. }
+        | Frame::StreamClose { .. }
+        | Frame::StreamAck { .. }) => {
+            streams.handle(frame);
+            return true;
+        }
+        Frame::Response(_)
+        | Frame::Event { .. }
+        | Frame::Ping
+        | Frame::Pong
+        | Frame::StreamOpened { .. } => return true,
     };
     incoming.send(item).await.is_ok()
 }
