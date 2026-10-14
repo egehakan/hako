@@ -113,16 +113,28 @@ fn takes_only_finished_request_files_and_keeps_the_state_whole() {
     let directory = tempfile::tempdir().unwrap();
     let requests = directory.path().join(REQUESTS_DIR);
     fs::create_dir_all(&requests).unwrap();
-    fs::write(requests.join("a.json"), r#"{ "action": "stop", "id": "web" }"#).unwrap();
+    fs::write(
+        requests.join("a.json"),
+        r#"{ "action": "stop", "id": "web" }"#,
+    )
+    .unwrap();
     fs::write(requests.join(".b.json.tmp"), "{").unwrap();
     fs::write(requests.join("c.json"), "{").unwrap();
     let taken = take_requests(&requests);
     assert_eq!(taken.len(), 2);
     assert!(matches!(
-        taken.iter().find(|file| file.file == "a.json").unwrap().request,
+        taken
+            .iter()
+            .find(|file| file.file == "a.json")
+            .unwrap()
+            .request,
         Ok(PreviewRequest::Stop(_))
     ));
-    assert!(taken.iter().any(|file| file.file == "c.json" && file.request.is_err()));
+    assert!(
+        taken
+            .iter()
+            .any(|file| file.file == "c.json" && file.request.is_err())
+    );
     assert!(requests.join(".b.json.tmp").exists());
     assert!(!requests.join("a.json").exists());
 
@@ -160,9 +172,10 @@ fn a_started_preview_runs_once_it_answers_and_stops_when_it_no_longer_does() {
     assert!(registry.open_ports().contains_key("web"));
     registry.set_tab("web", "t1".to_owned(), "s1".to_owned());
     registry.launched("web", now);
-    assert_eq!(check_all(&mut registry, false, now + READY_POLL_INTERVAL), [
-        Checked::Unchanged
-    ]);
+    assert_eq!(
+        check_all(&mut registry, false, now + READY_POLL_INTERVAL),
+        [Checked::Unchanged]
+    );
     assert_eq!(status(&registry), PreviewStatus::Starting);
     let now = now + 2 * READY_POLL_INTERVAL;
     assert_eq!(check_all(&mut registry, true, now), [Checked::Ready]);
@@ -208,9 +221,12 @@ fn stopping_interrupts_the_tab_and_waits_for_the_server_to_go() {
     check_all(&mut registry, true, now + READY_POLL_INTERVAL);
 
     let outcome = registry.stop("web", now).unwrap();
-    assert_eq!(outcome.work, [TabWork::Interrupt {
-        tab_id: "t1".to_owned()
-    }]);
+    assert_eq!(
+        outcome.work,
+        [TabWork::Interrupt {
+            tab_id: "t1".to_owned()
+        }]
+    );
     assert_eq!(status(&registry), PreviewStatus::Running);
     assert!(registry.command_ended("web", 130, now));
     assert_eq!(status(&registry), PreviewStatus::Stopped);
@@ -219,12 +235,18 @@ fn stopping_interrupts_the_tab_and_waits_for_the_server_to_go() {
     assert!(check_all(&mut registry, true, now + HEALTH_INTERVAL).is_empty());
     let outcome = registry.restart("web", 5, now).unwrap();
     assert!(outcome.work.is_empty());
-    assert_eq!(registry.launching(), [("web".to_owned(), Some("t1".to_owned()))]);
+    assert_eq!(
+        registry.launching(),
+        [("web".to_owned(), Some("t1".to_owned()))]
+    );
 
     let outcome = registry.remove("web").unwrap();
-    assert_eq!(outcome.work, [TabWork::Close {
-        tab_id: "t1".to_owned()
-    }]);
+    assert_eq!(
+        outcome.work,
+        [TabWork::Close {
+            tab_id: "t1".to_owned()
+        }]
+    );
     assert!(registry.list().is_empty());
 }
 
@@ -245,11 +267,17 @@ fn a_repeated_start_leaves_a_running_server_and_replaces_a_changed_one() {
     let mut changed = web();
     changed.command = "npm start".to_owned();
     let outcome = registry.start(changed, 3, now);
-    assert_eq!(outcome.work, [TabWork::Interrupt {
-        tab_id: "t1".to_owned()
-    }]);
+    assert_eq!(
+        outcome.work,
+        [TabWork::Interrupt {
+            tab_id: "t1".to_owned()
+        }]
+    );
     assert_eq!(status(&registry), PreviewStatus::Starting);
-    assert_eq!(registry.launching(), [("web".to_owned(), Some("t1".to_owned()))]);
+    assert_eq!(
+        registry.launching(),
+        [("web".to_owned(), Some("t1".to_owned()))]
+    );
 }
 
 #[test]

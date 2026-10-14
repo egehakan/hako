@@ -332,9 +332,7 @@ async fn run(
         Ok(socket) => socket,
         Err(error) => {
             let message = format!("Nothing answers on port {port}: {error}");
-            let _ = out
-                .send(closed_with(sid, ErrorCode::Failed, message))
-                .await;
+            let _ = out.send(closed_with(sid, ErrorCode::Failed, message)).await;
             return;
         }
     };

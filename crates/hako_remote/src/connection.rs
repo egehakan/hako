@@ -497,9 +497,8 @@ async fn dispatch(
             },
         },
         Frame::Notification { method, params } => Incoming::Notification { method, params },
-        frame @ (Frame::StreamOpen { .. }
-        | Frame::StreamClose { .. }
-        | Frame::StreamAck { .. }) => {
+        frame
+        @ (Frame::StreamOpen { .. } | Frame::StreamClose { .. } | Frame::StreamAck { .. }) => {
             streams.handle(frame);
             return true;
         }

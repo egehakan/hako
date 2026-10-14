@@ -34,7 +34,10 @@ fn the_receive_window_refuses_too_much_and_acks_in_batches() {
     assert!(window.received(STREAM_WINDOW_BYTES));
     assert!(!window.received(1));
     assert_eq!(window.passed_on(100, false), 0);
-    assert_eq!(window.passed_on(STREAM_ACK_BYTES, false), STREAM_ACK_BYTES + 100);
+    assert_eq!(
+        window.passed_on(STREAM_ACK_BYTES, false),
+        STREAM_ACK_BYTES + 100
+    );
     assert_eq!(window.passed_on(10, true), 10);
     assert!(window.received(STREAM_ACK_BYTES + 110));
     assert!(!window.received(1));

@@ -10,13 +10,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ::hako_remote::file_ops;
 use ::hako_remote::notify::one_line;
 use ::hako_remote::previews::{
-    Check, Checked, PREVIEWS_DIR, Preview, PreviewIdParams, PreviewList, PreviewRequest, PreviewStatus,
-    PreviewsState, REQUESTS_DIR, Registry, RequestFile, STATE_FILE, ShellSyntax, TabWork,
-    answers, command_line, read_state, take_requests, write_state,
+    Check, Checked, PREVIEWS_DIR, Preview, PreviewIdParams, PreviewList, PreviewRequest,
+    PreviewStatus, PreviewsState, REQUESTS_DIR, Registry, RequestFile, STATE_FILE, ShellSyntax,
+    TabWork, answers, command_line, read_state, take_requests, write_state,
 };
 use ::hako_remote::protocol::{
-    EVENT_PREVIEWS_CHANGED, NOTIFY_TITLE_MAX_CHARS, Notify, NotifyKind, RpcError,
-    TabCreateParams, TabParams, TabRenameParams,
+    EVENT_PREVIEWS_CHANGED, NOTIFY_TITLE_MAX_CHARS, Notify, NotifyKind, RpcError, TabCreateParams,
+    TabParams, TabRenameParams,
 };
 use ::hako_remote::rename::MAX_TAB_TITLE_CHARS;
 use ::hako_remote::streams::PreviewPorts;
@@ -25,9 +25,8 @@ use warpui::r#async::Timer;
 use warpui::{EntityId, ModelContext, WindowId};
 
 use super::handlers::{self, NewTab, parse};
-use super::snapshot;
 use super::terminal::find_terminal;
-use super::{HakoRemote, RemoteAccessStatus};
+use super::{HakoRemote, RemoteAccessStatus, snapshot};
 use crate::terminal::shell::ShellType;
 
 /// How often the previews that wait for something are looked at.
@@ -77,7 +76,10 @@ impl HakoRemote {
             async move {
                 let directory = previews_dir();
                 if let Err(error) = std::fs::create_dir_all(directory.join(REQUESTS_DIR)) {
-                    log::warn!("[Previews] could not create {}: {error}", directory.display());
+                    log::warn!(
+                        "[Previews] could not create {}: {error}",
+                        directory.display()
+                    );
                 }
                 read_state(&directory.join(STATE_FILE))
             },
@@ -122,18 +124,16 @@ impl HakoRemote {
             let registry = &mut self.previews.registry;
             let outcome = match request {
                 Ok(PreviewRequest::Start(request)) => Ok(registry.start(request, now_ms(), now)),
-                Ok(PreviewRequest::Attach(request)) => {
-                    Ok(registry.attach(request, now_ms(), now))
-                }
-                Ok(PreviewRequest::Stop(params)) => {
-                    registry.stop(&params.id, now).map_err(|e| (Some(params.id), e))
-                }
+                Ok(PreviewRequest::Attach(request)) => Ok(registry.attach(request, now_ms(), now)),
+                Ok(PreviewRequest::Stop(params)) => registry
+                    .stop(&params.id, now)
+                    .map_err(|e| (Some(params.id), e)),
                 Ok(PreviewRequest::Restart(params)) => registry
                     .restart(&params.id, now_ms(), now)
                     .map_err(|e| (Some(params.id), e)),
-                Ok(PreviewRequest::Remove(params)) => {
-                    registry.remove(&params.id).map_err(|e| (Some(params.id), e))
-                }
+                Ok(PreviewRequest::Remove(params)) => registry
+                    .remove(&params.id)
+                    .map_err(|e| (Some(params.id), e)),
                 Err(error) => Err(error),
             };
             match outcome {
@@ -436,9 +436,7 @@ impl HakoRemote {
         if !self.previews.loaded {
             return;
         }
-        self.previews
-            .ports
-            .set(self.previews.registry.open_ports());
+        self.previews.ports.set(self.previews.registry.open_ports());
         self.write_previews_state(ctx);
         self.announce_previews(ctx);
     }

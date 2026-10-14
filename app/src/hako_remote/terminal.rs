@@ -543,7 +543,10 @@ fn size_of(terminal: &TerminalView) -> TermSize {
 }
 
 /// The terminal of a session, if it is in a tab of some window.
-pub(super) fn find_terminal(session_id: &str, ctx: &AppContext) -> Option<ViewHandle<TerminalView>> {
+pub(super) fn find_terminal(
+    session_id: &str,
+    ctx: &AppContext,
+) -> Option<ViewHandle<TerminalView>> {
     let uuid = Uuid::parse_str(session_id).ok()?;
     snapshot::workspace_windows(ctx)
         .into_iter()

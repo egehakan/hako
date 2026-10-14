@@ -239,7 +239,9 @@ fn check_env_name(name: &str) -> Result<(), String> {
     if valid {
         Ok(())
     } else {
-        Err(format!("\"{name}\" is not a valid environment variable name"))
+        Err(format!(
+            "\"{name}\" is not a valid environment variable name"
+        ))
     }
 }
 
@@ -439,15 +441,25 @@ pub fn take_requests(directory: &Path) -> Vec<RequestFile> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     /// The command waits for its tab to be ready for it.
-    Launching { deadline: Instant },
+    Launching {
+        deadline: Instant,
+    },
     /// Waits for the server to answer.
-    Starting { deadline: Instant },
-    Running { last_answer: Instant },
+    Starting {
+        deadline: Instant,
+    },
+    Running {
+        last_answer: Instant,
+    },
     /// Ctrl+C was sent.
-    Stopping { deadline: Instant },
+    Stopping {
+        deadline: Instant,
+    },
     /// Stopped or failed. A preview that stopped answering by itself is running again once it
     /// answers.
-    Idle { revive: bool },
+    Idle {
+        revive: bool,
+    },
 }
 
 struct Entry {
@@ -501,8 +513,12 @@ pub struct Check {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabWork {
     /// Send Ctrl+C to the tab.
-    Interrupt { tab_id: String },
-    Close { tab_id: String },
+    Interrupt {
+        tab_id: String,
+    },
+    Close {
+        tab_id: String,
+    },
 }
 
 /// The outcome of a request.
@@ -554,7 +570,11 @@ impl Registry {
     /// The state file's content.
     pub fn state(&self, updated: u64) -> PreviewsState {
         PreviewsState {
-            previews: self.entries.iter().map(|entry| entry.stored.clone()).collect(),
+            previews: self
+                .entries
+                .iter()
+                .map(|entry| entry.stored.clone())
+                .collect(),
             updated,
             rejected: self.rejected.clone(),
         }
@@ -703,7 +723,12 @@ impl Registry {
             });
         let name = display_name(request.name.as_deref(), &request.id);
         let ports = checked.and_then(|()| {
-            preview_ports(request.port, request.label.as_deref(), &name, &request.ports)
+            preview_ports(
+                request.port,
+                request.label.as_deref(),
+                &name,
+                &request.ports,
+            )
         });
         let ports = match ports {
             Ok(ports) => ports,
@@ -788,7 +813,12 @@ impl Registry {
         let ports = check_common(&request.id, &request.directory, request.port)
             .and_then(|()| check_path(&request.url_path, "url_path"))
             .and_then(|()| {
-                preview_ports(request.port, request.label.as_deref(), &name, &request.ports)
+                preview_ports(
+                    request.port,
+                    request.label.as_deref(),
+                    &name,
+                    &request.ports,
+                )
             });
         let ports = match ports {
             Ok(ports) => ports,

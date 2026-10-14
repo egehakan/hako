@@ -268,10 +268,11 @@ impl HakoRemote {
     ) -> Result<(), String> {
         let config =
             ConnectionConfig::new(server_address, key).map_err(|error| error.to_string())?;
-        let (connection, incoming) = Connection::start(config, self.previews.ports.clone()).map_err(|error| {
-            log::error!("[Remote access] could not start the connection thread: {error}");
-            "The connection could not be started".to_owned()
-        })?;
+        let (connection, incoming) = Connection::start(config, self.previews.ports.clone())
+            .map_err(|error| {
+                log::error!("[Remote access] could not start the connection thread: {error}");
+                "The connection could not be started".to_owned()
+            })?;
         self.connection = Some(connection);
         let generation = self.generation;
         ctx.spawn_stream_local(
@@ -738,9 +739,7 @@ impl HakoRemote {
             Method::PreviewRestart => {
                 done(self.change_preview(params, PreviewChange::Restart, ctx))
             }
-            Method::PreviewRemove => {
-                done(self.change_preview(params, PreviewChange::Remove, ctx))
-            }
+            Method::PreviewRemove => done(self.change_preview(params, PreviewChange::Remove, ctx)),
             Method::GitMergeAbort => {
                 return self.change_repository(
                     params,
