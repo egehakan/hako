@@ -24,8 +24,9 @@ pub enum InputEvent {
         action: MouseAction,
         x: f64,
         y: f64,
+        /// For a move, the button held during it; left out, the one pressed last is still held.
         #[serde(default)]
-        button: MouseButton,
+        button: Option<MouseButton>,
         /// The click count of a press or release.
         #[serde(default)]
         clicks: Option<u32>,
@@ -432,7 +433,7 @@ impl InputTranslator {
         action: MouseAction,
         x: f64,
         y: f64,
-        button: MouseButton,
+        button: Option<MouseButton>,
         clicks: Option<u32>,
         (dx, dy): (f64, f64),
         modifiers: Modifiers,
@@ -440,6 +441,9 @@ impl InputTranslator {
         self.last_position = (x, y);
         match action {
             MouseAction::Move => {
+                if let Some(held) = button {
+                    self.held = held;
+                }
                 vec![mouse_call(
                     "mouseMoved",
                     x,
@@ -451,7 +455,7 @@ impl InputTranslator {
                 )]
             }
             MouseAction::Down => {
-                let button = match button {
+                let button = match button.unwrap_or_default() {
                     MouseButton::None => MouseButton::Left,
                     button => button,
                 };
@@ -467,7 +471,7 @@ impl InputTranslator {
                 )]
             }
             MouseAction::Up => {
-                let button = match button {
+                let button = match button.unwrap_or_default() {
                     MouseButton::None => self.held,
                     button => button,
                 };

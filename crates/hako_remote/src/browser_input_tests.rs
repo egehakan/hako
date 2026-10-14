@@ -263,6 +263,20 @@ fn mouse_scroll_and_text() {
     );
     assert_eq!(up[0].params["button"], "right");
 
+    // A move names the button held, so a drag selects even when its press went elsewhere.
+    let mouse = |action: &str, button: &str| {
+        event(json!({ "type": "mouse", "action": action, "x": 9, "y": 9, "button": button,
+            "clicks": 0, "dx": 0, "dy": 0, "modifiers": 8 }))
+    };
+    let dragged = input.translate(mouse("move", "left"), false, now);
+    assert_eq!(
+        (&dragged[0].params["button"], &dragged[0].params["buttons"]),
+        (&json!("left"), &json!(1))
+    );
+    assert_eq!(dragged[0].params["modifiers"], 8);
+    let hovered = input.translate(mouse("move", "none"), false, now);
+    assert_eq!(hovered[0].params["buttons"], 0);
+
     let wheel = input.translate(
         event(json!({ "type": "scroll", "x": 100, "y": 300, "dx": 0, "dy": 240 })),
         true,
