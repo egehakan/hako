@@ -834,6 +834,16 @@ pub async fn run_commit(
     include_unstaged: bool,
     path_env: Option<&str>,
 ) -> Result<String> {
+    use ::hako_remote::git_merge::check_conflict_markers;
+    use ::hako_remote::git_run::{COMMAND_LIMIT, Git};
+
+    let is_merging = working_tree_git_dir(repo_path).join("MERGE_HEAD").exists();
+    if is_merging {
+        let git = Git::new(path_env.map(str::to_owned), &[], COMMAND_LIMIT);
+        check_conflict_markers(repo_path, &git)
+            .await
+            .map_err(|error| anyhow!(error.message))?;
+    }
     if include_unstaged {
         run_git_command_with_env(repo_path, &["add", "-A"], path_env).await?;
     }
@@ -849,7 +859,8 @@ pub async fn run_commit(
         path_env,
     )
     .await?;
-    if staged.trim().is_empty() {
+    // A merge is committed even when its result is the tree `HEAD` already has.
+    if staged.trim().is_empty() && !is_merging {
         if include_unstaged {
             anyhow::bail!("nothing to commit, working tree clean");
         }

@@ -17,6 +17,8 @@ const MERGE_HEAD: &str = "MERGE_HEAD";
 const MERGE_MSG: &str = "MERGE_MSG";
 /// The most paths a refusal to commit names.
 const NAMED_PATHS: usize = 20;
+/// How a refusal to commit while conflict markers remain begins.
+pub const CONFLICT_MARKERS_REMAIN: &str = "Conflict markers remain in:";
 
 /// Merges a branch into the one that is checked out in the working tree at `directory`, as
 /// `git merge` does by default, with the message git makes for the branch's short name. Stopping
@@ -183,10 +185,7 @@ async fn is_reference(directory: &Path, reference: &str, git: &Git) -> Result<bo
 /// The paths with unmerged entries in the index, relative to the working tree.
 async fn unmerged_paths(directory: &Path, git: &Git) -> Result<Vec<String>, RpcError> {
     let listed = git
-        .read_stdout(
-            directory,
-            &["diff", "--name-only", "--diff-filter=U", "-z"],
-        )
+        .read_stdout(directory, &["diff", "--name-only", "--diff-filter=U", "-z"])
         .await?;
     let mut paths: Vec<String> = listed
         .split(|byte| *byte == 0)
@@ -215,7 +214,7 @@ pub(crate) fn has_conflict_marker(file: &Path) -> bool {
 }
 
 fn markers_remain(paths: &[String]) -> String {
-    let mut message = String::from("Conflict markers remain in:");
+    let mut message = String::from(CONFLICT_MARKERS_REMAIN);
     for path in paths.iter().take(NAMED_PATHS) {
         message.push('\n');
         message.push_str(path);

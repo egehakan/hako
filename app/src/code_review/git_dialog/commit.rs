@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use ::hako_remote::git_merge::CONFLICT_MARKERS_REMAIN;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;
 use warp_errors::report_error;
@@ -70,12 +71,21 @@ pub struct CommitState {
     /// The intent is hidden entirely in either case; an existing PR is
     /// still reachable via the git operations menu in the header.
     commit_and_create_pr_button: Option<ViewHandle<ActionButton>>,
+    /// Whether the commit concludes a merge, which it may do without changes of its own.
+    is_merge: bool,
+}
+
+impl CommitState {
+    pub(super) fn is_merge(&self) -> bool {
+        self.is_merge
+    }
 }
 
 pub(super) fn new_state(
     local_repo_path: Option<&Path>,
     allow_create_pr: bool,
     has_upstream: bool,
+    merge_message: Option<String>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> CommitState {
     // Dialog always opens with the plain commit intent; the user picks
@@ -92,7 +102,7 @@ pub(super) fn new_state(
     // If AI autogen is on, the dialog opens with "Generating\u{2026}" and a
     // background request fills the editor when it resolves. Otherwise, we
     // land on the manual-type prompt immediately.
-    let ai_autogen_enabled = should_send_git_ops_ai_request(ctx);
+    let ai_autogen_enabled = merge_message.is_none() && should_send_git_ops_ai_request(ctx);
     let initial_placeholder = if ai_autogen_enabled {
         GENERATING_PLACEHOLDER_TEXT
     } else {
@@ -116,6 +126,9 @@ pub(super) fn new_state(
 
         let mut editor = EditorView::new(options, ctx);
         editor.set_placeholder_text(initial_placeholder, ctx);
+        if let Some(message) = &merge_message {
+            editor.system_reset_buffer_text(message, ctx);
+        }
         editor
     });
 
@@ -195,6 +208,7 @@ pub(super) fn new_state(
         commit_button,
         commit_and_push_button,
         commit_and_create_pr_button,
+        is_merge: merge_message.is_some(),
     };
     apply_intent_selector(&state, ctx);
     state
@@ -222,7 +236,7 @@ pub(super) fn is_ready_to_confirm(state: &CommitState, app: &AppContext) -> bool
 /// e.g. "exclude unstaged" with nothing staged — surfacing it as an error
 /// toast rather than a phantom success.
 fn has_committable_changes(state: &CommitState) -> bool {
-    !state.file_changes.is_empty()
+    state.is_merge || !state.file_changes.is_empty()
 }
 
 /// Returns a tooltip to show on the disabled Confirm button when the
@@ -282,6 +296,11 @@ pub(super) fn apply_generated_commit_message(
 /// the result returns via `DiffStateModelEvent::CommitMessageGenerated`, applied by `apply_generated_commit_message`.
 pub(super) fn maybe_start_commit_message_autogen(me: &GitDialog, ctx: &mut ViewContext<GitDialog>) {
     if !should_send_git_ops_ai_request(ctx) {
+        return;
+    }
+    if let GitDialogMode::Commit(state) = me.mode()
+        && state.is_merge
+    {
         return;
     }
     // Generate from the same scope that will be committed (the "include
@@ -423,6 +442,10 @@ pub(super) fn finish_commit_chain(
                 "Changes committed and pushed."
             };
             show_toast(msg, ctx);
+        }
+        // The paths that still hold conflict markers are what the owner needs to see.
+        Err(err) if err.contains(CONFLICT_MARKERS_REMAIN) => {
+            show_toast(err.replacen(":\n", ": ", 1).replace('\n', ", "), ctx);
         }
         Err(err) => {
             report_error!(anyhow::anyhow!("{err}").context("Commit failed"));

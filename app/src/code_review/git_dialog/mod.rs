@@ -491,6 +491,47 @@ impl GitDialog {
         has_upstream: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
+        Self::commit_dialog(
+            repo_location,
+            diff_state_model,
+            branch_name,
+            allow_create_pr,
+            has_upstream,
+            None,
+            ctx,
+        )
+    }
+
+    /// A commit dialog that concludes the merge in progress, starting from git's prepared
+    /// `message`.
+    pub fn new_for_merge_commit(
+        repo_location: LocalOrRemotePath,
+        diff_state_model: ModelHandle<DiffStateModel>,
+        branch_name: String,
+        message: String,
+        has_upstream: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
+        Self::commit_dialog(
+            repo_location,
+            diff_state_model,
+            branch_name,
+            false,
+            has_upstream,
+            Some(message),
+            ctx,
+        )
+    }
+
+    fn commit_dialog(
+        repo_location: LocalOrRemotePath,
+        diff_state_model: ModelHandle<DiffStateModel>,
+        branch_name: String,
+        allow_create_pr: bool,
+        has_upstream: bool,
+        merge_message: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
         // Commit's confirm button is a static "Confirm" with no icon; the
         // segmented intent selector inside the dialog is the sole UI that
         // communicates which of commit / commit-and-push / commit-and-create-PR
@@ -502,6 +543,7 @@ impl GitDialog {
             repo_location.to_local_path(),
             allow_create_pr,
             has_upstream,
+            merge_message,
             ctx,
         );
         let mut this = Self {
@@ -744,6 +786,7 @@ impl GitDialog {
 
     fn title(&self) -> &'static str {
         match &self.mode {
+            GitDialogMode::Commit(state) if state.is_merge() => "Commit the merge",
             GitDialogMode::Commit(_) => "Commit your changes",
             GitDialogMode::Push(state) => {
                 if state.publish {
