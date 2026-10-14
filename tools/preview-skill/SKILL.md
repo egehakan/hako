@@ -97,7 +97,7 @@ this skill also writes to `~/.hako/previews/logs/<id>.log`; read more with `logs
 ## Report
 
 Tell the owner in a few lines:
-- the preview name and status (for example "veridraft is running"), and whether it was already
+- the preview name and status (for example "my-app is running"), and whether it was already
   running (then there is no new "Preview ready" notification);
 - that it is on the phone under **Previews** and opens in the Mac browser;
 - the ports registered with their labels (for example `8086 web, 8087 api, 8090 collaboration,
