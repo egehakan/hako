@@ -293,7 +293,7 @@ pub fn preview_ports(
     Ok(ports)
 }
 
-/// The shell language a command is typed in.
+/// The shell language a command is written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellSyntax {
     Posix,
@@ -307,7 +307,7 @@ fn quoted(text: &str, syntax: ShellSyntax) -> String {
     }
 }
 
-/// The line typed into a preview's tab: change to its directory, then run the command with `env`
+/// The line run in a preview's tab: change to its directory, then run the command with `env`
 /// exported for the command only.
 pub fn command_line(
     directory: &str,
@@ -893,13 +893,21 @@ impl Registry {
 
     /// Runs a preview's command again, after stopping it if it runs, in its tab or a new one. One
     /// that was attached is looked for again.
-    pub fn restart(&mut self, id: &str, now: Instant) -> Result<Outcome, String> {
-        let entry = self.entry_mut(id).ok_or_else(|| no_such_preview(id))?;
-        if entry.stored.preview.port == 0 {
+    pub fn restart(&mut self, id: &str, started: u64, now: Instant) -> Result<Outcome, String> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.stored.preview.id == id)
+            .ok_or_else(|| no_such_preview(id))?;
+        if self.entries[index].stored.preview.port == 0 {
             return Err(format!(
                 "The preview \"{id}\" was never started; start it again with a full request"
             ));
         }
+        let entry = self.entries.remove(index);
+        self.entries.insert(0, entry);
+        let entry = &mut self.entries[0];
+        entry.stored.preview.started = started;
         let mut work = Vec::new();
         let active = match entry.phase {
             Phase::Launching { .. } | Phase::Starting { .. } | Phase::Running { .. } => true,
@@ -969,7 +977,7 @@ impl Registry {
         changed
     }
 
-    /// Records that the command was typed into the tab, which was ready for it.
+    /// Records that the command was run in the tab, which was ready for it.
     pub fn launched(&mut self, id: &str, now: Instant) {
         if let Some(entry) = self
             .entry_mut(id)

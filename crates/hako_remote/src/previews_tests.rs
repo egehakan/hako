@@ -191,7 +191,7 @@ fn a_command_that_ends_before_answering_fails_and_one_that_is_too_slow_too() {
     assert_eq!(status(&registry), PreviewStatus::Failed);
     assert!(registry.list()[0].message.as_ref().unwrap().contains("127"));
 
-    registry.restart("web", now).unwrap();
+    registry.restart("web", 5, now).unwrap();
     registry.launched("web", now);
     let late = now + READY_TIMEOUT + READY_POLL_INTERVAL;
     assert_eq!(check_all(&mut registry, false, late), [Checked::Changed]);
@@ -217,7 +217,7 @@ fn stopping_interrupts_the_tab_and_waits_for_the_server_to_go() {
 
     // A stopped preview is not brought back by answers, but a restart runs it in the same tab.
     assert!(check_all(&mut registry, true, now + HEALTH_INTERVAL).is_empty());
-    let outcome = registry.restart("web", now).unwrap();
+    let outcome = registry.restart("web", 5, now).unwrap();
     assert!(outcome.work.is_empty());
     assert_eq!(registry.launching(), [("web".to_owned(), Some("t1".to_owned()))]);
 

@@ -25,6 +25,7 @@ use warpui::r#async::Timer;
 use warpui::{EntityId, ModelContext, WindowId};
 
 use super::handlers::{self, NewTab, parse};
+use super::snapshot;
 use super::terminal::find_terminal;
 use super::{HakoRemote, RemoteAccessStatus};
 use crate::terminal::shell::ShellType;
@@ -128,7 +129,7 @@ impl HakoRemote {
                     registry.stop(&params.id, now).map_err(|e| (Some(params.id), e))
                 }
                 Ok(PreviewRequest::Restart(params)) => registry
-                    .restart(&params.id, now)
+                    .restart(&params.id, now_ms(), now)
                     .map_err(|e| (Some(params.id), e)),
                 Ok(PreviewRequest::Remove(params)) => {
                     registry.remove(&params.id).map_err(|e| (Some(params.id), e))
@@ -168,7 +169,7 @@ impl HakoRemote {
         let registry = &mut self.previews.registry;
         let outcome = match change {
             PreviewChange::Stop => registry.stop(id, now),
-            PreviewChange::Restart => registry.restart(id, now),
+            PreviewChange::Restart => registry.restart(id, now_ms(), now),
             PreviewChange::Remove => registry.remove(id),
         }
         .map_err(RpcError::not_found)?;
@@ -272,7 +273,7 @@ impl HakoRemote {
         );
     }
 
-    /// Gets a preview's command typed into its tab: opens the tab if it has none, and types the
+    /// Gets a preview's command run in its tab: opens the tab if it has none, and runs the
     /// command once its shell is ready for it. Returns whether the preview changed.
     fn launch_preview(
         &mut self,
@@ -286,6 +287,10 @@ impl HakoRemote {
         };
         let preview = &stored.preview;
         if tab_id.is_none() {
+            let title = one_line(&format!("Preview: {}", preview.name), MAX_TAB_TITLE_CHARS);
+            if let Some((tab_id, session_id)) = self.restored_preview_tab(&title, ctx) {
+                return self.previews.registry.set_tab(id, tab_id, session_id);
+            }
             let tab = match self.previews.opening.get(id) {
                 Some(window_id) => match handlers::first_tab(*window_id, ctx) {
                     Some(tab) => tab,
@@ -314,7 +319,6 @@ impl HakoRemote {
                 }
             };
             self.previews.opening.remove(id);
-            let title = one_line(&format!("Preview: {}", preview.name), MAX_TAB_TITLE_CHARS);
             let rename = TabRenameParams {
                 tab_id: tab.tab_id.clone(),
                 title: Some(title),
@@ -353,14 +357,34 @@ impl HakoRemote {
                 ShellSyntax::Posix
             }
         };
-        let mut line = command_line(&preview.directory, command, &stored.env, syntax);
-        line.push('\r');
+        let line = command_line(&preview.directory, command, &stored.env, syntax);
         self.previews.terminals.insert(id.to_owned(), view.id());
+        // Run as if entered in the terminal's input, which shows it as the tab's command. Bytes
+        // typed straight into the shell race the input report the app asks the shell for, whose
+        // key sequence then lands in the server's output.
         view.update(ctx, |view, ctx| {
-            view.write_viewer_bytes_to_pty(line.into_bytes(), ctx);
+            view.execute_command_or_set_pending(&line, ctx);
         });
         self.previews.registry.launched(id, now);
         false
+    }
+
+    /// A tab titled `title` that no preview runs in, with its terminal: the tab of a preview
+    /// that the app brought back when it was started again.
+    fn restored_preview_tab(
+        &self,
+        title: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<(String, String)> {
+        snapshot::workspace(ctx)
+            .windows
+            .into_iter()
+            .flat_map(|window| window.tabs)
+            .filter(|tab| tab.title == title && self.previews.registry.with_tab(&tab.id).is_none())
+            .find_map(|tab| {
+                let session_id = tab.panes.into_iter().find_map(|pane| pane.session_id)?;
+                Some((tab.id, session_id))
+            })
     }
 
     fn notify_preview_ready(&mut self, id: &str) {
