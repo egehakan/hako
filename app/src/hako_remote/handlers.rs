@@ -55,6 +55,10 @@ fn find_tab(
         .ok_or_else(|| RpcError::not_found("No such tab"))
 }
 
+pub(super) fn tab_exists(tab_id: &str, ctx: &AppContext) -> bool {
+    find_tab(tab_id, ctx).is_ok()
+}
+
 fn find_folder(
     folder_id: &str,
     ctx: &AppContext,

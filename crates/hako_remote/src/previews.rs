@@ -983,6 +983,26 @@ impl Registry {
         }
     }
 
+    /// Fails a preview whose command could not be run.
+    pub fn launch_failed(&mut self, id: &str, message: &str, now: Instant) -> bool {
+        let Some(entry) = self
+            .entry_mut(id)
+            .filter(|entry| matches!(entry.phase, Phase::Launching { .. }))
+        else {
+            return false;
+        };
+        entry.failed(message, now);
+        true
+    }
+
+    /// The preview whose tab is `tab_id`.
+    pub fn with_tab(&self, tab_id: &str) -> Option<&Preview> {
+        self.entries
+            .iter()
+            .map(|entry| &entry.stored.preview)
+            .find(|preview| preview.tab_id.as_deref() == Some(tab_id))
+    }
+
     /// Fails the previews whose tab has not been ready for their command in time.
     pub fn expire_launches(&mut self, now: Instant) -> bool {
         let mut changed = false;

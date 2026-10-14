@@ -13195,6 +13195,14 @@ impl TerminalView {
                         serialized_block,
                         ctx,
                     );
+                    #[cfg(not(target_family = "wasm"))]
+                    if ctx.has_singleton_model::<crate::hako_remote::HakoRemote>() {
+                        let terminal_view_id = self.view_id;
+                        let exit_status = serialized_block.exit_code.value();
+                        crate::hako_remote::HakoRemote::handle(ctx).update(ctx, |remote, ctx| {
+                            remote.command_ended(terminal_view_id, exit_status, ctx);
+                        });
+                    }
                     if let Some(block_duration) = self.block_duration(serialized_block) {
                         self.maybe_send_block_completed_notification(
                             block_completed,

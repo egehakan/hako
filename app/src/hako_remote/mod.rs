@@ -3,11 +3,13 @@
 //! add a folder, watch and use a terminal, read, change, download and upload files, make a
 //! directory, create, rename, copy, move, trash, zip and unzip files, and use source control in the repositories under the folders. It also tells the
 //! owner's devices when a terminal wants them, and keeps the computer awake while it is on.
+//! Previews run whether or not it is on.
 
 mod app_info;
 mod handlers;
 mod keep_awake;
 mod notifications;
+mod previews;
 mod snapshot;
 mod terminal;
 mod terminal_snapshot;
@@ -44,6 +46,7 @@ use self::handlers::{NewFolder, NewTab, parse, to_json};
 use self::keep_awake::KeepAwake;
 pub(crate) use self::notifications::FinishedCommand;
 use self::notifications::Notifications;
+use self::previews::{PreviewChange, Previews};
 use self::terminal::{ECHO_DELAY, PUMP_INTERVAL, Terminals};
 use crate::code::file_tree::trash::move_to_trash;
 use crate::settings::RemoteAccessSettings;
@@ -120,6 +123,7 @@ pub struct HakoRemote {
     notifications: Notifications,
     keep_awake: KeepAwake,
     transfers: Arc<Transfers>,
+    previews: Previews,
 }
 
 /// What a source control request is answered with.
@@ -154,6 +158,7 @@ impl HakoRemote {
             notifications: Notifications::default(),
             keep_awake: KeepAwake::default(),
             transfers: Arc::new(Transfers::new(warp_core::paths::data_dir())),
+            previews: Previews::default(),
         };
         let transfers = me.transfers.clone();
         ctx.spawn(
@@ -167,6 +172,7 @@ impl HakoRemote {
             },
         );
         me.apply_settings(ctx);
+        Self::start_previews(ctx);
         me
     }
 
@@ -262,7 +268,7 @@ impl HakoRemote {
     ) -> Result<(), String> {
         let config =
             ConnectionConfig::new(server_address, key).map_err(|error| error.to_string())?;
-        let (connection, incoming) = Connection::start(config).map_err(|error| {
+        let (connection, incoming) = Connection::start(config, self.previews.ports.clone()).map_err(|error| {
             log::error!("[Remote access] could not start the connection thread: {error}");
             "The connection could not be started".to_owned()
         })?;
@@ -727,6 +733,14 @@ impl HakoRemote {
                     },
                 );
             }
+            Method::PreviewList => to_json(&self.preview_list()),
+            Method::PreviewStop => done(self.change_preview(params, PreviewChange::Stop, ctx)),
+            Method::PreviewRestart => {
+                done(self.change_preview(params, PreviewChange::Restart, ctx))
+            }
+            Method::PreviewRemove => {
+                done(self.change_preview(params, PreviewChange::Remove, ctx))
+            }
             Method::GitMergeAbort => {
                 return self.change_repository(
                     params,
@@ -1105,6 +1119,8 @@ impl HakoRemote {
                 RemoteAccessStatus::Connecting { .. } | RemoteAccessStatus::Connected
             ));
             ctx.emit(HakoRemoteEvent::StatusChanged);
+            // Whether previews can be opened from elsewhere is in the state file.
+            self.previews_changed(ctx);
         }
     }
 
