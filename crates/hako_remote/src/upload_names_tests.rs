@@ -28,6 +28,15 @@ fn numbers_a_taken_name_before_its_last_extension() {
 }
 
 #[test]
+fn numbers_a_taken_directory_name_at_its_end() {
+    assert_eq!(numbered_directory("photos.2024", 1), "photos.2024");
+    assert_eq!(numbered_directory("photos.2024", 2), "photos.2024 (2)");
+    let name = numbered_directory(&"ğ".repeat(127), 3);
+    assert!(name.len() <= MAX_NAME_BYTES);
+    assert!(name.ends_with("ğ (3)"));
+}
+
+#[test]
 fn shortens_the_stem_of_a_numbered_name_that_would_be_too_long() {
     let long = format!("{}.txt", "a".repeat(251));
     let name = numbered(&long, 12);

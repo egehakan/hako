@@ -74,7 +74,7 @@ pub fn roots(home: &str, workspace: &Workspace) -> FsRoots {
 }
 
 /// The name of what `path` leads to, which for the root directory is the path itself.
-fn last_segment(path: &str) -> &str {
+pub(crate) fn last_segment(path: &str) -> &str {
     match path.rsplit_once('/') {
         Some((_, name)) if !name.is_empty() => name,
         Some(_) | None => path,
@@ -99,7 +99,7 @@ fn open_directory(path: &str) -> Result<ReadDir, RpcError> {
     fs::read_dir(directory).map_err(|error| failure(&error, path))
 }
 
-fn not_a_directory(path: &str) -> RpcError {
+pub(crate) fn not_a_directory(path: &str) -> RpcError {
     RpcError::new(ErrorCode::NotADirectory, format!("Not a directory: {path}"))
 }
 
@@ -393,8 +393,17 @@ pub fn mkdir(path: &str) -> Result<(), RpcError> {
     })
 }
 
-fn already_exists(path: &str) -> RpcError {
+pub(crate) fn already_exists(path: &str) -> RpcError {
     RpcError::new(ErrorCode::Conflict, format!("Already exists: {path}"))
+}
+
+/// The path of `name` in the directory at `path`, as the protocol writes paths.
+pub(crate) fn joined(path: &str, name: &str) -> String {
+    if path == "/" {
+        format!("/{name}")
+    } else {
+        format!("{path}/{name}")
+    }
 }
 
 /// The path as the file system takes it, if it has the one form the protocol accepts: absolute,

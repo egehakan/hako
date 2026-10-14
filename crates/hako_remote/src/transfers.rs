@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
-use crate::files::{checked, failure, mtime, regular_file};
+use crate::files::{checked, failure, joined, mtime, regular_file};
 use crate::protocol::{
     ErrorCode, FsDownload, FsDownloadParams, FsOnConflict, FsTransferInfo, FsUploadBegin,
     FsUploadBeginParams, FsUploadChunk, FsUploadChunkParams, FsUploadDestination, FsUploadEnd,
@@ -669,15 +669,6 @@ fn place_exclusively(from: &Path, to: &Path) -> io::Result<()> {
     // The file is in place either way; a second name left behind is removed at the next start.
     let _ = fs::remove_file(from);
     Ok(())
-}
-
-/// The path of `name` in the directory at `path`, as the protocol writes paths.
-fn joined(path: &str, name: &str) -> String {
-    if path == "/" {
-        format!("/{name}")
-    } else {
-        format!("{path}/{name}")
-    }
 }
 
 fn check_id(id: &str) -> Result<(), RpcError> {

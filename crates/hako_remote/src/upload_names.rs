@@ -32,6 +32,16 @@ pub fn numbered(name: &str, n: u32) -> String {
     format!("{}{suffix}{extension}", truncated(stem, room))
 }
 
+/// The `n`th name for a directory called `name` when it is taken: `name` itself for 1, then
+/// `name (2)`, `name (3)`, …, shortened to keep the name within [`MAX_NAME_BYTES`].
+pub fn numbered_directory(name: &str, n: u32) -> String {
+    if n <= 1 {
+        return name.to_owned();
+    }
+    let suffix = format!(" ({n})");
+    format!("{}{suffix}", truncated(name, MAX_NAME_BYTES - suffix.len()))
+}
+
 /// `text` cut to at most `bytes` bytes, at a character boundary.
 fn truncated(text: &str, bytes: usize) -> &str {
     let mut end = bytes.min(text.len());

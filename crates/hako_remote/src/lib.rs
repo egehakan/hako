@@ -6,6 +6,7 @@
 pub mod backoff;
 pub mod boundary;
 pub mod connection;
+pub mod file_ops;
 pub mod files;
 pub mod git;
 pub mod git_graph;
