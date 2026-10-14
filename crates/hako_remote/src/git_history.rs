@@ -26,8 +26,8 @@ pub const LOG_LIMIT: usize = 200;
 /// How many commits a page holds when the number is left open.
 pub const LOG_DEFAULT: usize = 50;
 
-const LOCAL_BRANCHES: &str = "refs/heads";
-const REMOTE_BRANCHES: &str = "refs/remotes";
+pub(crate) const LOCAL_BRANCHES: &str = "refs/heads";
+pub(crate) const REMOTE_BRANCHES: &str = "refs/remotes";
 const TAGS: &str = "refs/tags";
 /// What names where `HEAD` is while it is detached.
 const DETACHED_HEAD: &str = "HEAD";
@@ -35,15 +35,15 @@ const DETACHED_HEAD: &str = "HEAD";
 const UPSTREAM: &str = "@{upstream}";
 
 /// Where `HEAD` is.
-struct Head {
+pub(crate) struct Head {
     /// The full name of the branch that is checked out; `None` while `HEAD` is detached.
-    reference: Option<String>,
+    pub(crate) reference: Option<String>,
     /// `None` before the first commit.
-    commit: Option<String>,
+    pub(crate) commit: Option<String>,
 }
 
 impl Head {
-    async fn read(directory: &Path, git: &Git) -> Result<Self, RpcError> {
+    pub(crate) async fn read(directory: &Path, git: &Git) -> Result<Self, RpcError> {
         let symbolic = git
             .read(directory, &["symbolic-ref", "--quiet", "HEAD"])
             .await;
@@ -63,7 +63,7 @@ impl Head {
         })
     }
 
-    fn branch(&self) -> Option<String> {
+    pub(crate) fn branch(&self) -> Option<String> {
         self.reference.as_deref().map(|reference| {
             reference
                 .strip_prefix(LOCAL_BRANCHES)
@@ -75,7 +75,7 @@ impl Head {
 }
 
 /// The full id of the commit that `revision` names, or `None` when it names none.
-async fn commit_id(
+pub(crate) async fn commit_id(
     directory: &Path,
     revision: &str,
     git: &Git,

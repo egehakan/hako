@@ -225,6 +225,8 @@ pub enum Method {
     GitSwitch,
     GitLog,
     GitShow,
+    GitMerge,
+    GitMergeAbort,
 }
 
 impl Method {
@@ -274,6 +276,8 @@ impl Method {
             "git.switch" => Some(Self::GitSwitch),
             "git.log" => Some(Self::GitLog),
             "git.show" => Some(Self::GitShow),
+            "git.merge" => Some(Self::GitMerge),
+            "git.merge_abort" => Some(Self::GitMergeAbort),
             _ => None,
         }
     }
@@ -880,6 +884,63 @@ pub struct GitStatus {
     pub files: Vec<GitFile>,
     /// Whether more files differ than these.
     pub truncated: bool,
+    /// `None` when no merge is in progress.
+    #[serde(default)]
+    pub merge: Option<GitMergeState>,
+}
+
+/// A merge that git stopped in the middle of.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMergeState {
+    /// The name of what is being merged, as far as git's prepared message tells it.
+    pub branch: Option<String>,
+    /// The prepared merge message, without its comment lines.
+    pub message: String,
+    /// The unmerged paths, relative to the repository.
+    pub conflicts: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMergeParams {
+    pub repo: String,
+    pub branch: String,
+    pub kind: GitMergeKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitMergeKind {
+    /// A local branch.
+    Local,
+    /// A remote-tracking branch such as `origin/feature`.
+    Remote,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMerge {
+    pub outcome: GitMergeOutcome,
+    /// The full id of `HEAD` afterwards.
+    pub head: String,
+    /// The unmerged paths when the outcome is conflicts.
+    pub conflicts: Vec<String>,
+    pub output: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitMergeOutcome {
+    UpToDate,
+    FastForward,
+    /// A merge commit was made.
+    Merged,
+    /// Git stopped with conflicts and left the repository mid-merge.
+    Conflicts,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMergeAbort {
+    /// The full id of `HEAD` afterwards.
+    pub head: String,
 }
 
 /// The result of `git.diff`.

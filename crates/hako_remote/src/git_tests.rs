@@ -4,7 +4,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::git_test_support::{commit_all, environment, git, identify, repository, write};
-use crate::protocol::GitSwitchKind;
+use crate::protocol::{GitMergeKind, GitMergeOutcome, GitSwitchKind};
 
 /// Finds working trees the plain way: every directory that holds a `.git` entry.
 fn search(directory: &Path) -> Vec<PathBuf> {
@@ -412,6 +412,45 @@ async fn commits_everything_and_answers_with_what_git_said() {
         code(fixture.commit(&repo, &"x".repeat(MESSAGE_LIMIT + 1)).await),
         ErrorCode::BadRequest
     );
+}
+
+#[tokio::test]
+async fn finishes_a_merge_with_a_commit_once_no_marker_remains() {
+    let fixture = Fixture::new();
+    let repo = fixture.repository("merging");
+    git(&repo, &["switch", "-q", "-c", "feature"]);
+    write(&repo, "README.md", "feature\n");
+    commit_all(&repo, "Feature");
+    git(&repo, &["switch", "-q", "main"]);
+    write(&repo, "README.md", "main\n");
+    commit_all(&repo, "Main");
+    let merge = GitMergeParams {
+        repo: repo.clone(),
+        branch: "feature".to_owned(),
+        kind: GitMergeKind::Local,
+    };
+    let merged = fixture
+        .source_control
+        .merge(&fixture.folders(), &merge, None)
+        .await
+        .unwrap();
+    assert_eq!(merged.outcome, GitMergeOutcome::Conflicts);
+    let status = fixture.status(&repo).await;
+    assert_eq!(status.repo.operation, Some(GitOperation::Merge));
+    let state = status.merge.unwrap();
+    assert_eq!(state.branch.as_deref(), Some("feature"));
+    assert_eq!(state.conflicts, ["README.md"]);
+
+    let refused = fixture.commit(&repo, &state.message).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(refused.message.contains("README.md"));
+    assert_eq!(fixture.status(&repo).await.merge.map(|m| m.conflicts), Some(vec!["README.md".to_owned()]));
+
+    write(&repo, "README.md", "both\n");
+    let committed = fixture.commit(&repo, &state.message).await.unwrap();
+    assert_eq!(committed.repo.operation, None);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD^2"]), git(&repo, &["rev-parse", "feature"]));
+    assert_eq!(fixture.status(&repo).await.merge, None);
 }
 
 #[tokio::test]

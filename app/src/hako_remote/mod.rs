@@ -24,7 +24,8 @@ use ::hako_remote::protocol::{
     EVENT_GIT_CHANGED, EVENT_NOTIFY, EVENT_WORKSPACE_CHANGED, FolderCreateParams, FsArchiveParams,
     FsCopyParams, FsDownloadParams, FsExtractParams, FsPathParams, FsRenameParams, FsTrashParams,
     FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams, FsWriteParams, GitChanged,
-    GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitRepoParams, GitShowParams,
+    GitCommitParams, GitDiffParams, GitDiscardParams, GitLogParams, GitMergeParams, GitRepoParams,
+    GitShowParams,
     GitSwitchParams, Method, NOTIFICATION_TERM_INPUT, Notify, RpcError, Workspace,
 };
 use ::hako_remote::transfers::{self, Transfers, UNFINISHED_KEPT_FOR};
@@ -711,6 +712,30 @@ impl HakoRemote {
                     |git, params: GitShowParams| async move {
                         git.source_control
                             .show(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitMerge => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitMergeParams| async move {
+                        git.source_control
+                            .merge(&git.folders, &params, git.path_env)
+                            .await
+                    },
+                );
+            }
+            Method::GitMergeAbort => {
+                return self.change_repository(
+                    params,
+                    responder,
+                    ctx,
+                    |git, params: GitRepoParams| async move {
+                        git.source_control
+                            .merge_abort(&git.folders, &params, git.path_env)
                             .await
                     },
                 );

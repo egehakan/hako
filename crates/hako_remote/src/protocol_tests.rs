@@ -214,6 +214,11 @@ fn knows_the_methods_of_this_version_only() {
     assert_eq!(Method::from_name("git.switch"), Some(Method::GitSwitch));
     assert_eq!(Method::from_name("git.log"), Some(Method::GitLog));
     assert_eq!(Method::from_name("git.show"), Some(Method::GitShow));
+    assert_eq!(Method::from_name("git.merge"), Some(Method::GitMerge));
+    assert_eq!(
+        Method::from_name("git.merge_abort"),
+        Some(Method::GitMergeAbort)
+    );
     assert_eq!(Method::from_name("git.fetch"), None);
 }
 

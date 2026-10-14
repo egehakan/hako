@@ -1,6 +1,6 @@
 //! The source control methods of the remote protocol: the working trees under the owner's
 //! folders, what differs from `HEAD` in each, the diff of one file, commit, push, pull and
-//! discard, and the branches and the history of each. All of it is done by the `git` command
+//! discard, the branches and the history of each, and merging. All of it is done by the `git` command
 //! line, in the working trees listed here and nowhere else.
 
 use std::collections::{HashMap, HashSet};
@@ -17,13 +17,14 @@ use tokio::time::Instant;
 
 use crate::files::is_normal;
 use crate::git_history::{self, LOG_DEFAULT, LOG_LIMIT};
+use crate::git_merge;
 use crate::git_run::{self, COMMAND_LIMIT, Exit, Git, failure};
 use crate::git_status::{LineCounts, Status, parse_numstat, parse_status};
 use crate::protocol::{
     ErrorCode, GitBranches, GitCommit, GitCommitParams, GitDiff, GitDiffParams, GitDiscard,
-    GitDiscardParams, GitFile, GitFileStatus, GitLog, GitLogParams, GitOperation, GitPull, GitPush,
-    GitRepo, GitRepoParams, GitRepos, GitShow, GitShowParams, GitStatus, GitSwitch,
-    GitSwitchParams, RpcError,
+    GitDiscardParams, GitFile, GitFileStatus, GitLog, GitLogParams, GitMerge, GitMergeAbort,
+    GitMergeParams, GitOperation, GitPull, GitPush, GitRepo, GitRepoParams, GitRepos, GitShow,
+    GitShowParams, GitStatus, GitSwitch, GitSwitchParams, RpcError,
 };
 
 /// The most files `git.status` lists.
@@ -183,10 +184,17 @@ impl SourceControl {
             .collect();
         let truncated = status.files.len() > STATUS_LIMIT;
         let repo = describe(&tree, Some(status), &listing.trees, &git).await?;
+        let merge = match repo.operation {
+            Some(GitOperation::Merge) => git_merge::merge_state(directory, &git).await?,
+            Some(GitOperation::Rebase | GitOperation::CherryPick | GitOperation::Revert) | None => {
+                None
+            }
+        };
         Ok(GitStatus {
             repo,
             files,
             truncated,
+            merge,
         })
     }
 
@@ -296,6 +304,7 @@ impl SourceControl {
         let (tree, listing) = self.resolve(folders, &params.repo, &git).await?;
         let _busy = self.begin(&tree.path)?;
         let directory = Path::new(&tree.path);
+        git_merge::check_conflict_markers(directory, &git).await?;
         let added = git.change(directory, &["add", "-A"], None).await;
         if !added.succeeded() {
             return Err(failure(&[&added]));
@@ -483,6 +492,30 @@ impl SourceControl {
         let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
         let _busy = self.begin(&tree.path)?;
         git_history::switch(Path::new(&tree.path), &params.branch, params.kind, &git).await
+    }
+
+    pub async fn merge(
+        &self,
+        folders: &[String],
+        params: &GitMergeParams,
+        path_env: Option<String>,
+    ) -> Result<GitMerge, RpcError> {
+        let git = self.git(path_env);
+        let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
+        let _busy = self.begin(&tree.path)?;
+        git_merge::merge(Path::new(&tree.path), &params.branch, params.kind, &git).await
+    }
+
+    pub async fn merge_abort(
+        &self,
+        folders: &[String],
+        params: &GitRepoParams,
+        path_env: Option<String>,
+    ) -> Result<GitMergeAbort, RpcError> {
+        let git = self.git(path_env);
+        let (tree, _) = self.resolve(folders, &params.repo, &git).await?;
+        let _busy = self.begin(&tree.path)?;
+        git_merge::merge_abort(Path::new(&tree.path), &git).await
     }
 
     pub async fn log(
