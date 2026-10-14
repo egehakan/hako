@@ -380,6 +380,11 @@ fn build_host_shell_command(
     // logic if this flag is set.
     builder.env("WARP_IS_LOCAL_SHELL_SESSION", "1");
 
+    // Tools run in Hako, such as the preview skill, leave their requests for it in its data
+    // directory, which differs between data profiles.
+    builder.env("HAKO_DATA_DIR", warp_core::paths::data_dir());
+    builder.env("HAKO_PREVIEWS", "1");
+
     // Only advertise the protocol version when the HOA notifications feature is enabled.
     // Without it, Warp can't render structured CLI agent notifications,
     // so the plugin should fall back to legacy notifications.
