@@ -169,7 +169,7 @@ fn reports_the_limits() {
     assert_eq!(
         info(),
         FsTransferInfo {
-            max_bytes: 52_428_800,
+            max_bytes: 209_715_200,
             chunk_bytes: 1_048_576
         }
     );

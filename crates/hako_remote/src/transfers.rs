@@ -24,7 +24,7 @@ use crate::upload_names::{self, UploadsAreaName};
 use crate::uploads_area;
 
 /// The longest file that is sent in either direction.
-pub const MAX_BYTES: u64 = 50 * 1024 * 1024;
+pub const MAX_BYTES: u64 = 200 * 1024 * 1024;
 /// The most bytes in one piece, before base64.
 pub const CHUNK_BYTES: u64 = 1024 * 1024;
 /// How long an unfinished upload is kept after the last request that named it.
