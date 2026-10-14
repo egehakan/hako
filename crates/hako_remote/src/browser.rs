@@ -430,9 +430,8 @@ pub struct FileChooserEvent {
 pub struct DownloadEvent {
     pub bid: u32,
     pub name: String,
-    /// Where the finished file is on this computer; `None` until it is done, and for a download
-    /// that failed or was cancelled.
-    pub path: Option<String>,
+    /// Where the file is on this computer once it is done.
+    pub path: String,
     /// In bytes; -1 while not known.
     pub size: i64,
     pub done: bool,

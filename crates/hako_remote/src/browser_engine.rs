@@ -252,7 +252,7 @@ enum Internal {
     },
     DownloadSaved {
         guid: String,
-        path: Option<PathBuf>,
+        path: PathBuf,
         size: i64,
     },
 }
@@ -290,6 +290,8 @@ struct ChooserTarget {
 struct Download {
     bid: u32,
     name: String,
+    /// Where the file is kept once it has arrived.
+    destination: PathBuf,
 }
 
 struct Engine {
@@ -785,7 +787,7 @@ impl Engine {
                     &DownloadEvent {
                         bid: download.bid,
                         name: download.name,
-                        path: path.map(|path| path.display().to_string()),
+                        path: path.display().to_string(),
                         size,
                         done: true,
                     },
@@ -1579,18 +1581,30 @@ impl Engine {
                     return;
                 };
                 let name = safe_file_name(params["suggestedFilename"].as_str().unwrap_or_default());
+                let destination = self
+                    .config
+                    .data_dir
+                    .join(DOWNLOADS_DIR)
+                    .join(guid)
+                    .join(&name);
                 self.out.event(
                     EVENT_DOWNLOAD,
                     &DownloadEvent {
                         bid,
                         name: name.clone(),
-                        path: None,
+                        path: destination.display().to_string(),
                         size: -1,
                         done: false,
                     },
                 );
-                self.downloads
-                    .insert(guid.to_owned(), Download { bid, name });
+                self.downloads.insert(
+                    guid.to_owned(),
+                    Download {
+                        bid,
+                        name,
+                        destination,
+                    },
+                );
             }
             "Browser.downloadProgress" => {
                 let Some(guid) = params["guid"].as_str() else {
@@ -1602,12 +1616,11 @@ impl Engine {
                 let size = params["receivedBytes"].as_f64().unwrap_or(0.0) as i64;
                 match params["state"].as_str() {
                     Some("completed") => {
-                        let downloads = self.config.data_dir.join(DOWNLOADS_DIR);
                         let file = params["filePath"]
                             .as_str()
                             .map(PathBuf::from)
                             .unwrap_or_else(|| incoming(&self.config.data_dir).join(guid));
-                        let destination = downloads.join(guid).join(&download.name);
+                        let destination = download.destination.clone();
                         let internal = self.internal.clone();
                         let guid = guid.to_owned();
                         tokio::task::spawn_blocking(move || {
@@ -1616,21 +1629,18 @@ impl Engine {
                                 .map_or(Ok(()), std::fs::create_dir_all)
                                 .and_then(|()| std::fs::rename(&file, &destination));
                             let path = match saved {
-                                Ok(()) => Some(destination),
+                                Ok(()) => destination,
                                 Err(error) => {
-                                    log::warn!("[Mac browser] could not keep a download: {error}");
-                                    None
+                                    log::warn!("[Mac browser] could not move a download: {error}");
+                                    file
                                 }
                             };
                             let _ = internal.send(Internal::DownloadSaved { guid, path, size });
                         });
                     }
+                    // The protocol has no word for a download that never finished.
                     Some("canceled") => {
-                        let _ = self.internal.send(Internal::DownloadSaved {
-                            guid: guid.to_owned(),
-                            path: None,
-                            size,
-                        });
+                        self.downloads.remove(guid);
                     }
                     Some(_) | None => {}
                 }
