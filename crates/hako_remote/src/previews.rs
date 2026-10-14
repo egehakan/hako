@@ -490,6 +490,23 @@ impl Entry {
         );
     }
 
+    fn is_active(&self) -> bool {
+        match self.phase {
+            Phase::Launching { .. } | Phase::Starting { .. } | Phase::Running { .. } => true,
+            Phase::Stopping { .. } | Phase::Idle { .. } => false,
+        }
+    }
+
+    /// The tab to send Ctrl+C to when the preview is replaced: only one where its own command
+    /// runs, never the tab an attached server was found in.
+    fn tab_to_interrupt(&self) -> Option<String> {
+        let preview = &self.stored.preview;
+        if !self.is_active() || preview.command.is_none() {
+            return None;
+        }
+        preview.tab_id.clone()
+    }
+
     fn failed(&mut self, message: &str, now: Instant) {
         self.set(
             PreviewStatus::Failed,
@@ -760,13 +777,10 @@ impl Registry {
 
         let old = self.entry(&request.id).map(|entry| {
             let preview = &entry.stored.preview;
-            let active = match entry.phase {
-                Phase::Launching { .. } | Phase::Starting { .. } | Phase::Running { .. } => true,
-                Phase::Stopping { .. } | Phase::Idle { .. } => false,
-            };
-            let same = preview.port == request.port
+            let same = entry.is_active()
+                && preview.port == request.port
                 && preview.command.as_deref() == Some(request.command.as_str());
-            (active, same, entry.phase, preview.clone())
+            (same, entry.tab_to_interrupt(), entry.phase, preview.clone())
         });
         let stored = StoredPreview {
             preview: Preview {
@@ -790,15 +804,21 @@ impl Registry {
         let mut work = Vec::new();
         let entry = self.upsert(stored, now);
         match old {
-            Some((true, true, phase, preview)) => {
+            Some((true, _, phase, preview)) => {
                 // Already running what was asked for.
                 entry.stored.preview.status = preview.status;
                 entry.stored.preview.started = preview.started;
                 entry.phase = phase;
             }
-            Some((active, _, _, preview)) => {
-                if active && let Some(tab_id) = preview.tab_id {
+            Some((false, interrupt, _, preview)) => {
+                if let Some(tab_id) = interrupt {
                     work.push(TabWork::Interrupt { tab_id });
+                }
+                // An attached server's tab ran no command of the preview's, and what ends in it
+                // is not the new command's.
+                if preview.command.is_none() {
+                    entry.stored.preview.tab_id = None;
+                    entry.stored.preview.session_id = None;
                 }
                 entry.set(
                     PreviewStatus::Starting,
@@ -847,22 +867,12 @@ impl Registry {
                 };
             }
         };
-        let mut work = Vec::new();
-        if let Some(old) = self.entry(&request.id) {
-            let preview = &old.stored.preview;
-            let active = match old.phase {
-                Phase::Launching { .. } | Phase::Starting { .. } | Phase::Running { .. } => true,
-                Phase::Stopping { .. } | Phase::Idle { .. } => false,
-            };
-            if active
-                && preview.command.is_some()
-                && let Some(tab_id) = &preview.tab_id
-            {
-                work.push(TabWork::Interrupt {
-                    tab_id: tab_id.clone(),
-                });
-            }
-        }
+        let work = self
+            .entry(&request.id)
+            .and_then(Entry::tab_to_interrupt)
+            .map(|tab_id| TabWork::Interrupt { tab_id })
+            .into_iter()
+            .collect();
         let stored = StoredPreview {
             preview: Preview {
                 id: request.id,

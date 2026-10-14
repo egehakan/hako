@@ -281,6 +281,43 @@ fn a_repeated_start_leaves_a_running_server_and_replaces_a_changed_one() {
 }
 
 #[test]
+fn a_start_replacing_an_attached_preview_leaves_the_tab_it_found_alone() {
+    let now = Instant::now();
+    let mut registry = Registry::default();
+    registry.start(web(), 1, now);
+    registry.set_tab("web", "t1".to_owned(), "s1".to_owned());
+    registry.launched("web", now);
+    check_all(&mut registry, true, now + READY_POLL_INTERVAL);
+
+    let attach = match parse_request(
+        r#"{ "action": "attach", "id": "web", "directory": "/tmp/web", "port": 5173 }"#,
+    )
+    .unwrap()
+    {
+        PreviewRequest::Attach(request) => request,
+        other => panic!("expected an attach request, got {other:?}"),
+    };
+    let outcome = registry.attach(attach, 2, now);
+    assert_eq!(
+        outcome.work,
+        [TabWork::Interrupt {
+            tab_id: "t1".to_owned()
+        }]
+    );
+    let later = now + Duration::from_secs(1);
+    check_all(&mut registry, true, later);
+    assert_eq!(status(&registry), PreviewStatus::Running);
+    assert_eq!(registry.list()[0].tab_id.as_deref(), Some("t1"));
+
+    let outcome = registry.start(web(), 3, later);
+    assert!(outcome.work.is_empty());
+    assert_eq!(registry.launching(), [("web".to_owned(), None)]);
+    // What ends in the tab the attached server was found in is not the new command's.
+    assert!(!registry.command_ended("web", 130, later));
+    assert_eq!(status(&registry), PreviewStatus::Starting);
+}
+
+#[test]
 fn a_request_with_a_bad_id_fails_with_the_reason() {
     let now = Instant::now();
     let mut registry = Registry::default();
