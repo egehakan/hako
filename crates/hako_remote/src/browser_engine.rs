@@ -32,7 +32,7 @@ use crate::browser::{
 };
 use crate::browser_sessions::{InFlight, Sessions, Tab};
 use crate::cdp::{Cdp, CdpEvent};
-use crate::chrome::{self, DOWNLOADS_DIR, Instance, PROFILE_DIR};
+use crate::chrome::{self, DOWNLOADS_DIR, Instance, PROFILE_DIR, Watchdog};
 use crate::connection::Responder;
 use crate::protocol::{ErrorCode, Frame, RpcError};
 
@@ -109,20 +109,44 @@ impl BrowserHandle {
 /// Quits the browser when the app no longer wants it, even while the browser's thread is
 /// stopping.
 #[derive(Clone, Default)]
-pub(crate) struct BrowserGuard(Arc<Mutex<Option<u32>>>);
+pub(crate) struct BrowserGuard(Arc<Mutex<Option<Guarded>>>);
+
+struct Guarded {
+    pid: u32,
+    watchdog: Option<Watchdog>,
+}
 
 impl BrowserGuard {
-    fn set(&self, pid: Option<u32>) {
+    fn set(&self, pid: u32, watchdog: Option<Watchdog>) {
         if let Ok(mut current) = self.0.lock() {
-            *current = pid;
+            *current = Some(Guarded { pid, watchdog });
         }
     }
 
+    /// Stops guarding the browser, which the engine quits itself or found gone, and hands back
+    /// its watchdog.
+    fn release(&self) -> Option<Watchdog> {
+        self.take().and_then(|guarded| guarded.watchdog)
+    }
+
+    fn take(&self) -> Option<Guarded> {
+        self.0.lock().ok().and_then(|mut guarded| guarded.take())
+    }
+
     pub(crate) fn quit(&self) {
-        let pid = self.0.lock().ok().and_then(|mut pid| pid.take());
-        if let Some(pid) = pid {
-            chrome::terminate(pid);
-        }
+        let Some(Guarded { pid, watchdog }) = self.take() else {
+            return;
+        };
+        chrome::terminate(pid);
+        // The watchdog stays until the browser has quit, and finishes the job should the app end
+        // first.
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + QUIT_WAIT;
+            while chrome::is_running(pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            drop(watchdog);
+        });
     }
 }
 
@@ -817,7 +841,12 @@ impl Engine {
                     started.instance.pid,
                     started.instance.port
                 );
-                self.guard.set(Some(started.instance.pid));
+                let watchdog = Watchdog::start(std::process::id(), started.instance.pid)
+                    .inspect_err(|error| {
+                        log::warn!("[Mac browser] could not start Chrome's watchdog: {error}");
+                    })
+                    .ok();
+                self.guard.set(started.instance.pid, watchdog);
                 self.events = Some(started.events);
                 self.stale = started.stale;
                 self.browser = Browser::Running {
@@ -1440,7 +1469,7 @@ impl Engine {
             return;
         };
         self.events = None;
-        self.guard.set(None);
+        let watchdog = self.guard.release();
         self.quitting = Some(instance.pid);
         self.forget_everything(None);
         tokio::spawn(async move {
@@ -1456,13 +1485,14 @@ impl Engine {
             if chrome::is_running(instance.pid) {
                 chrome::terminate(instance.pid);
             }
+            drop(watchdog);
         });
     }
 
     fn browser_exited(&mut self) {
         log::info!("[Mac browser] Chrome is gone");
         self.events = None;
-        self.guard.set(None);
+        self.guard.release();
         self.browser = Browser::Stopped;
         self.forget_everything(Some(ClosedReason::BrowserExited));
     }

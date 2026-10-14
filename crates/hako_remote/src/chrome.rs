@@ -4,8 +4,9 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
@@ -264,6 +265,56 @@ pub fn terminate(pid: u32) {
     // SAFETY: `kill` only sends a signal; the pid is that of the browser this app started.
     unsafe {
         libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+/// Ends the browser `$2` once the process `$1` is gone: asks it to quit, then kills it 5 seconds
+/// later. It stops by itself once the browser is gone.
+const WATCHDOG_SCRIPT: &str = r#"
+while kill -0 "$1" 2>/dev/null && kill -0 "$2" 2>/dev/null; do sleep 2; done
+kill -0 "$1" 2>/dev/null && exit 0
+kill -TERM "$2" -"$2" 2>/dev/null
+i=0
+while kill -0 "$2" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+kill -KILL "$2" -"$2" 2>/dev/null
+exit 0
+"#;
+
+/// The name the watchdog shows in `ps`.
+pub const WATCHDOG_NAME: &str = "hako-browser-watchdog";
+
+/// A small process outside this app that quits the browser should the app end without doing so,
+/// as when it crashes or is killed. Dropping it stops it.
+pub struct Watchdog(Child);
+
+impl Watchdog {
+    /// Watches over the browser `browser` for the process `owner`.
+    pub fn start(owner: u32, browser: u32) -> io::Result<Self> {
+        Command::new("/bin/sh")
+            .args(["-c", WATCHDOG_SCRIPT, WATCHDOG_NAME])
+            .args([owner.to_string(), browser.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // A group of its own, so that signals meant for the app's group do not reach it.
+            .process_group(0)
+            .spawn()
+            .map(Self)
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        // Until it is waited for, its pid cannot have been reused for another process.
+        if let Ok(None) = self.0.try_wait()
+            && let Ok(group) = i32::try_from(self.0.id())
+        {
+            // SAFETY: `kill` only sends a signal, to the group the watchdog leads.
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        let _ = self.0.wait();
     }
 }
 
