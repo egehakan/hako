@@ -1,3 +1,5 @@
+use ::hako_remote::protocol::GitMergeState;
+
 use super::*;
 use crate::code_review::diff_state::GitFileStatus;
 use crate::code_review::nested_repos::NestedRepoFile;
@@ -16,6 +18,7 @@ fn status(upstream: Option<&str>, ahead: usize, behind: usize, changed: usize) -
                 status: GitFileStatus::Modified,
             })
             .collect(),
+        merge: None,
     }
 }
 
@@ -197,4 +200,46 @@ fn sync_messages_describe_each_outcome() {
 
     assert!(sync_message(SyncOutcome::Refused(SyncRefusal::NoUpstream), None).is_error);
     assert!(sync_message(SyncOutcome::Refused(SyncRefusal::OperationInProgress), None).is_error);
+}
+
+#[test]
+fn a_merge_in_progress_offers_only_its_commit_and_abort() {
+    let mut merging = status(Some("origin/main"), 1, 0, 2);
+    merging.merge = Some(GitMergeState {
+        branch: Some("feature".to_owned()),
+        message: "Merge branch 'feature'".to_owned(),
+        conflicts: vec!["a.txt".to_owned(), "b.txt".to_owned()],
+    });
+    assert_eq!(
+        applicable_actions(&merging),
+        [RepoAction::CommitMerge, RepoAction::AbortMerge]
+    );
+    let merge = merging.merge.as_mut().unwrap();
+    assert_eq!(merge_banner(merge), "Merging feature: 2 conflicts");
+    merge.conflicts.truncate(1);
+    assert_eq!(merge_banner(merge), "Merging feature: 1 conflict");
+    merge.conflicts.clear();
+    merge.branch = None;
+    assert_eq!(merge_banner(merge), "Merging: ready to commit");
+}
+
+#[test]
+fn a_refused_merge_reports_what_git_said_without_hints() {
+    let overwritten = "error: Your local changes to the following files would be overwritten by \
+                       merge:\n\tshared.txt\nPlease commit your changes or stash them before you \
+                       merge.\nAborting";
+    assert_eq!(
+        merge_refusal(overwritten).text,
+        "The merge would overwrite uncommitted changes. Commit or discard them first."
+    );
+    let unresolved = "error: Merging is not possible because you have unmerged files.\nhint: Fix \
+                      them up in the work tree.\nfatal: Exiting because of an unresolved conflict.";
+    assert_eq!(
+        merge_refusal(unresolved).text,
+        "Merging is not possible because you have unmerged files."
+    );
+    assert_eq!(
+        merge_refusal("refusing to merge unrelated histories").text,
+        "refusing to merge unrelated histories"
+    );
 }

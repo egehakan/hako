@@ -1,10 +1,11 @@
 //! Overlay menu of a repository's branches in the source control overview: a search input, the
-//! local branches and then the remote ones, and a way to name a new branch.
+//! local branches and then the remote ones, a way to name a new branch, and a way to merge a
+//! branch into the one that is checked out.
 use std::cmp;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ::hako_remote::protocol::{GitBranch, GitBranchKind, GitBranches, GitSwitchKind};
+use ::hako_remote::protocol::{GitBranch, GitBranchKind, GitBranches, GitMergeKind, GitSwitchKind};
 use fuzzy_match::match_indices_case_insensitive;
 use warp_core::ui::theme::Fill;
 use warp_editor::editor::NavigationKey;
@@ -44,6 +45,7 @@ const CHECK_GAP: f32 = 8.;
 const CHECK_SLOT_SIZE: f32 = 12.;
 const DETAIL_MAX_WIDTH: f32 = 220.;
 const DETAIL_FONT_SIZE_RATIO: f32 = 0.9;
+const MERGE_BUTTON_MAX_WIDTH: f32 = 200.;
 
 const SEARCH_PLACEHOLDER: &str = "Search branches\u{2026}";
 const NAME_PLACEHOLDER: &str = "Name of the new branch";
@@ -105,6 +107,28 @@ fn home_relative(path: &str) -> String {
 
 fn is_current(branch: &GitBranch, branches: &GitBranches) -> bool {
     branch.kind == GitBranchKind::Local && branches.current.as_deref() == Some(&branch.name)
+}
+
+/// The branch a row offers to merge into the one that is checked out, and its kind: any branch
+/// but the current one, while a branch is checked out.
+pub(crate) fn merge_target(row: &BranchRow, list: &BranchList) -> Option<(String, GitMergeKind)> {
+    let (BranchRow::Branch { index, .. }, BranchList::Loaded(branches)) = (row, list) else {
+        return None;
+    };
+    let branch = branches.branches.get(*index)?;
+    if branches.current.is_none() || is_current(branch, branches) {
+        return None;
+    }
+    let kind = match branch.kind {
+        GitBranchKind::Local => GitMergeKind::Local,
+        GitBranchKind::Remote => GitMergeKind::Remote,
+    };
+    Some((branch.name.clone(), kind))
+}
+
+/// Whether the row can be focused: it can be picked, or it offers a merge.
+fn is_focusable(row: &BranchRow, list: &BranchList) -> bool {
+    is_selectable(row, list) || merge_target(row, list).is_some()
 }
 
 /// Whether picking the row does something.
@@ -218,7 +242,7 @@ pub(crate) fn branch_detail(branch: &GitBranch, now: i64) -> String {
     .join(" \u{b7} ")
 }
 
-/// The selectable row nearest to `from` in the given direction, if there is one.
+/// The focusable row nearest to `from` in the given direction, if there is one.
 fn next_selectable_row(
     rows: &[BranchRow],
     list: &BranchList,
@@ -226,17 +250,25 @@ fn next_selectable_row(
     forward: bool,
 ) -> Option<usize> {
     if forward {
-        (from + 1..rows.len()).find(|index| is_selectable(&rows[*index], list))
+        (from + 1..rows.len()).find(|index| is_focusable(&rows[*index], list))
     } else {
         (0..from.min(rows.len()))
             .rev()
-            .find(|index| is_selectable(&rows[*index], list))
+            .find(|index| is_focusable(&rows[*index], list))
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum BranchMenuEvent {
-    Switch { branch: String, kind: GitSwitchKind },
+    Switch {
+        branch: String,
+        kind: GitSwitchKind,
+    },
+    /// Merge the branch into the one that is checked out.
+    Merge {
+        branch: String,
+        kind: GitMergeKind,
+    },
     Close,
 }
 
@@ -246,6 +278,9 @@ pub enum BranchMenuAction {
         index: usize,
     },
     HoverRow {
+        index: usize,
+    },
+    MergeRow {
         index: usize,
     },
     SelectUp,
@@ -436,7 +471,7 @@ impl BranchMenu {
             None => self
                 .rows
                 .iter()
-                .position(|row| is_selectable(row, &self.list)),
+                .position(|row| is_focusable(row, &self.list)),
         };
         let Some(next) = next else {
             return;
@@ -487,6 +522,16 @@ impl BranchMenu {
         }
     }
 
+    fn merge_row(&mut self, row_index: usize, ctx: &mut ViewContext<Self>) {
+        let target = self
+            .rows
+            .get(row_index)
+            .and_then(|row| merge_target(row, &self.list));
+        if let Some((branch, kind)) = target {
+            ctx.emit(BranchMenuEvent::Merge { branch, kind });
+        }
+    }
+
     fn go_back(&mut self, ctx: &mut ViewContext<Self>) {
         match self.mode {
             MenuMode::Naming => self.set_mode(MenuMode::Listing, String::new(), ctx),
@@ -527,10 +572,15 @@ impl BranchMenu {
             BranchList::Loaded(branches) => (Some(branches), branches.head.as_deref()),
             BranchList::Loading | BranchList::Failed(_) => (None, None),
         };
+        let current = branches.and_then(|branches| branches.current.as_deref());
         self.rows
             .iter()
             .map(|row| {
                 let is_enabled = is_selectable(row, &self.list);
+                let is_focusable = is_focusable(row, &self.list);
+                let merge_label = merge_target(row, &self.list)
+                    .zip(current)
+                    .map(|(_, current)| format!("Merge into {current}"));
                 match row {
                     BranchRow::NewBranch => DisplayedRow::Item {
                         label: NEW_BRANCH_LABEL.to_owned(),
@@ -538,6 +588,8 @@ impl BranchMenu {
                         highlighted: Vec::new(),
                         mark: RowMark::Plus,
                         is_enabled,
+                        is_focusable,
+                        merge_label: None,
                     },
                     BranchRow::Create => DisplayedRow::Item {
                         label: format!(
@@ -548,6 +600,8 @@ impl BranchMenu {
                         highlighted: Vec::new(),
                         mark: RowMark::Plus,
                         is_enabled,
+                        is_focusable,
+                        merge_label: None,
                     },
                     BranchRow::Branch { index, highlighted } => {
                         match branches
@@ -564,6 +618,8 @@ impl BranchMenu {
                                 },
                                 // The current branch is not picked, and reads as usual.
                                 is_enabled: is_enabled || is_current(branch, branches),
+                                is_focusable,
+                                merge_label,
                             },
                             None => DisplayedRow::Note(String::new()),
                         }
@@ -632,6 +688,10 @@ enum DisplayedRow {
         highlighted: Vec<usize>,
         mark: RowMark,
         is_enabled: bool,
+        /// Takes the focus when hovered, which an item that only offers a merge does too.
+        is_focusable: bool,
+        /// Shown on the focused item, which then merges its branch when clicked.
+        merge_label: Option<String>,
     },
     Error(String),
     Note(String),
@@ -651,14 +711,24 @@ impl DisplayedRow {
         let font_size = appearance.ui_font_size();
         let sub_text_color = theme.sub_text_color(theme.surface_2()).into_solid();
 
-        let (label, detail, highlighted, mark, is_enabled) = match self {
+        let (label, detail, highlighted, mark, is_enabled, is_focusable, merge_label) = match self {
             DisplayedRow::Item {
                 label,
                 detail,
                 highlighted,
                 mark,
                 is_enabled,
-            } => (label, detail, highlighted, *mark, *is_enabled),
+                is_focusable,
+                merge_label,
+            } => (
+                label,
+                detail,
+                highlighted,
+                *mark,
+                *is_enabled,
+                *is_focusable,
+                merge_label,
+            ),
             DisplayedRow::Header(title) => {
                 return Self::render_plain(
                     Text::new_inline(*title, font_family, font_size)
@@ -687,7 +757,7 @@ impl DisplayedRow {
             }
         };
 
-        let (text_color, detail_color, background) = if is_focused && is_enabled {
+        let (text_color, detail_color, background) = if is_focused && is_focusable {
             let background = theme.accent();
             let text_color = theme.main_text_color(background).into_solid();
             (text_color, text_color, Some(background))
@@ -733,7 +803,14 @@ impl DisplayedRow {
                     .finish(),
             )
             .with_child(Expanded::new(1., label_text.finish()).finish());
-        if let Some(detail) = detail {
+        let merge_label = merge_label.as_ref().filter(|_| is_focused);
+        if let Some(merge_label) = merge_label {
+            row.add_child(Self::render_merge_button(
+                merge_label,
+                row_index,
+                appearance,
+            ));
+        } else if let Some(detail) = detail {
             row.add_child(
                 Container::new(
                     ConstrainedBox::new(
@@ -761,7 +838,7 @@ impl DisplayedRow {
         if let Some(background) = background {
             container = container.with_background(background);
         }
-        if !is_enabled {
+        if !is_focusable {
             return container.finish();
         }
 
@@ -782,6 +859,45 @@ impl DisplayedRow {
                 }),
             )
             .finish()
+    }
+
+    /// The secondary action of the focused branch, which merges it into the current one.
+    fn render_merge_button(
+        label: &str,
+        row_index: usize,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let background = theme.surface_2();
+        let button = Container::new(
+            ConstrainedBox::new(
+                Text::new_inline(
+                    label.to_owned(),
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size() * DETAIL_FONT_SIZE_RATIO,
+                )
+                .with_color(theme.main_text_color(background).into_solid())
+                .with_clip(ClipConfig::ellipsis())
+                .finish(),
+            )
+            .with_max_width(MERGE_BUTTON_MAX_WIDTH)
+            .finish(),
+        )
+        .with_horizontal_padding(6.)
+        .with_vertical_padding(1.)
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+        .with_background(background)
+        .finish();
+        Container::new(
+            EventHandler::new(button)
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(BranchMenuAction::MergeRow { index: row_index });
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+        )
+        .with_margin_left(12.)
+        .finish()
     }
 
     /// A row that cannot be picked: a heading, an error or a note.
@@ -823,13 +939,14 @@ impl TypedActionView for BranchMenu {
                 if self
                     .rows
                     .get(*index)
-                    .is_some_and(|row| is_selectable(row, &self.list))
+                    .is_some_and(|row| is_focusable(row, &self.list))
                     && self.selected_index != Some(*index)
                 {
                     self.selected_index = Some(*index);
                     ctx.notify();
                 }
             }
+            BranchMenuAction::MergeRow { index } => self.merge_row(*index, ctx),
             BranchMenuAction::SelectUp => self.select_prev(ctx),
             BranchMenuAction::SelectDown => self.select_next(ctx),
             BranchMenuAction::SelectEnter => self.select_enter(ctx),

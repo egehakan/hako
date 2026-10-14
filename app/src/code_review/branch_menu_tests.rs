@@ -164,17 +164,43 @@ fn a_remote_branch_named_like_the_current_one_can_be_picked() {
 }
 
 #[test]
-fn keyboard_selection_passes_over_rows_that_cannot_be_picked() {
+fn keyboard_selection_passes_over_rows_that_offer_nothing() {
     let list = fixture();
     let rows = branch_rows(&list, "", MenuMode::Listing);
 
     // From the way to a new branch, past the heading and the current branch.
     assert_eq!(next_selectable_row(&rows, &list, 0, true), Some(3));
-    // From `feature/login`, past the branch a worktree holds and the next heading.
-    assert_eq!(next_selectable_row(&rows, &list, 3, true), Some(6));
+    // The branch a worktree holds cannot be switched to, but it can be merged.
+    assert_eq!(next_selectable_row(&rows, &list, 3, true), Some(4));
+    assert_eq!(next_selectable_row(&rows, &list, 4, true), Some(6));
     assert_eq!(next_selectable_row(&rows, &list, 6, true), None);
-    assert_eq!(next_selectable_row(&rows, &list, 6, false), Some(3));
+    assert_eq!(next_selectable_row(&rows, &list, 6, false), Some(4));
     assert_eq!(next_selectable_row(&rows, &list, 3, false), Some(0));
+}
+
+#[test]
+fn every_branch_but_the_current_one_can_be_merged_into_it() {
+    let list = fixture();
+    let target = |index| merge_target(&plain(index), &list);
+
+    assert_eq!(target(0), None, "the current branch");
+    assert_eq!(
+        target(1),
+        Some(("feature/login".to_owned(), GitMergeKind::Local))
+    );
+    assert_eq!(target(2), Some(("hotfix".to_owned(), GitMergeKind::Local)));
+    assert_eq!(
+        target(3),
+        Some(("origin/release".to_owned(), GitMergeKind::Remote))
+    );
+    assert_eq!(merge_target(&BranchRow::NewBranch, &list), None);
+
+    let BranchList::Loaded(mut detached) = fixture() else {
+        unreachable!();
+    };
+    detached.current = None;
+    detached.detached = true;
+    assert_eq!(merge_target(&plain(1), &BranchList::Loaded(detached)), None);
 }
 
 #[test]

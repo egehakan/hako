@@ -1,6 +1,8 @@
 //! Which git actions a repository row of the source control overview offers, and how they are
 //! split between buttons on the row and its overflow menu.
 
+use ::hako_remote::protocol::{GitMerge, GitMergeOutcome, GitMergeState};
+
 use super::git_actions::{SyncOutcome, SyncRefusal};
 use super::nested_repos::NestedRepoStatus;
 use crate::ui_components::icons::Icon;
@@ -15,6 +17,9 @@ pub enum RepoAction {
     Discard,
     PullRequest,
     Fetch,
+    /// Commits the merge in progress, which concludes it.
+    CommitMerge,
+    AbortMerge,
 }
 
 impl RepoAction {
@@ -27,6 +32,8 @@ impl RepoAction {
             RepoAction::Discard => "Discard",
             RepoAction::PullRequest => "Pull request",
             RepoAction::Fetch => "Fetch",
+            RepoAction::CommitMerge => "Commit merge",
+            RepoAction::AbortMerge => "Abort merge",
         }
     }
 
@@ -39,6 +46,8 @@ impl RepoAction {
             RepoAction::Discard => "Discard all uncommitted changes",
             RepoAction::PullRequest => "View or create the pull request",
             RepoAction::Fetch => "Fetch from the remote",
+            RepoAction::CommitMerge => "Commit the merge once its conflicts are resolved",
+            RepoAction::AbortMerge => "Abandon the merge and go back to before it",
         }
     }
 
@@ -51,6 +60,8 @@ impl RepoAction {
             RepoAction::Discard => Icon::ReverseLeft,
             RepoAction::PullRequest => Icon::Github,
             RepoAction::Fetch => Icon::Download,
+            RepoAction::CommitMerge => Icon::GitCommit,
+            RepoAction::AbortMerge => Icon::ReverseLeft,
         }
     }
 
@@ -62,14 +73,20 @@ impl RepoAction {
             | RepoAction::Push
             | RepoAction::Publish
             | RepoAction::Sync
-            | RepoAction::Discard => true,
+            | RepoAction::Discard
+            | RepoAction::CommitMerge
+            | RepoAction::AbortMerge => true,
             RepoAction::PullRequest | RepoAction::Fetch => false,
         }
     }
 }
 
-/// The actions that apply to a repository in `status`, most relevant first.
+/// The actions that apply to a repository in `status`, most relevant first. While a merge is in
+/// progress, finishing or abandoning it is all there is to do.
 pub fn applicable_actions(status: &NestedRepoStatus) -> Vec<RepoAction> {
+    if status.merge.is_some() {
+        return vec![RepoAction::CommitMerge, RepoAction::AbortMerge];
+    }
     let has_changes = !status.files.is_empty();
     let is_on_branch = !status.is_detached && !status.branch.is_empty();
     let has_commits = status.head_oid.is_some();
@@ -208,6 +225,66 @@ pub fn sync_message(outcome: SyncOutcome, upstream: Option<&str>) -> RowMessage 
         }
         SyncOutcome::Refused(SyncRefusal::OperationInProgress) => operation_in_progress_message(),
     }
+}
+
+/// What the row of a repository in the middle of a merge says, such as
+/// `Merging feature: 2 conflicts`.
+pub fn merge_banner(merge: &GitMergeState) -> String {
+    let what = match &merge.branch {
+        Some(branch) => format!("Merging {branch}"),
+        None => "Merging".to_owned(),
+    };
+    match merge.conflicts.len() {
+        0 => format!("{what}: ready to commit"),
+        1 => format!("{what}: 1 conflict"),
+        count => format!("{what}: {count} conflicts"),
+    }
+}
+
+/// The report of a merge that ran to its end, or stopped at conflicts.
+pub fn merge_message(merge: &GitMerge, branch: &str) -> RowMessage {
+    match merge.outcome {
+        GitMergeOutcome::UpToDate => RowMessage::info(format!("Already up to date with {branch}")),
+        GitMergeOutcome::FastForward => RowMessage::info(format!("Fast-forwarded to {branch}")),
+        GitMergeOutcome::Merged => RowMessage::info(format!("Merged {branch}")),
+        // The row goes on to show the merge in progress, so this is no error of its own.
+        GitMergeOutcome::Conflicts => RowMessage::info(format!(
+            "Merging {branch} stopped at {}",
+            conflict_count(merge.conflicts.len())
+        )),
+    }
+}
+
+fn conflict_count(count: usize) -> String {
+    if count == 1 {
+        "1 conflict".to_owned()
+    } else {
+        format!("{count} conflicts")
+    }
+}
+
+/// What to show when git refused a merge or its abort: its own explanation, which says what
+/// to do, without its hints.
+pub fn merge_refusal(output: &str) -> RowMessage {
+    if output.contains("would be overwritten by merge") {
+        return RowMessage::error(
+            "The merge would overwrite uncommitted changes. Commit or discard them first.",
+        );
+    }
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("hint:"))
+        .collect();
+    let explanation = lines
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("error: ")
+                .or_else(|| line.strip_prefix("fatal: "))
+        })
+        .or_else(|| lines.first().copied())
+        .unwrap_or("git did not say why");
+    RowMessage::error(explanation)
 }
 
 pub fn operation_in_progress_message() -> RowMessage {

@@ -1,12 +1,14 @@
 //! Source-control overview of every repository nested under a folder that is not itself a
 //! repository: a list of repositories with their changed files and the graph of their history,
-//! the diff of one selected file beside it, and each repository's branch and git actions.
+//! the diff of one selected file beside it, and each repository's branch and git actions,
+//! including a merge and what is left to do while one is in progress.
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use ::hako_remote::protocol::GitMergeKind;
 use async_channel::Sender;
 use futures::future::BoxFuture;
 use pathfinder_color::ColorU;
@@ -38,10 +40,13 @@ use super::git_actions::{self, SyncOutcome};
 use super::git_dialog::{GitDialog, GitDialogEvent, user_facing_git_error};
 use super::nested_repo_actions::{
     MEDIUM_ROW_MIN_WIDTH, RepoAction, RowMessage, RowWidth, WIDE_ROW_MIN_WIDTH, applicable_actions,
-    layout_actions, operation_in_progress_message, sync_message,
+    layout_actions, merge_banner, merge_message, merge_refusal, operation_in_progress_message,
+    sync_message,
 };
 use super::nested_repo_file_diff::{NestedRepoFileDiffEvent, NestedRepoFileDiffView};
-use super::nested_repo_history::RepoHistory;
+use super::nested_repo_history::{
+    RepoHistory, abort_merge, check_conflict_markers, merge_branch, one_line,
+};
 use super::nested_repos::{
     NestedRepoEntry, NestedRepoFile, NestedRepoKind, NestedRepoStatus, NestedReposEvent,
     NestedReposModel,
@@ -93,18 +98,18 @@ pub const COMFORTABLE_TWO_COLUMN_WIDTH: f32 = 780.;
 
 /// How long a confirmation must have been on screen before it accepts a confirming click, so
 /// that the second click of a double-click on a row button cannot land on it.
-const DISCARD_CONFIRMATION_ARMING_DELAY: Duration = Duration::from_millis(600);
+const CONFIRMATION_ARMING_DELAY: Duration = Duration::from_millis(600);
 
 const INFO_MESSAGE_LIFETIME: Duration = Duration::from_secs(8);
 const ERROR_MESSAGE_LIFETIME: Duration = Duration::from_secs(30);
 
-const DISCARD_DIALOG_CONTEXT: &str = "NestedReposDiscardDialog";
+const CONFIRMATION_DIALOG_CONTEXT: &str = "NestedReposConfirmationDialog";
 
 pub fn init(app: &mut AppContext) {
     app.register_fixed_bindings(vec![FixedBinding::new(
         "escape",
-        NestedReposViewAction::CancelDiscard,
-        warpui::id!(DISCARD_DIALOG_CONTEXT),
+        NestedReposViewAction::CancelConfirmation,
+        warpui::id!(CONFIRMATION_DIALOG_CONTEXT),
     )]);
 }
 
@@ -125,8 +130,8 @@ pub enum NestedReposViewAction {
         /// Width tier of the row the menu was opened from, which decides what is in it.
         row_width: RowWidth,
     },
-    ConfirmDiscard,
-    CancelDiscard,
+    Confirm,
+    CancelConfirmation,
     ToggleBranchMenu(PathBuf),
     ToggleGraph(PathBuf),
     /// Opens a commit of the graph to show its files, or closes the one that is open.
@@ -139,6 +144,8 @@ pub enum NestedReposViewAction {
         commit: String,
         path: String,
     },
+    /// Opens a file with conflicts of the merge in progress in an editor, to resolve them.
+    OpenConflictedFile(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -344,6 +351,8 @@ impl Default for RepoMouseStates {
                 RepoAction::Discard,
                 RepoAction::PullRequest,
                 RepoAction::Fetch,
+                RepoAction::CommitMerge,
+                RepoAction::AbortMerge,
             ]
             .into_iter()
             .map(|action| (action, MouseStateHandle::default()))
@@ -358,8 +367,16 @@ impl Default for RepoMouseStates {
     }
 }
 
-struct DiscardConfirmation {
+/// What a confirmation asks about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfirmedAction {
+    Discard,
+    AbortMerge,
+}
+
+struct Confirmation {
     repo_root: PathBuf,
+    action: ConfirmedAction,
     opened_at: Instant,
 }
 
@@ -403,9 +420,9 @@ pub struct NestedReposView {
     overflow_menu: ViewHandle<Menu<NestedReposViewAction>>,
     overflow_menu_repo: Option<PathBuf>,
     git_dialog: Option<ViewHandle<GitDialog>>,
-    discard_confirmation: Option<DiscardConfirmation>,
-    discard_confirm_button: ViewHandle<ActionButton>,
-    discard_cancel_button: ViewHandle<ActionButton>,
+    confirmation: Option<Confirmation>,
+    confirm_button: ViewHandle<ActionButton>,
+    cancel_button: ViewHandle<ActionButton>,
 }
 
 impl NestedReposView {
@@ -445,20 +462,27 @@ impl NestedReposView {
                     me.switch_branch(&repo, branch.clone(), *kind, ctx);
                 }
             }
+            BranchMenuEvent::Merge { branch, kind } => {
+                let repo = me.branch_menu_repo.clone();
+                me.close_branch_menu(ctx);
+                if let Some(repo) = repo {
+                    me.merge(&repo, branch.clone(), *kind, ctx);
+                }
+            }
             BranchMenuEvent::Close => me.close_branch_menu(ctx),
         });
 
         let (visible_rows_tx, visible_rows_rx) = async_channel::unbounded();
         let _ = ctx.spawn_stream_local(visible_rows_rx, Self::handle_visible_rows, |_, _| {});
 
-        let discard_confirm_button = ctx.add_typed_action_view(|_| {
+        let confirm_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Discard changes", DangerPrimaryTheme).on_click(|ctx| {
-                ctx.dispatch_typed_action(NestedReposViewAction::ConfirmDiscard);
+                ctx.dispatch_typed_action(NestedReposViewAction::Confirm);
             })
         });
-        let discard_cancel_button = ctx.add_typed_action_view(|_| {
+        let cancel_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Cancel", NakedTheme).on_click(|ctx| {
-                ctx.dispatch_typed_action(NestedReposViewAction::CancelDiscard);
+                ctx.dispatch_typed_action(NestedReposViewAction::CancelConfirmation);
             })
         });
 
@@ -486,9 +510,9 @@ impl NestedReposView {
             overflow_menu,
             overflow_menu_repo: None,
             git_dialog: None,
-            discard_confirmation: None,
-            discard_confirm_button,
-            discard_cancel_button,
+            confirmation: None,
+            confirm_button,
+            cancel_button,
         };
         view.sync_with_model(ctx);
         view
@@ -585,11 +609,11 @@ impl NestedReposView {
         );
 
         if self
-            .discard_confirmation
+            .confirmation
             .as_ref()
             .is_some_and(|confirmation| !is_listed(&confirmation.repo_root))
         {
-            self.discard_confirmation = None;
+            self.confirmation = None;
         }
         let branch_menu_version = self.branch_menu_repo.as_ref().map(|root| {
             entries
@@ -698,20 +722,43 @@ impl NestedReposView {
         label: &'static str,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        if matches!(
-            self.activities.get(repo_root),
-            Some(RepoActivity::Running(_))
-        ) {
+        if self.is_running(repo_root) {
             return false;
         }
         if git_operation_in_progress(repo_root) {
             self.finish_activity(repo_root, operation_in_progress_message(), ctx);
             return false;
         }
+        self.mark_running(repo_root, label, ctx);
+        true
+    }
+
+    /// Like [`Self::start_activity`], for what finishes or abandons the merge in progress, which
+    /// is an operation in progress itself.
+    fn start_merge_activity(
+        &mut self,
+        repo_root: &Path,
+        label: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if self.is_running(repo_root) {
+            return false;
+        }
+        self.mark_running(repo_root, label, ctx);
+        true
+    }
+
+    fn is_running(&self, repo_root: &Path) -> bool {
+        matches!(
+            self.activities.get(repo_root),
+            Some(RepoActivity::Running(_))
+        )
+    }
+
+    fn mark_running(&mut self, repo_root: &Path, label: &'static str, ctx: &mut ViewContext<Self>) {
         self.activities
             .insert(repo_root.to_path_buf(), RepoActivity::Running(label));
         ctx.notify();
-        true
     }
 
     fn clear_activity(&mut self, repo_root: &Path, ctx: &mut ViewContext<Self>) {
@@ -777,13 +824,21 @@ impl NestedReposView {
             return;
         }
         match action {
-            RepoAction::Commit => self.open_commit_dialog(repo_root, &status, ctx),
+            RepoAction::Commit => self.open_commit_dialog(repo_root, &status, None, ctx),
             RepoAction::Push => self.load_push_dialog(repo_root, &status, false, ctx),
             RepoAction::Publish => self.load_push_dialog(repo_root, &status, true, ctx),
             RepoAction::Sync => self.sync(repo_root, &status, ctx),
             RepoAction::Fetch => self.fetch(repo_root, ctx),
             RepoAction::PullRequest => self.open_pull_request(repo_root, &status, ctx),
-            RepoAction::Discard => self.confirm_discard(repo_root, &status, ctx),
+            RepoAction::Discard => {
+                let label = format!("Discard {}", change_count_label(status.files.len()));
+                self.ask_to_confirm(repo_root, ConfirmedAction::Discard, label, ctx);
+            }
+            RepoAction::CommitMerge => self.commit_merge(repo_root, &status, ctx),
+            RepoAction::AbortMerge => {
+                let label = "Abort merge".to_owned();
+                self.ask_to_confirm(repo_root, ConfirmedAction::AbortMerge, label, ctx);
+            }
         }
     }
 
@@ -838,13 +893,23 @@ impl NestedReposView {
         RowMessage::error(user_facing_git_error(&err.to_string()))
     }
 
+    /// Opens the commit dialog. With `merge_message`, the commit concludes the merge in progress
+    /// and starts from that message.
     fn open_commit_dialog(
         &mut self,
         repo_root: &Path,
         status: &NestedRepoStatus,
+        merge_message: Option<String>,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.git_dialog.is_some() || !self.start_activity(repo_root, "Committing…", ctx) {
+        if self.git_dialog.is_some() {
+            return;
+        }
+        let started = match merge_message {
+            Some(_) => self.start_merge_activity(repo_root, "Committing…", ctx),
+            None => self.start_activity(repo_root, "Committing…", ctx),
+        };
+        if !started {
             return;
         }
         let repo = repo_root.to_path_buf();
@@ -852,9 +917,18 @@ impl NestedReposView {
         let has_upstream = status.upstream.is_some();
         let diff_state_model =
             ctx.add_model(|ctx| DiffStateModel::new_local_for_git_ops(repo.clone(), ctx));
-        let dialog = ctx.add_typed_action_view(|ctx| {
-            GitDialog::new_for_commit(
-                LocalOrRemotePath::Local(repo.clone()),
+        let location = LocalOrRemotePath::Local(repo.clone());
+        let dialog = ctx.add_typed_action_view(|ctx| match merge_message {
+            Some(message) => GitDialog::new_for_merge_commit(
+                location,
+                diff_state_model,
+                branch,
+                message,
+                has_upstream,
+                ctx,
+            ),
+            None => GitDialog::new_for_commit(
+                location,
                 diff_state_model,
                 branch,
                 // Committing and opening a pull request in one step needs the pull request state,
@@ -862,9 +936,109 @@ impl NestedReposView {
                 false,
                 has_upstream,
                 ctx,
-            )
+            ),
         });
         self.show_git_dialog(repo, dialog, ctx);
+    }
+
+    /// Opens the commit dialog for the merge in progress once no conflict marker is left in its
+    /// unmerged files. The commit itself checks again.
+    fn commit_merge(
+        &mut self,
+        repo_root: &Path,
+        status: &NestedRepoStatus,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(merge) = status.merge.clone() else {
+            return;
+        };
+        if self.git_dialog.is_some()
+            || !self.start_merge_activity(repo_root, "Checking conflicts…", ctx)
+        {
+            return;
+        }
+        let repo = repo_root.to_path_buf();
+        ctx.spawn(
+            async move {
+                let result = check_conflict_markers(&repo).await;
+                (repo, result)
+            },
+            move |me, (repo, result), ctx| match result {
+                Ok(()) => {
+                    me.clear_activity(&repo, ctx);
+                    let Some(status) = me.status(&repo, ctx).cloned() else {
+                        return;
+                    };
+                    me.open_commit_dialog(&repo, &status, Some(merge.message), ctx);
+                }
+                Err(message) => {
+                    let message = message.replacen(":\n", ": ", 1).replace('\n', ", ");
+                    me.finish_activity(&repo, RowMessage::error(message), ctx);
+                }
+            },
+        );
+    }
+
+    /// Merges `branch` into the branch that is checked out. Stopping at conflicts leaves the
+    /// merge for the row to finish or abandon.
+    fn merge(
+        &mut self,
+        repo_root: &Path,
+        branch: String,
+        kind: GitMergeKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.git_dialog.is_some()
+            || self.confirmation.is_some()
+            || !self.start_activity(repo_root, "Merging…", ctx)
+        {
+            return;
+        }
+        let path_env = Self::interactive_path(ctx);
+        let repo = repo_root.to_path_buf();
+        ctx.spawn(
+            async move {
+                let path_env = path_env.await;
+                let result = merge_branch(&repo, &branch, kind, path_env).await;
+                (repo, branch, result)
+            },
+            |me, (repo, branch, result), ctx| {
+                let message = match result {
+                    Ok(merged) => merge_message(&merged, &branch),
+                    Err(output) => {
+                        log::warn!(
+                            "Merging {branch} failed in {}: {}",
+                            repo.display(),
+                            one_line(&output)
+                        );
+                        merge_refusal(&output)
+                    }
+                };
+                me.finish_activity(&repo, message, ctx);
+            },
+        );
+    }
+
+    fn abort_merge(&mut self, repo_root: &Path, ctx: &mut ViewContext<Self>) {
+        if !self.start_merge_activity(repo_root, "Aborting merge…", ctx) {
+            return;
+        }
+        let path_env = Self::interactive_path(ctx);
+        let repo = repo_root.to_path_buf();
+        ctx.spawn(
+            async move {
+                let path_env = path_env.await;
+                let result = abort_merge(&repo, path_env).await;
+                (repo, result)
+            },
+            |me, (repo, result), ctx| {
+                let message = match result {
+                    Ok(_) => RowMessage::info("Merge aborted"),
+                    Err(output) => merge_refusal(&output),
+                };
+                me.finish_activity(&repo, message, ctx);
+            },
+        );
     }
 
     /// Reads the commits a push would send, then opens the push dialog listing them.
@@ -1019,26 +1193,22 @@ impl NestedReposView {
         ctx.notify();
     }
 
-    fn confirm_discard(
+    /// Asks before `action`, which cannot be undone, with `label` on the button that confirms.
+    fn ask_to_confirm(
         &mut self,
         repo_root: &Path,
-        status: &NestedRepoStatus,
+        action: ConfirmedAction,
+        label: String,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.git_dialog.is_some() || self.discard_confirmation.is_some() {
+        if self.git_dialog.is_some() || self.confirmation.is_some() || self.is_running(repo_root) {
             return;
         }
-        if matches!(
-            self.activities.get(repo_root),
-            Some(RepoActivity::Running(_))
-        ) {
-            return;
-        }
-        let label = format!("Discard {}", change_count_label(status.files.len()));
-        self.discard_confirm_button
+        self.confirm_button
             .update(ctx, |button, ctx| button.set_label(label, ctx));
-        self.discard_confirmation = Some(DiscardConfirmation {
+        self.confirmation = Some(Confirmation {
             repo_root: repo_root.to_path_buf(),
+            action,
             opened_at: Instant::now(),
         });
         // Takes keyboard focus away from whatever could otherwise act on a stray keypress.
@@ -1046,15 +1216,23 @@ impl NestedReposView {
         ctx.notify();
     }
 
-    fn discard_confirmed(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(confirmation) = &self.discard_confirmation else {
+    fn confirmed(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(confirmation) = &self.confirmation else {
             return;
         };
-        if confirmation.opened_at.elapsed() < DISCARD_CONFIRMATION_ARMING_DELAY {
+        if confirmation.opened_at.elapsed() < CONFIRMATION_ARMING_DELAY {
             return;
         }
         let repo = confirmation.repo_root.clone();
-        self.discard_confirmation = None;
+        let action = confirmation.action;
+        self.confirmation = None;
+        match action {
+            ConfirmedAction::Discard => self.discard(repo, ctx),
+            ConfirmedAction::AbortMerge => self.abort_merge(&repo, ctx),
+        }
+    }
+
+    fn discard(&mut self, repo: PathBuf, ctx: &mut ViewContext<Self>) {
         let discarded = self
             .status(&repo, ctx)
             .map_or(0, |status| status.files.len());
@@ -1473,7 +1651,16 @@ impl NestedReposView {
                     add_color(appearance)
                 },
             )),
-            None => None,
+            None => status
+                .and_then(|status| status.merge.as_ref())
+                .map(|merge| {
+                    let color = if merge.conflicts.is_empty() {
+                        add_color(appearance)
+                    } else {
+                        remove_color(appearance)
+                    };
+                    (merge_banner(merge), color)
+                }),
         };
         if let Some((note, note_color)) = note {
             details.add_child(
@@ -1600,13 +1787,14 @@ impl NestedReposView {
     ) -> Box<dyn Element> {
         let theme = appearance.theme();
         let color = match action {
-            RepoAction::Discard => remove_color(appearance),
+            RepoAction::Discard | RepoAction::AbortMerge => remove_color(appearance),
             RepoAction::Commit
             | RepoAction::Push
             | RepoAction::Publish
             | RepoAction::Sync
             | RepoAction::PullRequest
-            | RepoAction::Fetch => blended_colors::text_main(theme, theme.background()),
+            | RepoAction::Fetch
+            | RepoAction::CommitMerge => blended_colors::text_main(theme, theme.background()),
         };
         let dispatched = NestedReposViewAction::RunRepoAction {
             repo_root: repo_root.to_path_buf(),
@@ -1740,9 +1928,18 @@ impl NestedReposView {
                     path: file.path.clone(),
                 }
         });
-        let dispatched = NestedReposViewAction::SelectFile {
-            repo_root: entry.repo.root.clone(),
-            path: file.path.clone(),
+        let is_unmerged = file.status == GitFileStatus::Conflicted
+            && entry
+                .status
+                .as_ref()
+                .is_some_and(|status| status.merge.is_some());
+        let dispatched = if is_unmerged {
+            NestedReposViewAction::OpenConflictedFile(entry.repo.root.join(&file.path))
+        } else {
+            NestedReposViewAction::SelectFile {
+                repo_root: entry.repo.root.clone(),
+                path: file.path.clone(),
+            }
         };
 
         Hoverable::new(mouse_state.clone(), |mouse_state| {
@@ -1774,6 +1971,21 @@ impl NestedReposView {
                     .with_max_width(FILE_NAME_MAX_WIDTH)
                     .finish(),
                 );
+            if is_unmerged {
+                row.add_child(
+                    Container::new(
+                        Text::new_inline(
+                            "conflict",
+                            font_family,
+                            font_size * SECONDARY_FONT_SIZE_RATIO,
+                        )
+                        .with_color(remove_color(appearance))
+                        .finish(),
+                    )
+                    .with_margin_left(6.)
+                    .finish(),
+                );
+            }
             if !directory.is_empty() {
                 row.add_child(
                     Shrinkable::new(
@@ -1822,9 +2034,9 @@ impl NestedReposView {
         container.finish()
     }
 
-    fn render_discard_confirmation(
+    fn render_confirmation(
         &self,
-        confirmation: &DiscardConfirmation,
+        confirmation: &Confirmation,
         app: &AppContext,
     ) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
@@ -1833,15 +2045,38 @@ impl NestedReposView {
             || confirmation.repo_root.display().to_string(),
             |entry| entry.display_name.clone(),
         );
-        let file_count = entry.map_or(0, changed_file_count);
-        let description = format!(
-            "This discards {} in {repo_name}: edits to tracked files are reverted and untracked \
-             files are deleted. It cannot be undone.",
-            change_count_label(file_count)
-        );
+        let (title, description) = match confirmation.action {
+            ConfirmedAction::Discard => {
+                let file_count = entry.map_or(0, changed_file_count);
+                (
+                    "Discard all uncommitted changes?",
+                    format!(
+                        "This discards {} in {repo_name}: edits to tracked files are reverted and \
+                         untracked files are deleted. It cannot be undone.",
+                        change_count_label(file_count)
+                    ),
+                )
+            }
+            ConfirmedAction::AbortMerge => {
+                let status = entry.and_then(|entry| entry.status.as_ref());
+                let merged = status
+                    .and_then(|status| status.merge.as_ref())
+                    .and_then(|merge| merge.branch.clone())
+                    .unwrap_or_else(|| "the other branch".to_owned());
+                let current = status.map_or_else(String::new, |status| status.branch.clone());
+                (
+                    "Abort the merge?",
+                    format!(
+                        "This abandons merging {merged} into {current} in {repo_name}: every file \
+                         goes back to how it was before the merge, and the conflicts resolved so \
+                         far are lost."
+                    ),
+                )
+            }
+        };
 
         let dialog = Dialog::new(
-            "Discard all uncommitted changes?".to_string(),
+            title.to_string(),
             Some(description),
             UiComponentStyles {
                 width: Some(460.),
@@ -1850,9 +2085,9 @@ impl NestedReposView {
             },
         )
         .with_separator()
-        .with_bottom_row_child(ChildView::new(&self.discard_cancel_button).finish())
+        .with_bottom_row_child(ChildView::new(&self.cancel_button).finish())
         .with_bottom_row_child(
-            Container::new(ChildView::new(&self.discard_confirm_button).finish())
+            Container::new(ChildView::new(&self.confirm_button).finish())
                 .with_margin_left(8.)
                 .finish(),
         )
@@ -1908,9 +2143,9 @@ impl TypedActionView for NestedReposView {
                 repo_root,
                 row_width,
             } => self.toggle_overflow_menu(repo_root, *row_width, ctx),
-            NestedReposViewAction::ConfirmDiscard => self.discard_confirmed(ctx),
-            NestedReposViewAction::CancelDiscard => {
-                self.discard_confirmation = None;
+            NestedReposViewAction::Confirm => self.confirmed(ctx),
+            NestedReposViewAction::CancelConfirmation => {
+                self.confirmation = None;
                 ctx.notify();
             }
             NestedReposViewAction::ToggleBranchMenu(repo_root) => {
@@ -1932,6 +2167,9 @@ impl TypedActionView for NestedReposView {
                 };
                 self.select(selection, ctx);
             }
+            NestedReposViewAction::OpenConflictedFile(path) => {
+                ctx.emit(NestedReposViewEvent::OpenFile { path: path.clone() });
+            }
         }
     }
 }
@@ -1944,8 +2182,8 @@ impl View for NestedReposView {
     fn keymap_context(&self, _: &AppContext) -> keymap::Context {
         let mut context = keymap::Context::default();
         context.set.insert(Self::ui_name());
-        if self.discard_confirmation.is_some() {
-            context.set.insert(DISCARD_DIALOG_CONTEXT);
+        if self.confirmation.is_some() {
+            context.set.insert(CONFIRMATION_DIALOG_CONTEXT);
         }
         context
     }
@@ -1977,9 +2215,9 @@ impl View for NestedReposView {
         let modal = if let Some(git_dialog) = &self.git_dialog {
             Some(ChildView::new(git_dialog).finish())
         } else {
-            self.discard_confirmation
+            self.confirmation
                 .as_ref()
-                .map(|confirmation| self.render_discard_confirmation(confirmation, app))
+                .map(|confirmation| self.render_confirmation(confirmation, app))
         };
         let Some(modal) = modal else {
             return content;

@@ -333,7 +333,7 @@ impl NestedReposView {
         ctx: &mut ViewContext<Self>,
     ) {
         if self.git_dialog.is_some()
-            || self.discard_confirmation.is_some()
+            || self.confirmation.is_some()
             || !self.start_activity(repo_root, "Switching\u{2026}", ctx)
         {
             return;

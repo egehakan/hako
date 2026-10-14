@@ -1,5 +1,6 @@
 //! What the source control overview shows of one repository's history: the commits of its
-//! branch as a graph, read a page at a time, and the files of the one commit that is open.
+//! branch as a graph, read a page at a time, and the files of the one commit that is open; and
+//! merging another branch into it.
 //! Everything that runs git goes through the functions the remote protocol is answered with.
 
 use std::path::Path;
@@ -7,9 +8,11 @@ use std::time::Duration;
 
 use ::hako_remote::git_graph::{Graph, GraphRow};
 use ::hako_remote::git_history::{self, LOG_DEFAULT};
+use ::hako_remote::git_merge;
 use ::hako_remote::git_run::{COMMAND_LIMIT, Exit, Git};
 use ::hako_remote::protocol::{
-    GitBranches, GitFile, GitLog, GitLogCommit, GitShow, GitSwitch, GitSwitchKind,
+    GitBranches, GitFile, GitLog, GitLogCommit, GitMerge, GitMergeAbort, GitMergeKind,
+    GitMergeState, GitShow, GitSwitch, GitSwitchKind,
 };
 use chrono::{Local, TimeZone};
 
@@ -70,6 +73,45 @@ pub async fn switch_branch(
 ) -> Result<GitSwitch, String> {
     let git = Git::new(path_env, &[], COMMAND_LIMIT);
     git_history::switch(repo_root, branch, kind, &git)
+        .await
+        .map_err(|error| error.message)
+}
+
+/// Merges `branch` into the branch that is checked out, as `git merge` does by default. Stopping
+/// at conflicts is an outcome, which leaves the merge unfinished.
+pub async fn merge_branch(
+    repo_root: &Path,
+    branch: &str,
+    kind: GitMergeKind,
+    path_env: Option<String>,
+) -> Result<GitMerge, String> {
+    let git = Git::new(path_env, &[], COMMAND_LIMIT);
+    git_merge::merge(repo_root, branch, kind, &git)
+        .await
+        .map_err(|error| error.message)
+}
+
+pub async fn abort_merge(
+    repo_root: &Path,
+    path_env: Option<String>,
+) -> Result<GitMergeAbort, String> {
+    let git = Git::new(path_env, &[], COMMAND_LIMIT);
+    git_merge::merge_abort(repo_root, &git)
+        .await
+        .map_err(|error| error.message)
+}
+
+/// The merge in progress in the repository, if there is one.
+pub async fn load_merge_state(repo_root: &Path) -> Result<Option<GitMergeState>, String> {
+    git_merge::merge_state(repo_root, &reader())
+        .await
+        .map_err(|error| error.message)
+}
+
+/// Refuses, with the paths named, while a merge is in progress and an unmerged file still holds
+/// a conflict marker.
+pub async fn check_conflict_markers(repo_root: &Path) -> Result<(), String> {
+    git_merge::check_conflict_markers(repo_root, &reader())
         .await
         .map_err(|error| error.message)
 }

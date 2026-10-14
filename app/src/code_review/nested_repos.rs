@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::hako_remote::protocol::GitMergeState;
 use dunce::canonicalize;
 use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
 use warp_util::git::run_git_command;
@@ -13,6 +14,7 @@ use warpui::{Entity, ModelContext, ModelHandle};
 use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
 
 use super::diff_state::GitFileStatus;
+use super::nested_repo_history::load_merge_state;
 
 const GIT_ENTRY_NAME: &str = ".git";
 
@@ -154,12 +156,22 @@ pub struct NestedRepoStatus {
     pub ahead: usize,
     pub behind: usize,
     pub files: Vec<NestedRepoFile>,
+    /// `None` when no merge is in progress.
+    pub merge: Option<GitMergeState>,
 }
 
 async fn load_status(repo_root: &Path) -> anyhow::Result<NestedRepoStatus> {
     let output =
         run_git_command(repo_root, &["status", "--porcelain=v2", "--branch", "-z"]).await?;
-    Ok(parse_porcelain_v2_status(&output))
+    let mut status = parse_porcelain_v2_status(&output);
+    status.merge = load_merge_state(repo_root).await.unwrap_or_else(|error| {
+        log::warn!(
+            "Reading the merge in {} failed: {error}",
+            repo_root.display()
+        );
+        None
+    });
+    Ok(status)
 }
 
 /// Parses the output of `git status --porcelain=v2 --branch -z`.
