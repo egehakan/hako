@@ -699,8 +699,7 @@ impl Engine {
                 }
                 match self.unowned.remove(&target) {
                     Some(unowned) => {
-                        self.set_up_tab(bid, target, unowned, Some(url), true);
-                        self.answer_open(bid, responder);
+                        self.set_up_tab(bid, target, unowned, Some(url), true, Some(responder));
                     }
                     None => {
                         self.created.insert(
@@ -843,6 +842,8 @@ impl Engine {
 
     /// Gives an attached tab to a session and sets it up: pictures and pickers it may need, the
     /// session's viewport, and its window off the screen. It is opened at `url` when given.
+    /// `open` is the `browser.open` that made the session, answered before anything else of the
+    /// session is sent.
     fn set_up_tab(
         &mut self,
         bid: u32,
@@ -850,8 +851,12 @@ impl Engine {
         unowned: Unowned,
         url: Option<String>,
         activate: bool,
+        open: Option<Responder>,
     ) {
         let Some(cdp) = self.cdp().cloned() else {
+            if let Some(open) = open {
+                open.respond(Err(RpcError::failed("The browser is not running")));
+            }
             return;
         };
         let user_agent = match &self.browser {
@@ -863,6 +868,9 @@ impl Engine {
             .get(bid)
             .map(|session| session.viewport.clone())
         else {
+            if let Some(open) = open {
+                open.respond(Err(no_session(bid)));
+            }
             return;
         };
         let session = unowned.devtools_session.clone();
@@ -873,6 +881,9 @@ impl Engine {
             .and_then(|session| session.active_tab().map(|tab| tab.id.clone()));
         let tab = Tab::new(target.clone(), session.clone(), unowned.opener);
         self.sessions.add_tab(bid, tab, activate);
+        if let Some(open) = open {
+            self.answer_open(bid, open);
+        }
         if activate {
             if let Some(previous) = previous.filter(|previous| *previous != target) {
                 self.stop_screencast(bid, &previous);
@@ -882,7 +893,9 @@ impl Engine {
         let internal = self.internal.clone();
         tokio::spawn(async move {
             let page = Some(session.as_str());
-            let _ = cdp.call(page, "Page.enable", json!({})).await;
+            // A tab waiting for the debugger may answer none of these until it runs, so all of
+            // them go out before it is let go, and only then is anything waited for.
+            cdp.send(page, "Page.enable", json!({}));
             cdp.send(
                 page,
                 "Page.setInterceptFileChooserDialog",
@@ -895,6 +908,9 @@ impl Engine {
             );
             for (method, params) in emulation(&viewport, &user_agent) {
                 cdp.send(page, method, params);
+            }
+            if waiting {
+                cdp.send(page, "Runtime.runIfWaitingForDebugger", json!({}));
             }
             if let Ok(window) = cdp
                 .call(
@@ -912,9 +928,6 @@ impl Engine {
                         "bounds": { "left": OFF_SCREEN, "top": OFF_SCREEN },
                     }),
                 );
-            }
-            if waiting {
-                cdp.send(page, "Runtime.runIfWaitingForDebugger", json!({}));
             }
             if let Some(url) = url {
                 cdp.send(page, "Page.navigate", json!({ "url": url }));
@@ -1339,7 +1352,7 @@ impl Engine {
                     .most_recently_used()
                     .filter(|_| !unowned.stale)
                 {
-                    Some(bid) => self.set_up_tab(bid, target, unowned, None, true),
+                    Some(bid) => self.set_up_tab(bid, target, unowned, None, true, None),
                     None => {
                         if let Some(cdp) = self.cdp() {
                             cdp.send(None, "Target.closeTarget", json!({ "targetId": target }));
@@ -1489,14 +1502,20 @@ impl Engine {
                 if unowned.stale {
                     self.unowned.insert(target, unowned);
                 } else if let Some(created) = self.created.remove(&target) {
-                    self.set_up_tab(created.bid, target, unowned, Some(created.url), true);
-                    self.answer_open(created.bid, created.responder);
+                    self.set_up_tab(
+                        created.bid,
+                        target,
+                        unowned,
+                        Some(created.url),
+                        true,
+                        Some(created.responder),
+                    );
                 } else if let Some(bid) = opener
                     .as_deref()
                     .and_then(|opener| self.sessions.owner(opener))
                 {
                     // A pop-up or a new tab the page opened, shown in place of its opener.
-                    self.set_up_tab(bid, target, unowned, None, true);
+                    self.set_up_tab(bid, target, unowned, None, true, None);
                 } else {
                     self.unowned.insert(target, unowned);
                 }
